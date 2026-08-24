@@ -16,6 +16,22 @@ class ThumbnailFormat(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class CanvasPreset:
+    name: str
+    width: int
+    height: int
+
+
+CANVAS_PRESETS = (
+    CanvasPreset("1:1", 1200, 1200),
+    CanvasPreset("16:9", 1920, 1080),
+    CanvasPreset("4:3", 1200, 900),
+    CanvasPreset("3:4", 900, 1200),
+    CanvasPreset("9:16", 1080, 1920),
+)
+
+
+@dataclass(frozen=True, slots=True)
 class TitleRecord:
     index: int
     title: str
@@ -25,8 +41,8 @@ class TitleRecord:
 
 @dataclass(slots=True)
 class ThumbnailSettings:
-    width: int = 1080
-    height: int = 1080
+    width: int = 1200
+    height: int = 1200
     background_color: str = "#171923"
     font_family: str = "Yu Gothic UI"
     font_size: int = 72
@@ -43,4 +59,7 @@ class ThumbnailSettings:
 
 def parse_title_records(text: str) -> list[TitleRecord]:
     titles = [line.strip() for line in text.splitlines() if line.strip()]
-    return [TitleRecord(index=index, title=title) for index, title in enumerate(titles, start=1)]
+    return [
+        TitleRecord(index=index, title=title)
+        for index, title in enumerate(titles, start=1)
+    ]

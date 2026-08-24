@@ -246,7 +246,7 @@ def test_settings_are_purpose_first_and_future_tabs_are_disabled(
 ) -> None:
     labels = [
         button.text()
-        for button in window.findChildren(QToolButton)
+        for button in window.navigation.widget(0).findChildren(QToolButton)
         if button.isCheckable() and button.text()
     ]
     assert labels == [

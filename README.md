@@ -23,12 +23,13 @@ Python LauncherにPythonが登録されていない環境では、任意のPytho
 
 ## 文字サムネ — Phase 2A
 
-Main navigationの「文字サムネ」を開き、1行に1タイトルずつ貼り付けます。Simple Darkを基準にCanvas、Solid Background、インストール済みFont、Base/Minimum Font Size、色、配置、PNG/JPEGを設定し、Previewを確認してGenerateを押します。
+上部の「文字サムネ」を開き、右側の入力欄へ1行に1タイトルずつ貼り付けます。空行は無視され、入力件数に合わせて「N枚まとめて生成」ボタンが更新されます。
 
-Previewと一括出力は同じQt Rendererを使用します。実Font Metricsによる自動改行・Auto Fitを行い、最小Font Sizeでも収まらないタイトルは切り捨てずErrorとして一覧に残します。出力名は001_title.jpg形式で、Windows禁止文字を置換し、既存ファイルを上書きしません。
+左側では、1:1・16:9・4:3・3:4・9:16または任意サイズ、単色背景、Windowsにインストール済みのフォント、文字サイズ・色・配置、PNG/JPEGとJPEG品質、保存先を設定できます。中央のプレビューは一括出力と同じQt Rendererを使用し、前後ボタンで代表タイトルを切り替えられます。
 
-Template Save/Load、Gradient、背景画像、Outline、Shadow等はPhase 2B/2Cの対象で、Phase 2Aには含めていません。
+実フォントの寸法に基づいて日本語を自動改行し、必要なら指定した最小文字サイズまで自動調整します。それでも収まらないタイトルは省略せずエラーとして一覧へ残し、残りの生成を継続します。出力名は 001_タイトル.jpg 形式で、Windows禁止文字・予約名を安全化し、既存ファイルを上書きしません。
 
+Template保存、Gradient、背景画像、Outline、ShadowなどはPhase 2Aに含みません。
 ## Tests
 
 ```powershell

@@ -51,7 +51,7 @@ def _qt_alignment(alignment: TextAlignment) -> Qt.AlignmentFlag:
 def _layout_at_size(title: str, settings: ThumbnailSettings, font_size: int) -> TextLayoutResult:
     max_width = settings.width - settings.margin * 2
     if max_width <= 0:
-        raise ThumbnailLayoutError("Text margin is too large for the canvas.")
+        raise ThumbnailLayoutError("文字領域の余白がキャンバスより大きすぎます。")
 
     font = QFont(settings.font_family)
     font.setPixelSize(font_size)
@@ -85,20 +85,40 @@ def _layout_at_size(title: str, settings: ThumbnailSettings, font_size: int) -> 
 
 def layout_title(title: str, settings: ThumbnailSettings) -> TextLayoutResult:
     if not title.strip():
-        raise ThumbnailLayoutError("Title is empty.")
+        raise ThumbnailLayoutError("タイトルが空です。")
     if settings.width <= 0 or settings.height <= 0:
-        raise ThumbnailLayoutError("Canvas size must be positive.")
+        raise ThumbnailLayoutError("キャンバスサイズは1px以上にしてください。")
     max_height = settings.height - settings.margin * 2
     if max_height <= 0:
-        raise ThumbnailLayoutError("Text margin is too large for the canvas.")
+        raise ThumbnailLayoutError("文字領域の余白がキャンバスより大きすぎます。")
 
     minimum = min(settings.font_size, settings.min_font_size)
-    for font_size in range(settings.font_size, minimum - 1, -1):
-        result = _layout_at_size(title, settings, font_size)
-        if result.line_count <= settings.max_lines and result.total_height <= max_height:
-            return result
+
+    def fits(result: TextLayoutResult) -> bool:
+        return (
+            result.line_count <= settings.max_lines
+            and result.total_height <= max_height
+        )
+
+    base_result = _layout_at_size(title, settings, settings.font_size)
+    if fits(base_result):
+        return base_result
+
+    best: TextLayoutResult | None = None
+    low = minimum
+    high = settings.font_size - 1
+    while low <= high:
+        candidate_size = (low + high) // 2
+        candidate = _layout_at_size(title, settings, candidate_size)
+        if fits(candidate):
+            best = candidate
+            low = candidate_size + 1
+        else:
+            high = candidate_size - 1
+    if best is not None:
+        return best
     raise ThumbnailLayoutError(
-        f"このタイトルは設定範囲に収まりません: {title[:40]}"
+        f"このタイトルは最小文字サイズでも収まりません: {title[:40]}"
     )
 
 
@@ -124,11 +144,11 @@ def encode_thumbnail(image: QImage, output_format: ThumbnailFormat, quality: int
     data = QByteArray()
     buffer = QBuffer(data)
     if not buffer.open(QIODevice.OpenModeFlag.WriteOnly):
-        raise ProcessingError("画像Encode用Bufferを開けません。")
+        raise ProcessingError("画像の変換用バッファを開けません。")
     format_name = output_format.value
     save_quality = quality if output_format is ThumbnailFormat.JPEG else -1
     if not image.save(buffer, format_name, save_quality):
-        raise ProcessingError(f"{output_format.value}画像をEncodeできません。")
+        raise ProcessingError(f"{output_format.value}画像へ変換できません。")
     buffer.close()
     return bytes(data)
 
@@ -138,7 +158,8 @@ def sanitize_filename_component(value: str, max_length: int = 80) -> str:
     safe = re.sub(r"\s+", " ", safe).strip(" .")
     if not safe:
         safe = "untitled"
-    if safe.upper() in RESERVED_FILENAMES:
+    reserved_stem = safe.split(".", 1)[0].upper()
+    if reserved_stem in RESERVED_FILENAMES:
         safe += "_"
     safe = safe[:max_length].rstrip(" .")
     return safe or "untitled"

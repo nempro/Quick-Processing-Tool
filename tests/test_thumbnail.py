@@ -7,12 +7,13 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageChops
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import QApplication
 
 from quick_processing_tool.thumbnail_models import (
+    CANVAS_PRESETS,
     TextAlignment,
     ThumbnailFormat,
     ThumbnailSettings,
@@ -64,6 +65,14 @@ def test_title_input_trims_and_ignores_blank_lines() -> None:
     ]
 
 
+def test_japanese_titles_are_preserved_by_parser() -> None:
+    records = parse_title_records(" 眠れない夜にずっと囁かれて \n今すぐ俺のところに来て")
+    assert [record.title for record in records] == [
+        "眠れない夜にずっと囁かれて",
+        "今すぐ俺のところに来て",
+    ]
+
+
 def test_japanese_title_wraps_using_font_layout() -> None:
     result = layout_title(
         "夜中寝てたら年下彼氏に急に襲われて眠れない夜にずっと囁かれて",
@@ -81,6 +90,14 @@ def test_auto_fit_reduces_font_size() -> None:
     )
     assert result.font_size < 90
     assert result.line_count <= 4
+
+
+def test_auto_fit_keeps_requested_size_when_title_already_fits() -> None:
+    result = layout_title(
+        "短いタイトル",
+        settings(width=800, height=450, font_size=64, min_font_size=20),
+    )
+    assert result.font_size == 64
 
 
 def test_wrap_uses_glyph_metrics_not_character_count() -> None:
@@ -133,8 +150,25 @@ def test_alignment_changes_rendered_pixels() -> None:
     assert left_data != right_data
 
 
+def test_renderer_uses_selected_background_and_draws_text() -> None:
+    options = settings(
+        width=400,
+        height=240,
+        background_color="#123456",
+        font_color="#f5df4d",
+        output_format=ThumbnailFormat.PNG,
+    )
+    data, _ = render_record(TitleRecord(1, "文字色を確認"), options)
+    with Image.open(BytesIO(data)).convert("RGB") as image:
+        assert image.getpixel((0, 0)) == (18, 52, 86)
+        assert ImageChops.difference(
+            image, Image.new("RGB", image.size, (18, 52, 86))
+        ).getbbox() is not None
+
+
 def test_windows_filename_sanitization_and_collision(tmp_path: Path) -> None:
     assert sanitize_filename_component("CON") == "CON_"
+    assert sanitize_filename_component("CON.txt") == "CON.txt_"
     safe = sanitize_filename_component('bad<>:"/\\|?* title. ')
     assert not any(character in safe for character in '<>:"/\\|?*')
     assert not safe.endswith((" ", "."))
@@ -201,20 +235,64 @@ def test_thumbnail_batch_continues_after_layout_failure(tmp_path: Path) -> None:
 
 def test_thumbnail_page_counts_titles_and_has_navigation() -> None:
     page = ThumbnailPage()
-    page.titles_edit.setPlainText("one\n\n two \nthree")
-    assert page.title_count.text() == "3 titles"
+    page.titles_edit.setPlainText("最初のタイトル\n\n 次のタイトル \n最後のタイトル")
+    page.update_preview()
+    assert page.title_count.text() == "3枚生成予定"
+    assert page.generate_button.text() == "3枚まとめて生成"
     assert len(page.records()) == 3
+    assert page.preview_position.text() == "1 / 3"
+    first_title = page.preview_title.text()
+    first_pixmap = page.preview._item.pixmap().cacheKey()
+    page.next_button.click()
+    assert page.preview_position.text() == "2 / 3"
+    assert page.preview_title.text() != first_title
+    assert page.preview._item.pixmap().cacheKey() != first_pixmap
     page.close()
+
+
+def test_thumbnail_page_empty_state_and_canvas_presets() -> None:
+    page = ThumbnailPage()
+    page.update_preview()
+    assert page.title_count.text() == "0枚生成予定"
+    assert not page.generate_button.isEnabled()
+    assert "タイトルをここへ貼り付け" in page.titles_edit.placeholderText()
+    assert page.preview_position.text() == "0 / 0"
+    assert page.canvas_size_label.text() == "1200 × 1200 px"
+    assert [(item.name, item.width, item.height) for item in CANVAS_PRESETS] == [
+        ("1:1", 1200, 1200),
+        ("16:9", 1920, 1080),
+        ("4:3", 1200, 900),
+        ("3:4", 900, 1200),
+        ("9:16", 1080, 1920),
+    ]
+    page.canvas_preset_combo.setCurrentIndex(1)
+    assert (page.width_spin.value(), page.height_spin.value()) == (1920, 1080)
+    page.canvas_preset_combo.setCurrentIndex(page.canvas_preset_combo.count() - 1)
+    assert page.width_spin.isEnabled()
+    assert page.height_spin.isEnabled()
+    page.close()
+
+
+def test_png_disables_jpeg_quality_and_jpeg_enables_it() -> None:
+    page = ThumbnailPage()
+    png_index = page.format_combo.findData(ThumbnailFormat.PNG.value)
+    jpeg_index = page.format_combo.findData(ThumbnailFormat.JPEG.value)
+    page.format_combo.setCurrentIndex(png_index)
+    assert not page.quality_spin.isEnabled()
+    page.format_combo.setCurrentIndex(jpeg_index)
+    assert page.quality_spin.isEnabled()
+    page.close()
+
 
 def test_batch_locks_all_design_controls() -> None:
     page = ThumbnailPage()
     page._set_processing(True)
-    assert not page.template_combo.isEnabled()
+    assert not page.canvas_preset_combo.isEnabled()
     assert not page.background_button.isEnabled()
     assert not page.font_color_button.isEnabled()
     assert not page.titles_edit.isEnabled()
     page._set_processing(False)
-    assert page.template_combo.isEnabled()
+    assert page.canvas_preset_combo.isEnabled()
     assert page.background_button.isEnabled()
     assert page.font_color_button.isEnabled()
     page.close()
@@ -226,12 +304,54 @@ def test_fifty_title_ui_batch_runs_on_worker_thread(tmp_path: Path) -> None:
     page = ThumbnailPage()
     page.output_folder = tmp_path
     page.folder_label.setText(str(tmp_path))
+    page.canvas_preset_combo.setCurrentIndex(page.canvas_preset_combo.count() - 1)
     page.width_spin.setValue(320)
     page.height_spin.setValue(180)
     page.margin_spin.setValue(20)
     page.font_size_spin.setValue(32)
     page.min_font_size_spin.setValue(18)
     page.titles_edit.setPlainText("\n".join(f"Title {index}" for index in range(1, 51)))
+
+    heartbeat: list[int] = []
+    timer = QTimer()
+    timer.setInterval(0)
+    timer.timeout.connect(lambda: heartbeat.append(1))
+    timer.start()
+    page.generate_all()
+    thread = page._thread
+    assert thread is not None
+    loop = QEventLoop()
+    thread.finished.connect(loop.quit)
+    QTimer.singleShot(15_000, loop.quit)
+    loop.exec()
+    timer.stop()
+    app.processEvents()
+
+    assert page._thread is None
+    assert page.result_label.text() == "50枚生成 / 0件失敗"
+    assert page.progress_count.text() == "50 / 50"
+    assert page.progress.value() == 100
+    assert len(list(tmp_path.glob("*.jpg"))) == 50
+    assert heartbeat
+    page.close()
+
+
+def test_page_reports_partial_failure_and_continues(tmp_path: Path) -> None:
+    app = QApplication.instance()
+    assert app is not None
+    page = ThumbnailPage()
+    page.output_folder = tmp_path
+    page.folder_label.setText(str(tmp_path))
+    page.canvas_preset_combo.setCurrentIndex(page.canvas_preset_combo.count() - 1)
+    page.width_spin.setValue(300)
+    page.height_spin.setValue(180)
+    page.margin_spin.setValue(30)
+    page.font_size_spin.setValue(40)
+    page.min_font_size_spin.setValue(40)
+    page.max_lines_spin.setValue(1)
+    page.titles_edit.setPlainText(
+        "A\n" + "長すぎるタイトル" * 40 + "\nB"
+    )
 
     page.generate_all()
     thread = page._thread
@@ -243,10 +363,14 @@ def test_fifty_title_ui_batch_runs_on_worker_thread(tmp_path: Path) -> None:
     app.processEvents()
 
     assert page._thread is None
-    assert page.result_label.text() == "50 generated · 0 errors"
-    assert page.progress.value() == 100
-    assert len(list(tmp_path.glob("*.jpg"))) == 50
+    assert page.result_label.text().startswith("2枚生成 / 1件失敗")
+    failed_item = page.result_tree.topLevelItem(1)
+    assert failed_item.text(2) == "エラー"
+    assert "収まりません" in failed_item.toolTip(2)
+    assert page.result_tree.topLevelItem(2).text(2) == "完了"
+    assert len(list(tmp_path.glob("*.jpg"))) == 2
     page.close()
+
 
 def test_phase2a_four_title_acceptance_scenario(tmp_path: Path) -> None:
     titles = [
@@ -276,9 +400,17 @@ def test_phase2a_four_title_acceptance_scenario(tmp_path: Path) -> None:
     assert len(outputs) == 4
     assert [path.name[:3] for path in outputs] == ["001", "002", "003", "004"]
     corner_colors = []
+    digests = []
     for path in outputs:
         with Image.open(path) as image:
             assert image.size == (480, 480)
             assert image.format == "JPEG"
             corner_colors.append(image.getpixel((0, 0)))
+            rgb = image.convert("RGB")
+            corner = rgb.getpixel((0, 0))
+            assert ImageChops.difference(
+                rgb, Image.new("RGB", rgb.size, corner)
+            ).getbbox() is not None
+            digests.append(hash(rgb.tobytes()))
     assert len(set(corner_colors)) == 1
+    assert len(set(digests)) == 4
