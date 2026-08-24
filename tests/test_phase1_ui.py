@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
-from PySide6.QtWidgets import QApplication, QFileDialog, QToolButton, QWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QSplitter, QToolButton, QWidget
 
 from quick_processing_tool.models import OutputFormat, ResizeMode, Transform
 from quick_processing_tool.ui import MainWindow
@@ -219,6 +219,27 @@ def test_invalid_drag_clears_highlight(
     QApplication.sendEvent(window.drop_zone.overlay, rejected)
     assert not rejected.isAccepted()
     assert window.drop_zone.drop_title.text() == "画像をここにドロップ"
+
+def test_quick_inputs_define_distinct_interaction_states(
+    window: MainWindow,
+) -> None:
+    workspace = window.findChild(QSplitter, "quick_workspace")
+    assert workspace is not None
+    style = workspace.styleSheet()
+
+    for selector in (
+        "QComboBox, QSpinBox, QLineEdit",
+        "QComboBox:hover",
+        "QSpinBox:hover",
+        "QComboBox:focus",
+        "QSpinBox:focus",
+        "QComboBox:disabled",
+        "QSpinBox:disabled",
+    ):
+        assert selector in style
+    assert "background-color: #e9eef4" in style
+    assert "border: 2px solid #315fbd" in style
+    assert "background-color: #f3f4f6" in style
 
 def test_settings_are_purpose_first_and_future_tabs_are_disabled(
     window: MainWindow,

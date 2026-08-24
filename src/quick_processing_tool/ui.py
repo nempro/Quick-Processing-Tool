@@ -70,6 +70,46 @@ TRANSFORM_LABELS = {
     Transform.FLIP_HORIZONTAL: "左右反転",
     Transform.FLIP_VERTICAL: "上下反転",
 }
+QUICK_INPUT_STYLE = """
+QComboBox, QSpinBox, QLineEdit {
+    background-color: #e9eef4;
+    color: #182230;
+    border: 1px solid #8d99a8;
+    border-radius: 6px;
+    padding: 5px 28px 5px 8px;
+    min-height: 28px;
+    selection-background-color: #315fbd;
+    selection-color: #ffffff;
+}
+QSpinBox {
+    padding-right: 22px;
+}
+QComboBox:hover, QSpinBox:hover, QLineEdit:hover {
+    background-color: #e2eaf3;
+    border-color: #617389;
+}
+QComboBox:focus, QSpinBox:focus, QLineEdit:focus {
+    background-color: #ffffff;
+    border: 2px solid #315fbd;
+    padding: 4px 27px 4px 7px;
+}
+QSpinBox:focus {
+    padding-right: 21px;
+}
+QComboBox:disabled, QSpinBox:disabled, QLineEdit:disabled {
+    background-color: #f3f4f6;
+    color: #9aa1aa;
+    border: 1px solid #cfd4da;
+}
+QComboBox QAbstractItemView {
+    background-color: #ffffff;
+    color: #182230;
+    border: 1px solid #7a8796;
+    selection-background-color: #dce7ff;
+    selection-color: #182230;
+    outline: 0;
+}
+"""
 
 
 def human_bytes(value: int) -> str:
@@ -441,6 +481,8 @@ class MainWindow(QMainWindow):
 
     def _build_quick_page(self) -> QWidget:
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setObjectName("quick_workspace")
+        splitter.setStyleSheet(QUICK_INPUT_STYLE)
         splitter.addWidget(self._settings_panel())
 
         center = QWidget()
