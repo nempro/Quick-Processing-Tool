@@ -1,0 +1,1 @@
+"""Composable image-processing stages."""
