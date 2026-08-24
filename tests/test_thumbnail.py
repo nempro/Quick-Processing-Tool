@@ -14,6 +14,9 @@ from PySide6.QtWidgets import QApplication
 
 from quick_processing_tool.thumbnail_models import (
     CANVAS_PRESETS,
+    FixedLabelSettings,
+    NumberingSettings,
+    OverlayPosition,
     TextAlignment,
     ThumbnailFormat,
     ThumbnailSettings,
@@ -30,6 +33,7 @@ from quick_processing_tool.thumbnail_renderer import (
     thumbnail_output_path,
     write_thumbnail_output,
 )
+from quick_processing_tool.thumbnail_storage import ThumbnailTemplateStore
 from quick_processing_tool.thumbnail_ui import ThumbnailPage, ThumbnailWorker
 
 
@@ -165,6 +169,257 @@ def test_renderer_uses_selected_background_and_draws_text() -> None:
             image, Image.new("RGB", image.size, (18, 52, 86))
         ).getbbox() is not None
 
+
+def test_disabled_fixed_label_does_not_change_rendering() -> None:
+    base = settings(width=420, height=260, output_format=ThumbnailFormat.PNG)
+    disabled = settings(
+        width=420,
+        height=260,
+        labels=[FixedLabelSettings(enabled=False, text="過去音声")],
+        output_format=ThumbnailFormat.PNG,
+    )
+    assert encode_thumbnail(
+        render_thumbnail("同じタイトル", base).image,
+        ThumbnailFormat.PNG,
+        90,
+    ) == encode_thumbnail(
+        render_thumbnail("同じタイトル", disabled).image,
+        ThumbnailFormat.PNG,
+        90,
+    )
+
+
+def test_japanese_fixed_label_and_numbering_use_record_index() -> None:
+    options = settings(
+        width=640,
+        height=420,
+        labels=[
+            FixedLabelSettings(
+                enabled=True,
+                text="過去音声",
+                font_family=settings().font_family,
+                font_size=34,
+                color="#FFCC00",
+                position=OverlayPosition.TOP_LEFT,
+            )
+        ],
+        numbering=NumberingSettings(
+            enabled=True,
+            prefix="#",
+            start_number=50,
+            digits=3,
+            font_family=settings().font_family,
+            font_size=34,
+            color="#66CCFF",
+            position=OverlayPosition.TOP_RIGHT,
+        ),
+        output_format=ThumbnailFormat.PNG,
+    )
+    rendered = render_thumbnail("タイトル", options, record_index=2)
+    assert rendered.overlay_texts == ("過去音声", "#051")
+
+
+def test_fixed_label_six_positions_stay_inside_canvas() -> None:
+    family = settings().font_family
+    for position in OverlayPosition:
+        options = settings(
+            width=400,
+            height=300,
+            background_color="#FFFFFF",
+            font_color="#000000",
+            labels=[
+                FixedLabelSettings(
+                    enabled=True,
+                    text="LABEL",
+                    font_family=family,
+                    font_size=32,
+                    color="#FF0000",
+                    position=position,
+                )
+            ],
+            output_format=ThumbnailFormat.PNG,
+        )
+        data, _ = render_record(TitleRecord(1, "Title"), options)
+        with Image.open(BytesIO(data)).convert("RGB") as image:
+            red = [
+                (x, y)
+                for y in range(image.height)
+                for x in range(image.width)
+                if (lambda pixel: pixel[0] > 170 and pixel[1] < 100 and pixel[2] < 100)(
+                    image.getpixel((x, y))
+                )
+            ]
+        assert red
+        xs = [point[0] for point in red]
+        ys = [point[1] for point in red]
+        assert min(xs) >= 0 and max(xs) < 400
+        assert min(ys) >= 0 and max(ys) < 300
+        if position in (
+            OverlayPosition.TOP_LEFT,
+            OverlayPosition.TOP_CENTER,
+            OverlayPosition.TOP_RIGHT,
+        ):
+            assert max(ys) < 150
+        else:
+            assert min(ys) > 150
+        if position in (OverlayPosition.TOP_LEFT, OverlayPosition.BOTTOM_LEFT):
+            assert max(xs) < 200
+        elif position in (OverlayPosition.TOP_RIGHT, OverlayPosition.BOTTOM_RIGHT):
+            assert min(xs) > 200
+        else:
+            assert min(xs) < 200 < max(xs)
+
+
+def test_label_and_numbering_preview_export_pixel_parity() -> None:
+    options = settings(
+        width=480,
+        height=320,
+        labels=[FixedLabelSettings(True, "Archive", settings().font_family, 30)],
+        numbering=NumberingSettings(
+            True,
+            "No.",
+            7,
+            2,
+            settings().font_family,
+            30,
+            "#FFFFFF",
+            OverlayPosition.BOTTOM_RIGHT,
+        ),
+        output_format=ThumbnailFormat.PNG,
+    )
+    record = TitleRecord(3, "同じRenderer")
+    preview = render_thumbnail(record.title, options, record.index)
+    exported, rendered = render_record(record, options)
+    assert encode_thumbnail(preview.image, ThumbnailFormat.PNG, 90) == exported
+    assert preview.overlay_texts == rendered.overlay_texts == ("Archive", "No.09")
+
+
+def test_numbering_is_stable_for_four_and_fifty_item_batches() -> None:
+    numbering = NumberingSettings(True, "#", 1, 3)
+    assert [numbering.text_for_index(index) for index in range(1, 5)] == [
+        "#001",
+        "#002",
+        "#003",
+        "#004",
+    ]
+    values = [numbering.text_for_index(index) for index in range(1, 51)]
+    assert values[0] == "#001"
+    assert values[-1] == "#050"
+    assert len(set(values)) == 50
+
+
+def test_long_label_and_numbering_use_non_overlapping_horizontal_slots() -> None:
+    options = settings(
+        width=420,
+        height=280,
+        background_color="#FFFFFF",
+        font_color="#000000",
+        labels=[
+            FixedLabelSettings(
+                True,
+                "VERY LONG ARCHIVE LABEL",
+                settings().font_family,
+                42,
+                "#FF0000",
+                OverlayPosition.TOP_LEFT,
+            )
+        ],
+        numbering=NumberingSettings(
+            True,
+            "#",
+            1,
+            3,
+            settings().font_family,
+            42,
+            "#0000FF",
+            OverlayPosition.TOP_RIGHT,
+        ),
+        output_format=ThumbnailFormat.PNG,
+    )
+    data, _ = render_record(TitleRecord(1, "TITLE"), options)
+    with Image.open(BytesIO(data)).convert("RGB") as image:
+        red_x = [
+            x
+            for y in range(image.height)
+            for x in range(image.width)
+            if (lambda p: p[0] > 150 and p[2] < 100)(image.getpixel((x, y)))
+        ]
+        blue_x = [
+            x
+            for y in range(image.height)
+            for x in range(image.width)
+            if (lambda p: p[2] > 150 and p[0] < 100)(image.getpixel((x, y)))
+        ]
+    assert red_x and blue_x
+    assert max(red_x) < min(blue_x)
+
+def test_overlay_safe_margin_prevents_overlap_when_title_margin_is_zero() -> None:
+    options = settings(
+        width=400,
+        height=260,
+        margin=0,
+        font_color="#FF0000",
+        font_size=48,
+        min_font_size=48,
+        labels=[
+            FixedLabelSettings(
+                True,
+                "LABEL",
+                settings().font_family,
+                36,
+                "#0000FF",
+                OverlayPosition.TOP_CENTER,
+            )
+        ],
+        output_format=ThumbnailFormat.PNG,
+    )
+    data, _ = render_record(TitleRecord(1, "TITLE"), options)
+    with Image.open(BytesIO(data)).convert("RGB") as image:
+        blue_y = [
+            y
+            for y in range(image.height)
+            for x in range(image.width)
+            if (lambda p: p[2] > 150 and p[0] < 100)(image.getpixel((x, y)))
+        ]
+        red_y = [
+            y
+            for y in range(image.height)
+            for x in range(image.width)
+            if (lambda p: p[0] > 150 and p[2] < 100)(image.getpixel((x, y)))
+        ]
+    assert blue_y and red_y
+    assert max(blue_y) < min(red_y)
+
+def test_large_overlay_reserves_title_area() -> None:
+    title = "長い日本語タイトルを安全に自動調整して表示します" * 2
+    without_overlay = settings(
+        width=520,
+        height=360,
+        font_size=58,
+        min_font_size=16,
+        max_lines=8,
+    )
+    with_overlay = settings(
+        width=520,
+        height=360,
+        font_size=58,
+        min_font_size=16,
+        max_lines=8,
+        labels=[
+            FixedLabelSettings(
+                True,
+                "大きな固定ラベル",
+                settings().font_family,
+                80,
+                "#FFFFFF",
+                OverlayPosition.TOP_CENTER,
+            )
+        ],
+    )
+    base = layout_title(title, without_overlay)
+    reserved = layout_title(title, with_overlay)
+    assert reserved.font_size <= base.font_size
+    assert reserved.total_height < with_overlay.height
 
 def test_windows_filename_sanitization_and_collision(tmp_path: Path) -> None:
     assert sanitize_filename_component("CON") == "CON_"
@@ -503,3 +758,131 @@ def test_phase2a_four_title_acceptance_scenario(tmp_path: Path) -> None:
             digests.append(hash(rgb.tobytes()))
     assert len(set(corner_colors)) == 1
     assert len(set(digests)) == 4
+
+def test_phase2b_template_switch_preserves_titles_and_preview_index(
+    tmp_path: Path,
+) -> None:
+    store = ThumbnailTemplateStore(tmp_path / "templates.json")
+    page = ThumbnailPage(store)
+    titles = "\n".join(f"タイトル {index}" for index in range(1, 21))
+    page.titles_edit.setPlainText(titles)
+    page.preview_index = 8
+    page.label_enabled.setChecked(True)
+    page.label_text.setText("過去音声")
+    page.number_enabled.setChecked(True)
+    page.number_prefix.setText("#")
+    template = store.create_template("配信用", page.settings())
+
+    page._populate_templates(template.template_id)
+    page._apply_selected_template()
+    built_in = page.template_combo.findData("builtin:simple-white")
+    page.template_combo.setCurrentIndex(built_in)
+    user = page.template_combo.findData(template.template_id)
+    page.template_combo.setCurrentIndex(user)
+
+    assert page.titles_edit.toPlainText() == titles
+    assert len(page.records()) == 20
+    assert page.preview_index == 8
+    assert page.label_enabled.isChecked()
+    assert page.label_text.text() == "過去音声"
+    assert page.number_enabled.isChecked()
+    assert page.settings().numbering.text_for_index(9) == "#009"
+    page.close()
+
+
+def test_phase2b_restart_restores_template_output_and_not_titles(
+    tmp_path: Path,
+) -> None:
+    storage_path = tmp_path / "templates.json"
+    output_folder = tmp_path / "outputs"
+    output_folder.mkdir()
+    store = ThumbnailTemplateStore(storage_path)
+    page = ThumbnailPage(store)
+    page.number_enabled.setChecked(True)
+    page.number_start.setValue(7)
+    template = store.create_template("再起動確認", page.settings())
+    page._populate_templates(template.template_id)
+    page._apply_selected_template()
+    page.output_folder = output_folder
+    page.titles_edit.setPlainText("保存してはいけないタイトル")
+    page.save_state()
+    page.close()
+
+    restored = ThumbnailPage(ThumbnailTemplateStore(storage_path))
+    assert restored.template_combo.currentData() == template.template_id
+    assert restored.number_enabled.isChecked()
+    assert restored.number_start.value() == 7
+    assert restored.output_folder == output_folder
+    assert restored.titles_edit.toPlainText() == ""
+    restored.close()
+
+
+def test_phase2b_overlay_controls_are_hidden_until_enabled(
+    tmp_path: Path,
+) -> None:
+    page = ThumbnailPage(ThumbnailTemplateStore(tmp_path / "templates.json"))
+    page.overlays_section.toggle.setChecked(True)
+    assert not page.label_details.isVisible()
+    assert not page.number_details.isVisible()
+
+    page.label_enabled.setChecked(True)
+    page.number_enabled.setChecked(True)
+    page.show()
+    QApplication.processEvents()
+    assert page.label_details.isVisible()
+    assert page.number_details.isVisible()
+
+    page._set_processing(True)
+    assert not page.template_combo.isEnabled()
+    assert not page.label_text.isEnabled()
+    assert not page.number_start.isEnabled()
+    page._set_processing(False)
+    page.close()
+
+
+def test_phase2b_custom_size_preset_is_available_after_restart(
+    tmp_path: Path,
+) -> None:
+    storage_path = tmp_path / "templates.json"
+    store = ThumbnailTemplateStore(storage_path)
+    store.add_canvas_preset("配信用横長", 1200, 630)
+    page = ThumbnailPage(ThumbnailTemplateStore(storage_path))
+    index = page.canvas_preset_combo.findText("配信用横長")
+    assert index >= 0
+    page.canvas_preset_combo.setCurrentIndex(index)
+    assert (page.width_spin.value(), page.height_spin.value()) == (1200, 630)
+    assert page.canvas_delete_button.isEnabled()
+    page.close()
+
+def test_phase2b_ui_update_preserves_future_additional_labels(
+    tmp_path: Path,
+) -> None:
+    storage_path = tmp_path / "templates.json"
+    store = ThumbnailTemplateStore(storage_path)
+    options = settings(
+        labels=[
+            FixedLabelSettings(True, "表示中", settings().font_family, 28),
+            FixedLabelSettings(
+                False,
+                "将来用",
+                settings().font_family,
+                24,
+                "#FFFFFF",
+                OverlayPosition.BOTTOM_LEFT,
+            ),
+        ]
+    )
+    template = store.create_template("複数ラベル保持", options)
+    page = ThumbnailPage(store)
+    page._populate_templates(template.template_id)
+    page._apply_selected_template()
+    page.label_text.setText("更新後")
+    page.update_template()
+
+    restored = ThumbnailTemplateStore(storage_path).get_template(template.template_id)
+    assert restored is not None
+    assert [label.text for label in restored.settings.labels] == [
+        "更新後",
+        "将来用",
+    ]
+    page.close()

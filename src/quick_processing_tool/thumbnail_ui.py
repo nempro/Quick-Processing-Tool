@@ -4,7 +4,7 @@ import copy
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QStandardPaths, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QSignalBlocker, QStandardPaths, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QBrush, QColor, QFontDatabase, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -19,7 +19,9 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHeaderView,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -37,12 +39,16 @@ from PySide6.QtWidgets import (
 
 from .errors import ProcessingError
 from .thumbnail_models import (
-    CANVAS_PRESETS,
     CanvasPreset,
+    FixedLabelSettings,
+    NumberingSettings,
+    OverlayPosition,
     TextAlignment,
     ThumbnailFormat,
     ThumbnailSettings,
+    ThumbnailTemplate,
     TitleRecord,
+    VerticalAlignment,
     parse_title_records,
 )
 from .thumbnail_renderer import (
@@ -50,6 +56,11 @@ from .thumbnail_renderer import (
     render_record,
     render_thumbnail,
     write_thumbnail_output,
+)
+from .thumbnail_storage import (
+    ThumbnailStorageError,
+    ThumbnailTemplateStore,
+    settings_to_dict,
 )
 from .ui_styles import INPUT_CONTROL_STYLE
 
@@ -60,6 +71,19 @@ ALIGNMENT_LABELS = {
     TextAlignment.LEFT: "左揃え",
     TextAlignment.CENTER: "中央揃え",
     TextAlignment.RIGHT: "右揃え",
+}
+VERTICAL_ALIGNMENT_LABELS = {
+    VerticalAlignment.TOP: "上",
+    VerticalAlignment.CENTER: "中央",
+    VerticalAlignment.BOTTOM: "下",
+}
+POSITION_LABELS = {
+    OverlayPosition.TOP_LEFT: "左上",
+    OverlayPosition.TOP_CENTER: "上中央",
+    OverlayPosition.TOP_RIGHT: "右上",
+    OverlayPosition.BOTTOM_LEFT: "左下",
+    OverlayPosition.BOTTOM_CENTER: "下中央",
+    OverlayPosition.BOTTOM_RIGHT: "右下",
 }
 THUMBNAIL_STYLE = INPUT_CONTROL_STYLE + """
 QGroupBox {
@@ -303,16 +327,29 @@ class ThumbnailWorker(QObject):
 class ThumbnailPage(QWidget):
     processing_changed = Signal(bool)
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        template_store: ThumbnailTemplateStore | None = None,
+    ) -> None:
         super().__init__()
+        self.template_store = template_store or ThumbnailTemplateStore()
         desktop = QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.DesktopLocation
         )
-        self.output_folder = (
+        default_output = (
             Path(desktop or str(Path.home() / "Desktop"))
             / "Quick Processing Tool Thumbnails"
         )
+        stored_output = Path(self.template_store.last_output_folder)
+        self.output_folder = (
+            stored_output
+            if self.template_store.last_output_folder and stored_output.is_dir()
+            else default_output
+        )
         self.preview_index = 0
+        self._applying_template = False
+        self._selected_template_id = ""
+        self._additional_labels: list[FixedLabelSettings] = []
         self._thread: QThread | None = None
         self._worker: ThumbnailWorker | None = None
         self._processing = False
@@ -325,6 +362,8 @@ class ThumbnailPage(QWidget):
         self._preview_timer.timeout.connect(self.update_preview)
 
         self._build_ui()
+        self._populate_templates(self.template_store.last_selected_template)
+        self._apply_selected_template()
         self._titles_changed()
 
     def _build_ui(self) -> None:
@@ -363,17 +402,33 @@ class ThumbnailPage(QWidget):
         settings_layout.addWidget(self.settings_heading)
         settings_layout.addWidget(settings_intro)
 
+        self.template_group = QGroupBox("テンプレート")
+        template_layout = QVBoxLayout(self.template_group)
+        template_layout.setSpacing(6)
+        self.template_combo = QComboBox()
+        self._configure_combo(self.template_combo)
+        self.template_combo.setAccessibleName("テンプレート")
+        template_layout.addWidget(self.template_combo)
+        template_actions = QHBoxLayout()
+        self.template_save_button = QPushButton("保存・別名…")
+        self.template_update_button = QPushButton("上書き")
+        self.template_delete_button = QPushButton("削除")
+        template_actions.addWidget(self.template_save_button, 1)
+        template_actions.addWidget(self.template_update_button)
+        template_actions.addWidget(self.template_delete_button)
+        template_layout.addLayout(template_actions)
+        self.template_status = QLabel("")
+        self.template_status.setWordWrap(True)
+        self.template_status.setStyleSheet("color: #667085; font-size: 12px;")
+        template_layout.addWidget(self.template_status)
+        settings_layout.addWidget(self.template_group)
+
         self.canvas_group = QGroupBox("サイズ")
         self.canvas_form = QFormLayout(self.canvas_group)
         self._configure_form(self.canvas_form)
         self.canvas_preset_combo = QComboBox()
         self._configure_combo(self.canvas_preset_combo)
-        for preset in CANVAS_PRESETS:
-            self.canvas_preset_combo.addItem(
-                preset.name,
-                preset,
-            )
-        self.canvas_preset_combo.addItem(CUSTOM_CANVAS_LABEL, None)
+        self._populate_canvas_presets()
         self.canvas_form.addRow("プリセット", self.canvas_preset_combo)
         self.canvas_size_label = QLabel()
         self.canvas_size_label.setStyleSheet("font-weight: 700; color: #344054;")
@@ -384,6 +439,12 @@ class ThumbnailPage(QWidget):
         self.height_spin.setSuffix(" px")
         self.canvas_form.addRow("幅", self.width_spin)
         self.canvas_form.addRow("高さ", self.height_spin)
+        preset_actions = QHBoxLayout()
+        self.canvas_save_button = QPushButton("このサイズを保存…")
+        self.canvas_delete_button = QPushButton("削除")
+        preset_actions.addWidget(self.canvas_save_button, 1)
+        preset_actions.addWidget(self.canvas_delete_button)
+        self.canvas_form.addRow("", preset_actions)
         settings_layout.addWidget(self.canvas_group)
 
         self.appearance_group = QGroupBox("見た目")
@@ -418,6 +479,18 @@ class ThumbnailPage(QWidget):
         )
         appearance_form.addRow("横位置", self.alignment_combo)
 
+        self.vertical_alignment_combo = QComboBox()
+        self._configure_combo(self.vertical_alignment_combo)
+        for alignment in VerticalAlignment:
+            self.vertical_alignment_combo.addItem(
+                VERTICAL_ALIGNMENT_LABELS[alignment],
+                alignment.value,
+            )
+        self.vertical_alignment_combo.setCurrentIndex(
+            self.vertical_alignment_combo.findData(VerticalAlignment.CENTER.value)
+        )
+        appearance_form.addRow("縦位置", self.vertical_alignment_combo)
+
         self.bold_check = QCheckBox("太字にする")
         self.bold_check.setChecked(True)
         appearance_form.addRow("", self.bold_check)
@@ -442,6 +515,71 @@ class ThumbnailPage(QWidget):
         )
         appearance_layout.addWidget(self.details_section)
         settings_layout.addWidget(self.appearance_group)
+
+        overlays_content = QWidget()
+        overlays_layout = QVBoxLayout(overlays_content)
+        overlays_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.label_group = QGroupBox("固定ラベル")
+        label_layout = QVBoxLayout(self.label_group)
+        self.label_enabled = QCheckBox("固定ラベルを表示する")
+        label_layout.addWidget(self.label_enabled)
+        self.label_details = QWidget()
+        label_form = QFormLayout(self.label_details)
+        self._configure_form(label_form)
+        self.label_text = QLineEdit()
+        self.label_text.setPlaceholderText("例：過去音声")
+        self.label_font = QFontComboBox()
+        self._configure_combo(self.label_font)
+        self.label_font_size = self._spin(8, 500, 28)
+        self.label_font_size.setSuffix(" px")
+        self._label_color = QColor("#FFFFFF")
+        self.label_color_button = QPushButton()
+        self._update_color_button(self.label_color_button, self._label_color)
+        self.label_position = self._position_combo(OverlayPosition.TOP_LEFT)
+        label_form.addRow("文字", self.label_text)
+        label_form.addRow("フォント", self.label_font)
+        label_form.addRow("文字サイズ", self.label_font_size)
+        label_form.addRow("文字色", self.label_color_button)
+        label_form.addRow("位置", self.label_position)
+        label_layout.addWidget(self.label_details)
+        overlays_layout.addWidget(self.label_group)
+
+        self.number_group = QGroupBox("連番")
+        number_layout = QVBoxLayout(self.number_group)
+        self.number_enabled = QCheckBox("画像内に連番を表示する")
+        number_layout.addWidget(self.number_enabled)
+        self.number_details = QWidget()
+        number_form = QFormLayout(self.number_details)
+        self._configure_form(number_form)
+        self.number_prefix = QLineEdit("#")
+        self.number_prefix.setMaxLength(20)
+        self.number_start = self._spin(0, 99999999, 1)
+        self.number_digits = self._spin(1, 8, 3)
+        self.number_font = QFontComboBox()
+        self._configure_combo(self.number_font)
+        self.number_font_size = self._spin(8, 500, 28)
+        self.number_font_size.setSuffix(" px")
+        self._number_color = QColor("#FFFFFF")
+        self.number_color_button = QPushButton()
+        self._update_color_button(self.number_color_button, self._number_color)
+        self.number_position = self._position_combo(OverlayPosition.TOP_RIGHT)
+        number_form.addRow("接頭辞", self.number_prefix)
+        number_form.addRow("開始番号", self.number_start)
+        number_form.addRow("桁数", self.number_digits)
+        number_form.addRow("フォント", self.number_font)
+        number_form.addRow("文字サイズ", self.number_font_size)
+        number_form.addRow("文字色", self.number_color_button)
+        number_form.addRow("位置", self.number_position)
+        number_layout.addWidget(self.number_details)
+        overlays_layout.addWidget(self.number_group)
+
+        self.overlays_section = CollapsibleSection(
+            "固定ラベル・連番",
+            "必要なときだけ、全画像に共通する文字や番号を追加します",
+            overlays_content,
+        )
+        settings_layout.addWidget(self.overlays_section)
 
         self.export_group = QGroupBox("保存")
         self.export_form = QFormLayout(self.export_group)
@@ -599,6 +737,14 @@ class ThumbnailPage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(splitter)
 
+        self.template_combo.currentIndexChanged.connect(
+            self._template_selection_changed
+        )
+        self.template_save_button.clicked.connect(self.save_template_as)
+        self.template_update_button.clicked.connect(self.update_template)
+        self.template_delete_button.clicked.connect(self.delete_template)
+        self.canvas_save_button.clicked.connect(self.save_canvas_preset)
+        self.canvas_delete_button.clicked.connect(self.delete_canvas_preset)
         self.canvas_preset_combo.currentIndexChanged.connect(
             self._canvas_preset_changed
         )
@@ -610,14 +756,32 @@ class ThumbnailPage(QWidget):
             self.margin_spin,
             self.max_lines_spin,
             self.quality_spin,
+            self.label_font_size,
+            self.number_start,
+            self.number_digits,
+            self.number_font_size,
         ):
-            spin.valueChanged.connect(self.schedule_preview)
-        self.font_combo.currentFontChanged.connect(self.schedule_preview)
-        self.bold_check.toggled.connect(self.schedule_preview)
-        self.alignment_combo.currentIndexChanged.connect(self.schedule_preview)
+            spin.valueChanged.connect(self._design_changed)
+        self.font_combo.currentFontChanged.connect(self._design_changed)
+        self.label_font.currentFontChanged.connect(self._design_changed)
+        self.number_font.currentFontChanged.connect(self._design_changed)
+        self.bold_check.toggled.connect(self._design_changed)
+        self.alignment_combo.currentIndexChanged.connect(self._design_changed)
+        self.vertical_alignment_combo.currentIndexChanged.connect(
+            self._design_changed
+        )
+        self.label_enabled.toggled.connect(self._overlay_visibility_changed)
+        self.number_enabled.toggled.connect(self._overlay_visibility_changed)
+        self.label_text.textChanged.connect(self._design_changed)
+        self.number_prefix.textChanged.connect(self._design_changed)
+        self.label_position.currentIndexChanged.connect(self._design_changed)
+        self.number_position.currentIndexChanged.connect(self._design_changed)
+        self.label_color_button.clicked.connect(self._choose_label_color)
+        self.number_color_button.clicked.connect(self._choose_number_color)
         self.format_combo.currentIndexChanged.connect(self._format_changed)
         self._canvas_preset_changed()
         self._format_changed()
+        self._overlay_visibility_changed()
 
     @staticmethod
     def _configure_form(form: QFormLayout) -> None:
@@ -640,6 +804,18 @@ class ThumbnailPage(QWidget):
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
+
+    @classmethod
+    def _position_combo(
+        cls,
+        default: OverlayPosition,
+    ) -> QComboBox:
+        combo = QComboBox()
+        cls._configure_combo(combo)
+        for position in OverlayPosition:
+            combo.addItem(POSITION_LABELS[position], position.value)
+        combo.setCurrentIndex(combo.findData(default.value))
+        return combo
 
     @staticmethod
     def _spin(minimum: int, maximum: int, value: int) -> QSpinBox:
@@ -687,6 +863,266 @@ class ThumbnailPage(QWidget):
             "border: 1px solid #d4d8de; }"
         )
 
+    def _populate_templates(self, selected_id: str = "") -> None:
+        self._applying_template = True
+        self.template_combo.clear()
+        for template in self.template_store.templates():
+            label = (
+                f"{template.name}（標準）"
+                if template.built_in
+                else template.name
+            )
+            self.template_combo.addItem(label, template.template_id)
+        target = selected_id or self.template_store.last_selected_template
+        index = self.template_combo.findData(target)
+        self.template_combo.setCurrentIndex(max(0, index))
+        self._selected_template_id = str(self.template_combo.currentData() or "")
+        self._applying_template = False
+        self._update_template_actions()
+
+    def _populate_canvas_presets(self, selected_name: str = "") -> None:
+        combo = getattr(self, "canvas_preset_combo", None)
+        if combo is None:
+            return
+        with QSignalBlocker(combo):
+            combo.clear()
+            for preset in self.template_store.canvas_presets():
+                combo.addItem(preset.name, preset)
+            combo.addItem(CUSTOM_CANVAS_LABEL, None)
+            index = combo.findText(selected_name) if selected_name else -1
+            combo.setCurrentIndex(index if index >= 0 else 0)
+
+    def _selected_template(self) -> ThumbnailTemplate | None:
+        return self.template_store.get_template(
+            str(self.template_combo.currentData() or "")
+        )
+
+    @Slot()
+    def _template_selection_changed(self, *_args) -> None:
+        if self._applying_template:
+            return
+        self._apply_selected_template()
+
+    def _apply_selected_template(self) -> None:
+        template = self._selected_template()
+        if template is None:
+            return
+        self._applying_template = True
+        settings = template.settings
+        self._selected_template_id = template.template_id
+        self._populate_canvas_presets(settings.canvas_preset_name)
+        preset_index = self.canvas_preset_combo.findText(settings.canvas_preset_name)
+        matching = (
+            preset_index >= 0
+            and isinstance(
+                self.canvas_preset_combo.itemData(preset_index),
+                CanvasPreset,
+            )
+            and self.canvas_preset_combo.itemData(preset_index).width == settings.width
+            and self.canvas_preset_combo.itemData(preset_index).height == settings.height
+        )
+        if not matching:
+            preset_index = self.canvas_preset_combo.findText(CUSTOM_CANVAS_LABEL)
+        self.canvas_preset_combo.setCurrentIndex(preset_index)
+        self.width_spin.setValue(settings.width)
+        self.height_spin.setValue(settings.height)
+        self._background_color = QColor(settings.background_color)
+        self._font_color = QColor(settings.font_color)
+        self._update_color_button(self.background_button, self._background_color)
+        self._update_color_button(self.font_color_button, self._font_color)
+        self._set_font_family(self.font_combo, settings.font_family)
+        self.font_size_spin.setValue(settings.font_size)
+        self.min_font_size_spin.setValue(settings.min_font_size)
+        self.bold_check.setChecked(settings.bold)
+        self.alignment_combo.setCurrentIndex(
+            self.alignment_combo.findData(settings.alignment.value)
+        )
+        self.vertical_alignment_combo.setCurrentIndex(
+            self.vertical_alignment_combo.findData(
+                settings.vertical_alignment.value
+            )
+        )
+        self.margin_spin.setValue(settings.margin)
+        self.max_lines_spin.setValue(settings.max_lines)
+
+        label = settings.fixed_label
+        self._additional_labels = copy.deepcopy(settings.labels[1:])
+        self.label_enabled.setChecked(label.enabled)
+        self.label_text.setText(label.text)
+        self._set_font_family(self.label_font, label.font_family)
+        self.label_font_size.setValue(label.font_size)
+        self._label_color = QColor(label.color)
+        self._update_color_button(self.label_color_button, self._label_color)
+        self.label_position.setCurrentIndex(
+            self.label_position.findData(label.position.value)
+        )
+
+        numbering = settings.numbering
+        self.number_enabled.setChecked(numbering.enabled)
+        self.number_prefix.setText(numbering.prefix)
+        self.number_start.setValue(numbering.start_number)
+        self.number_digits.setValue(numbering.digits)
+        self._set_font_family(self.number_font, numbering.font_family)
+        self.number_font_size.setValue(numbering.font_size)
+        self._number_color = QColor(numbering.color)
+        self._update_color_button(self.number_color_button, self._number_color)
+        self.number_position.setCurrentIndex(
+            self.number_position.findData(numbering.position.value)
+        )
+        self.format_combo.setCurrentIndex(
+            self.format_combo.findData(settings.output_format.value)
+        )
+        self.quality_spin.setValue(settings.quality)
+        self._applying_template = False
+
+        self._canvas_preset_changed()
+        self._format_changed()
+        self._overlay_visibility_changed()
+        try:
+            self.template_store.set_last_selected(template.template_id)
+        except ThumbnailStorageError as exc:
+            LOGGER.warning("Template selection state not saved: %s", exc)
+        self._update_template_actions()
+        self.schedule_preview()
+
+    @staticmethod
+    def _set_font_family(combo: QFontComboBox, family: str) -> None:
+        index = combo.findText(family)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    def _update_template_actions(self) -> None:
+        template = self._selected_template()
+        user_template = bool(template and not template.built_in)
+        self.template_update_button.setEnabled(user_template and not self._processing)
+        self.template_delete_button.setEnabled(user_template and not self._processing)
+        self.template_save_button.setEnabled(not self._processing)
+        if template is None:
+            self.template_status.setText("")
+            return
+        current = settings_to_dict(self.settings()) if hasattr(self, "width_spin") else {}
+        saved = settings_to_dict(template.settings)
+        if current == saved:
+            state = "保存済み" if user_template else "標準テンプレート"
+        else:
+            state = "未保存の変更（切替で破棄）"
+        self.template_status.setText(state)
+
+    @Slot()
+    def save_template_as(self) -> None:
+        name, accepted = QInputDialog.getText(
+            self,
+            "テンプレートとして保存",
+            "テンプレート名",
+            QLineEdit.EchoMode.Normal,
+        )
+        if not accepted:
+            return
+        try:
+            template = self.template_store.create_template(name, self.settings())
+        except ThumbnailStorageError as exc:
+            QMessageBox.warning(self, "保存できません", str(exc))
+            return
+        self._populate_templates(template.template_id)
+        self._apply_selected_template()
+
+    @Slot()
+    def update_template(self) -> None:
+        template = self._selected_template()
+        if template is None or template.built_in:
+            return
+        try:
+            self.template_store.update_template(template.template_id, self.settings())
+        except ThumbnailStorageError as exc:
+            QMessageBox.warning(self, "更新できません", str(exc))
+            return
+        self._populate_templates(template.template_id)
+        self._update_template_actions()
+
+    @Slot()
+    def delete_template(self) -> None:
+        template = self._selected_template()
+        if template is None or template.built_in:
+            return
+        answer = QMessageBox.question(
+            self,
+            "テンプレートを削除",
+            f"「{template.name}」を削除しますか？",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.template_store.delete_template(template.template_id)
+        except ThumbnailStorageError as exc:
+            QMessageBox.warning(self, "削除できません", str(exc))
+            return
+        self._populate_templates(self.template_store.last_selected_template)
+        self._apply_selected_template()
+
+    @Slot()
+    def save_canvas_preset(self) -> None:
+        name, accepted = QInputDialog.getText(
+            self,
+            "サイズPresetとして保存",
+            "Preset名",
+            QLineEdit.EchoMode.Normal,
+        )
+        if not accepted:
+            return
+        try:
+            preset = self.template_store.add_canvas_preset(
+                name,
+                self.width_spin.value(),
+                self.height_spin.value(),
+            )
+        except ThumbnailStorageError as exc:
+            QMessageBox.warning(self, "保存できません", str(exc))
+            return
+        self._populate_canvas_presets(preset.name)
+        self._canvas_preset_changed()
+
+    @Slot()
+    def delete_canvas_preset(self) -> None:
+        preset = self.canvas_preset_combo.currentData()
+        if not isinstance(preset, CanvasPreset):
+            return
+        try:
+            self.template_store.delete_canvas_preset(preset.name)
+        except ThumbnailStorageError as exc:
+            QMessageBox.warning(self, "削除できません", str(exc))
+            return
+        self._populate_canvas_presets()
+        self._canvas_preset_changed()
+
+    @Slot()
+    def _choose_label_color(self) -> None:
+        color = QColorDialog.getColor(self._label_color, self, "固定ラベルの色")
+        if color.isValid():
+            self._label_color = color
+            self._update_color_button(self.label_color_button, color)
+            self._design_changed()
+
+    @Slot()
+    def _choose_number_color(self) -> None:
+        color = QColorDialog.getColor(self._number_color, self, "連番の色")
+        if color.isValid():
+            self._number_color = color
+            self._update_color_button(self.number_color_button, color)
+            self._design_changed()
+
+    @Slot()
+    def _overlay_visibility_changed(self, *_args) -> None:
+        self.label_details.setVisible(self.label_enabled.isChecked())
+        self.number_details.setVisible(self.number_enabled.isChecked())
+        self._design_changed()
+
+    @Slot()
+    def _design_changed(self, *_args) -> None:
+        if self._applying_template:
+            return
+        self._update_template_actions()
+        self.schedule_preview()
+
     @Slot()
     def _choose_background(self) -> None:
         color = QColorDialog.getColor(
@@ -697,7 +1133,7 @@ class ThumbnailPage(QWidget):
         if color.isValid():
             self._background_color = color
             self._update_color_button(self.background_button, color)
-            self.schedule_preview()
+            self._design_changed()
 
     @Slot()
     def _choose_font_color(self) -> None:
@@ -709,7 +1145,7 @@ class ThumbnailPage(QWidget):
         if color.isValid():
             self._font_color = color
             self._update_color_button(self.font_color_button, color)
-            self.schedule_preview()
+            self._design_changed()
 
     @Slot()
     def _canvas_preset_changed(self, *_args) -> None:
@@ -722,13 +1158,18 @@ class ThumbnailPage(QWidget):
         self.canvas_form.setRowVisible(self.height_spin, custom)
         self.width_spin.setEnabled(custom and not self._processing)
         self.height_spin.setEnabled(custom and not self._processing)
+        self.canvas_delete_button.setEnabled(
+            isinstance(preset, CanvasPreset)
+            and self.template_store.is_user_preset(preset.name)
+            and not self._processing
+        )
         self._update_canvas_size_label()
-        self.schedule_preview()
+        self._design_changed()
 
     @Slot()
     def _canvas_dimension_changed(self, *_args) -> None:
         self._update_canvas_size_label()
-        self.schedule_preview()
+        self._design_changed()
 
     def _update_canvas_size_label(self) -> None:
         self.canvas_size_label.setText(
@@ -739,7 +1180,7 @@ class ThumbnailPage(QWidget):
     def _format_changed(self, *_args) -> None:
         jpeg = self.format_combo.currentData() == ThumbnailFormat.JPEG.value
         self.quality_spin.setEnabled(jpeg and not self._processing)
-        self.schedule_preview()
+        self._design_changed()
 
     def records(self) -> list[TitleRecord]:
         return parse_title_records(self.titles_edit.toPlainText())
@@ -758,9 +1199,34 @@ class ThumbnailPage(QWidget):
             min_font_size=minimum,
             font_color=self._font_color.name(),
             bold=self.bold_check.isChecked(),
+            canvas_preset_name=self.canvas_preset_combo.currentText(),
             alignment=TextAlignment(self.alignment_combo.currentData()),
+            vertical_alignment=VerticalAlignment(
+                self.vertical_alignment_combo.currentData()
+            ),
             margin=self.margin_spin.value(),
             max_lines=self.max_lines_spin.value(),
+            labels=[
+                FixedLabelSettings(
+                    enabled=self.label_enabled.isChecked(),
+                    text=self.label_text.text(),
+                    font_family=self.label_font.currentFont().family(),
+                    font_size=self.label_font_size.value(),
+                    color=self._label_color.name(),
+                    position=OverlayPosition(self.label_position.currentData()),
+                ),
+                *copy.deepcopy(self._additional_labels),
+            ],
+            numbering=NumberingSettings(
+                enabled=self.number_enabled.isChecked(),
+                prefix=self.number_prefix.text(),
+                start_number=self.number_start.value(),
+                digits=self.number_digits.value(),
+                font_family=self.number_font.currentFont().family(),
+                font_size=self.number_font_size.value(),
+                color=self._number_color.name(),
+                position=OverlayPosition(self.number_position.currentData()),
+            ),
             output_format=ThumbnailFormat(self.format_combo.currentData()),
             quality=self.quality_spin.value(),
         )
@@ -823,7 +1289,7 @@ class ThumbnailPage(QWidget):
         self.previous_button.setEnabled(total > 1)
         self.next_button.setEnabled(total > 1)
         try:
-            rendered = render_thumbnail(record.title, self.settings())
+            rendered = render_thumbnail(record.title, self.settings(), record.index)
             self.preview.set_image(rendered.image)
             self.preview_status.setStyleSheet("color: #5f6368;")
             self.preview_status.setText(
@@ -848,6 +1314,10 @@ class ThumbnailPage(QWidget):
             self.output_folder = Path(folder)
             self.folder_label.setText(str(self.output_folder))
             self.folder_label.setToolTip(str(self.output_folder))
+            try:
+                self.template_store.set_last_output_folder(self.output_folder)
+            except ThumbnailStorageError as exc:
+                LOGGER.warning("Output folder state not saved: %s", exc)
 
     @Slot()
     def generate_all(self) -> None:
@@ -902,6 +1372,12 @@ class ThumbnailPage(QWidget):
         for widget in (
             self.titles_edit,
             self.generate_button,
+            self.template_combo,
+            self.template_save_button,
+            self.template_update_button,
+            self.template_delete_button,
+            self.canvas_save_button,
+            self.canvas_delete_button,
             self.canvas_preset_combo,
             self.background_button,
             self.font_color_button,
@@ -913,6 +1389,21 @@ class ThumbnailPage(QWidget):
             self.min_font_size_spin,
             self.bold_check,
             self.alignment_combo,
+            self.vertical_alignment_combo,
+            self.label_enabled,
+            self.label_text,
+            self.label_font,
+            self.label_font_size,
+            self.label_color_button,
+            self.label_position,
+            self.number_enabled,
+            self.number_prefix,
+            self.number_start,
+            self.number_digits,
+            self.number_font,
+            self.number_font_size,
+            self.number_color_button,
+            self.number_position,
             self.margin_spin,
             self.max_lines_spin,
             self.format_combo,
@@ -922,7 +1413,9 @@ class ThumbnailPage(QWidget):
         if not processing:
             self._canvas_preset_changed()
             self._format_changed()
+            self._overlay_visibility_changed()
             self.generate_button.setEnabled(bool(self.records()))
+        self._update_template_actions()
         self.processing_changed.emit(processing)
 
     @Slot(int, str, str)
@@ -961,6 +1454,15 @@ class ThumbnailPage(QWidget):
         self._worker = None
         self._thread = None
         self._set_processing(False)
+
+    def save_state(self) -> None:
+        try:
+            selected = str(self.template_combo.currentData() or "")
+            if selected:
+                self.template_store.set_last_selected(selected)
+            self.template_store.set_last_output_folder(self.output_folder)
+        except ThumbnailStorageError as exc:
+            LOGGER.warning("Thumbnail page state not saved: %s", exc)
 
     def can_close(self) -> bool:
         return self._thread is None

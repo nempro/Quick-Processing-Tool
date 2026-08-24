@@ -1047,9 +1047,11 @@ class MainWindow(QMainWindow):
             )
         else:
             self.statusBar().showMessage(f"完了 · {succeeded}件を保存しました")
+
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._thread is not None or not self.thumbnail_page.can_close():
             QMessageBox.information(self, "処理中", "処理の完了後に閉じてください。")
             event.ignore()
             return
+        self.thumbnail_page.save_state()
         event.accept()

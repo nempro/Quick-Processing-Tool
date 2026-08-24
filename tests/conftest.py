@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import os
 import random
 from pathlib import Path
 
 import pytest
 from PIL import Image
+
+
+@pytest.fixture(scope="session", autouse=True)
+def isolated_application_data(tmp_path_factory: pytest.TempPathFactory):
+    previous = os.environ.get("QUICK_PROCESSING_TOOL_DATA_DIR")
+    os.environ["QUICK_PROCESSING_TOOL_DATA_DIR"] = str(
+        tmp_path_factory.mktemp("quick-processing-tool-data")
+    )
+    yield
+    if previous is None:
+        os.environ.pop("QUICK_PROCESSING_TOOL_DATA_DIR", None)
+    else:
+        os.environ["QUICK_PROCESSING_TOOL_DATA_DIR"] = previous
 
 
 @pytest.fixture
