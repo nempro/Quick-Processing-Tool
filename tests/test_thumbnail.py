@@ -512,6 +512,8 @@ def test_thumbnail_page_empty_state_and_canvas_presets() -> None:
     assert not page.generate_button.isEnabled()
     assert "タイトルをここへ貼り付け" in page.titles_edit.placeholderText()
     assert page.preview_position.text() == "0 / 0"
+    assert not page.result_destination.isVisible()
+    assert not page.open_result_folder_button.isEnabled()
     assert page.canvas_size_label.text() == "1200 × 1200 px"
     assert [(item.name, item.width, item.height) for item in CANVAS_PRESETS] == [
         ("1:1", 1200, 1200),
@@ -642,6 +644,42 @@ def test_batch_locks_all_design_controls() -> None:
     page.close()
 
 
+def test_generated_folder_button_opens_exact_output_folder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = ThumbnailPage()
+    page._last_generated_folder = tmp_path
+    page.result_folder_label.set_path(tmp_path)
+    page.result_destination.show()
+    page.open_result_folder_button.setEnabled(True)
+    opened: list[str] = []
+
+    def capture_open(url) -> bool:
+        opened.append(url.toLocalFile())
+        return True
+
+    monkeypatch.setattr(
+        "quick_processing_tool.thumbnail_ui.QDesktopServices.openUrl",
+        capture_open,
+    )
+    page.open_result_folder_button.click()
+    assert [Path(item) for item in opened] == [tmp_path]
+    page.close()
+
+
+def test_generated_folder_path_elides_but_tooltip_keeps_full_path(
+    tmp_path: Path,
+) -> None:
+    page = ThumbnailPage()
+    long_folder = tmp_path.joinpath(*(["very-long-folder-name"] * 8))
+    page.result_folder_label.resize(120, 32)
+    page.result_folder_label.set_path(long_folder)
+    assert page.result_folder_label.toolTip() == str(long_folder)
+    assert "…" in page.result_folder_label.text()
+    page.close()
+
+
 def test_fifty_title_ui_batch_runs_on_worker_thread(tmp_path: Path) -> None:
     app = QApplication.instance()
     assert app is not None
@@ -672,7 +710,10 @@ def test_fifty_title_ui_batch_runs_on_worker_thread(tmp_path: Path) -> None:
     app.processEvents()
 
     assert page._thread is None
-    assert page.result_label.text() == "50枚生成 / 0件失敗"
+    assert page.result_label.text() == "✓ 50枚生成しました"
+    assert not page.result_destination.isHidden()
+    assert page.result_folder_label.toolTip() == str(tmp_path.resolve())
+    assert page.open_result_folder_button.isEnabled()
     assert page.progress_count.text() == "50 / 50"
     assert page.progress.value() == 100
     assert len(list(tmp_path.glob("*.jpg"))) == 50
@@ -708,6 +749,9 @@ def test_page_reports_partial_failure_and_continues(tmp_path: Path) -> None:
 
     assert page._thread is None
     assert page.result_label.text().startswith("2枚生成 / 1件失敗")
+    assert not page.result_destination.isHidden()
+    assert page.result_folder_label.toolTip() == str(tmp_path.resolve())
+    assert page.open_result_folder_button.isEnabled()
     failed_item = page.result_tree.topLevelItem(1)
     assert failed_item.text(2) == "エラー"
     assert "収まりません" in failed_item.toolTip(2)

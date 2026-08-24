@@ -4,8 +4,8 @@ import copy
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSignalBlocker, QStandardPaths, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QBrush, QColor, QFontDatabase, QPainter, QPixmap
+from PySide6.QtCore import QObject, QSignalBlocker, QStandardPaths, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFontDatabase, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -234,6 +234,41 @@ class CollapsibleSection(QWidget):
         self.content.setVisible(expanded)
 
 
+class ElidedPathLabel(QLabel):
+    def __init__(self) -> None:
+        super().__init__()
+        self._full_path = ""
+        self.setMinimumWidth(0)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.setStyleSheet("color: #344054;")
+
+    def set_path(self, path: Path | None) -> None:
+        self._full_path = str(path) if path is not None else ""
+        self.setToolTip(self._full_path)
+        self.setAccessibleDescription(self._full_path)
+        self._update_elided_text()
+
+    def _update_elided_text(self) -> None:
+        available = max(80, self.width() - 4)
+        self.setText(
+            self.fontMetrics().elidedText(
+                self._full_path,
+                Qt.TextElideMode.ElideMiddle,
+                available,
+            )
+        )
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._update_elided_text()
+
+
 class ThumbnailPreview(QGraphicsView):
     def __init__(self) -> None:
         super().__init__()
@@ -354,6 +389,7 @@ class ThumbnailPage(QWidget):
         self._worker: ThumbnailWorker | None = None
         self._processing = False
         self._batch_total = 0
+        self._last_generated_folder: Path | None = None
         self._background_color = QColor("#171923")
         self._font_color = QColor("#FFFFFF")
         self._preview_timer = QTimer(self)
@@ -698,6 +734,23 @@ class ThumbnailPage(QWidget):
         self.result_label = QLabel("")
         self.result_label.setWordWrap(True)
         batch_layout.addWidget(self.result_label)
+
+        self.result_destination = QWidget()
+        destination_layout = QVBoxLayout(self.result_destination)
+        destination_layout.setContentsMargins(0, 2, 0, 4)
+        destination_layout.setSpacing(4)
+        destination_heading = QLabel("保存先")
+        destination_heading.setStyleSheet("font-weight: 700; color: #344054;")
+        self.result_folder_label = ElidedPathLabel()
+        self.open_result_folder_button = QPushButton("保存先を開く")
+        self.open_result_folder_button.clicked.connect(
+            self.open_result_folder
+        )
+        destination_layout.addWidget(destination_heading)
+        destination_layout.addWidget(self.result_folder_label)
+        destination_layout.addWidget(self.open_result_folder_button)
+        self.result_destination.hide()
+        batch_layout.addWidget(self.result_destination)
 
         results_heading = QLabel("生成結果")
         results_heading.setStyleSheet("font-weight: 700;")
@@ -1253,8 +1306,16 @@ class ThumbnailPage(QWidget):
         self.generate_button.setEnabled(bool(records) and not self._processing)
         self.progress.setValue(0)
         self.progress_count.setText(f"0 / {count}")
-        self.result_label.clear()
+        self._reset_result_summary()
         self.schedule_preview()
+
+    def _reset_result_summary(self) -> None:
+        self.result_label.clear()
+        self.result_label.setStyleSheet("")
+        self.result_destination.hide()
+        self.result_folder_label.set_path(None)
+        self.open_result_folder_button.setEnabled(False)
+        self._last_generated_folder = None
 
     @Slot()
     def schedule_preview(self, *_args) -> None:
@@ -1340,9 +1401,13 @@ class ThumbnailPage(QWidget):
             return
 
         self._batch_total = len(records)
+        self._last_generated_folder = self.output_folder.resolve()
         self.progress.setValue(0)
         self.progress_count.setText(f"0 / {self._batch_total}")
+        self.result_label.setStyleSheet("color: #315fbd; font-weight: 700;")
         self.result_label.setText("生成を開始します…")
+        self.result_destination.hide()
+        self.open_result_folder_button.setEnabled(False)
         for row in range(self.result_tree.topLevelItemCount()):
             item = self.result_tree.topLevelItem(row)
             item.setText(2, "待機中")
@@ -1439,15 +1504,44 @@ class ThumbnailPage(QWidget):
         self.progress_count.setText(
             f"{self._batch_total} / {self._batch_total}"
         )
-        self.result_label.setText(
-            f"{succeeded}枚生成 / {failed}件失敗"
-            + (
-                "\n失敗内容は一覧の状態欄へ"
-                "マウスを合わせて確認できます"
-                if failed
-                else ""
+        if failed:
+            self.result_label.setStyleSheet(
+                "color: #9a6700; font-weight: 700;"
             )
+            self.result_label.setText(
+                f"{succeeded}枚生成 / {failed}件失敗\n"
+                "失敗内容は一覧の状態欄へマウスを合わせて確認できます"
+            )
+        else:
+            self.result_label.setStyleSheet(
+                "color: #137333; font-weight: 700;"
+            )
+            self.result_label.setText(f"✓ {succeeded}枚生成しました")
+
+        show_destination = (
+            succeeded > 0 and self._last_generated_folder is not None
         )
+        if show_destination:
+            self.result_folder_label.set_path(self._last_generated_folder)
+        self.open_result_folder_button.setEnabled(show_destination)
+        self.result_destination.setVisible(show_destination)
+
+    @Slot()
+    def open_result_folder(self) -> None:
+        folder = self._last_generated_folder
+        if folder is None or not folder.is_dir():
+            QMessageBox.warning(
+                self,
+                "保存先を開けません",
+                "生成画像の保存先が見つかりません。",
+            )
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+            QMessageBox.warning(
+                self,
+                "保存先を開けません",
+                "Windows Explorerで保存先を開けませんでした。",
+            )
 
     @Slot()
     def _clear_worker_refs(self) -> None:
