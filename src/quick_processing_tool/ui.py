@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStatusBar,
+    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -41,6 +42,7 @@ from .naming import unique_output_path
 from .pipeline import process_image, read_image_info, write_processed
 from .processors.resize import output_dimensions
 from .processors.transform import normalize_orientation
+from .thumbnail_ui import ThumbnailPage
 
 
 LOGGER = logging.getLogger(__name__)
@@ -192,6 +194,22 @@ class MainWindow(QMainWindow):
         toolbar.addActions([self.open_action, self.export_action, self.copy_action, self.reset_action])
 
     def _build_content(self) -> None:
+        self.navigation = QTabWidget()
+        self.navigation.setDocumentMode(True)
+        self.navigation.addTab(self._build_quick_page(), "Quick")
+        self.thumbnail_page = ThumbnailPage()
+        self.thumbnail_page.processing_changed.connect(self._thumbnail_processing_changed)
+        self.navigation.addTab(self.thumbnail_page, "文字サムネ")
+        for name in ("Edit", "Enhance", "Video"):
+            placeholder = QLabel(f"{name} · Future phase")
+            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            index = self.navigation.addTab(placeholder, name)
+            self.navigation.setTabEnabled(index, False)
+        self.navigation.currentChanged.connect(self._navigation_changed)
+        self.setCentralWidget(self.navigation)
+        self._navigation_changed(0)
+
+    def _build_quick_page(self) -> QWidget:
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._settings_panel())
 
@@ -219,7 +237,7 @@ class MainWindow(QMainWindow):
         batch_layout.addWidget(self.progress)
         splitter.addWidget(batch_box)
         splitter.setSizes([300, 580, 300])
-        self.setCentralWidget(splitter)
+        return splitter
 
     def _settings_panel(self) -> QWidget:
         content = QWidget()
@@ -337,6 +355,9 @@ class MainWindow(QMainWindow):
             self.load_paths([Path(name) for name in names])
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+        if self.navigation.currentIndex() != 0:
+            event.ignore()
+            return
         if self._thread is not None:
             event.ignore()
             return
@@ -347,6 +368,9 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
+        if self.navigation.currentIndex() != 0:
+            event.ignore()
+            return
         if self._thread is not None:
             event.ignore()
             return
@@ -531,6 +555,7 @@ class MainWindow(QMainWindow):
         self.export_action.setEnabled(False)
         self.copy_action.setEnabled(False)
         self.reset_action.setEnabled(False)
+        self.navigation.setTabEnabled(1, False)
         self._thread = QThread(self)
         self._worker = ProcessingWorker(
             paths,
@@ -557,10 +582,24 @@ class MainWindow(QMainWindow):
     def _clear_worker_refs(self) -> None:
         self._worker = None
         self._thread = None
-        self.open_action.setEnabled(True)
-        self.export_action.setEnabled(True)
-        self.copy_action.setEnabled(True)
-        self.reset_action.setEnabled(True)
+        self.navigation.setTabEnabled(1, True)
+        self._update_quick_actions()
+
+    @Slot(int)
+    def _navigation_changed(self, index: int) -> None:
+        del index
+        self._update_quick_actions()
+
+    def _update_quick_actions(self) -> None:
+        enabled = self.navigation.currentIndex() == 0 and self._thread is None
+        self.open_action.setEnabled(enabled)
+        self.export_action.setEnabled(enabled)
+        self.copy_action.setEnabled(enabled)
+        self.reset_action.setEnabled(enabled)
+
+    @Slot(bool)
+    def _thumbnail_processing_changed(self, processing: bool) -> None:
+        self.navigation.setTabEnabled(0, not processing)
 
     @Slot(int, str, str)
     def _on_file_status(self, index: int, status: str, detail: str) -> None:
@@ -588,7 +627,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Finished · {succeeded} done")
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        if self._thread is not None:
+        if self._thread is not None or not self.thumbnail_page.can_close():
             QMessageBox.information(self, "Processing", "処理の完了後に閉じてください。")
             event.ignore()
             return

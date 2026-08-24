@@ -103,11 +103,16 @@ def process_image(path: Path, options: ProcessingOptions) -> ProcessedImage:
 
 
 def write_processed(result: ProcessedImage, destination: Path, preserve_timestamp: bool) -> None:
+    created = False
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(result.data)
+        with destination.open("xb") as output:
+            created = True
+            output.write(result.data)
         if preserve_timestamp:
             source_stat = result.source.stat()
             os.utime(destination, (source_stat.st_atime, source_stat.st_mtime))
     except (OSError, PermissionError) as exc:
+        if created:
+            destination.unlink(missing_ok=True)
         raise ProcessingError(f"保存できません: {destination}") from exc

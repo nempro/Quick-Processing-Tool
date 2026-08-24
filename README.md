@@ -21,6 +21,14 @@ Python LauncherにPythonが登録されていない環境では、任意のPytho
 
 画像をウィンドウへDropするか、Openから選択します。複数画像は同じ設定で順に処理され、1件が失敗しても残りを続行します。
 
+## 文字サムネ — Phase 2A
+
+Main navigationの「文字サムネ」を開き、1行に1タイトルずつ貼り付けます。Simple Darkを基準にCanvas、Solid Background、インストール済みFont、Base/Minimum Font Size、色、配置、PNG/JPEGを設定し、Previewを確認してGenerateを押します。
+
+Previewと一括出力は同じQt Rendererを使用します。実Font Metricsによる自動改行・Auto Fitを行い、最小Font Sizeでも収まらないタイトルは切り捨てずErrorとして一覧に残します。出力名は001_title.jpg形式で、Windows禁止文字を置換し、既存ファイルを上書きしません。
+
+Template Save/Load、Gradient、背景画像、Outline、Shadow等はPhase 2B/2Cの対象で、Phase 2Aには含めていません。
+
 ## Tests
 
 ```powershell
