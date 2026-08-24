@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
 from .ui import MainWindow
@@ -26,6 +27,7 @@ def main() -> int:
     log_path = configure_logging()
     logging.getLogger(__name__).info("App start; log=%s", log_path)
     app = QApplication(sys.argv)
+    app.setFont(QFont("Meiryo UI", 9))
     app.setApplicationName("Quick Processing Tool")
     app.setOrganizationName("Quick Processing Tool")
     window = MainWindow()

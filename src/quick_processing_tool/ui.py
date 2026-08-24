@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import copy
 import ctypes
+import html
 import logging
 import sys
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QDragEnterEvent, QDropEvent, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
@@ -28,8 +30,10 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QSplitter,
+    QStackedLayout,
     QStatusBar,
     QTabWidget,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -47,6 +51,25 @@ from .thumbnail_ui import ThumbnailPage
 
 LOGGER = logging.getLogger(__name__)
 SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+RESIZE_LABELS = {
+    ResizeMode.NONE: "変更しない",
+    ResizeMode.DIMENSIONS: "幅と高さを指定",
+    ResizeMode.LONG_EDGE: "長辺を指定",
+    ResizeMode.PERCENTAGE: "倍率（%）",
+}
+FORMAT_LABELS = {
+    OutputFormat.SAME: "元の形式",
+    OutputFormat.PNG: "PNG",
+    OutputFormat.JPEG: "JPEG",
+    OutputFormat.WEBP: "WebP",
+}
+TRANSFORM_LABELS = {
+    Transform.ROTATE_LEFT: "左へ90°回転",
+    Transform.ROTATE_RIGHT: "右へ90°回転",
+    Transform.ROTATE_180: "180°回転",
+    Transform.FLIP_HORIZONTAL: "左右反転",
+    Transform.FLIP_VERTICAL: "上下反転",
+}
 
 
 def human_bytes(value: int) -> str:
@@ -98,6 +121,212 @@ class PreviewCanvas(QGraphicsView):
         self._fit()
 
 
+class DropZone(QWidget):
+    """Central, always-active image entry point with explicit interaction states."""
+
+    choose_requested = Signal()
+    paths_dropped = Signal(list)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("preview_drop_zone")
+        self.setAcceptDrops(True)
+        self._has_image = False
+        self.preview = PreviewCanvas()
+        self.preview.setAcceptDrops(False)
+        self.preview.viewport().setAcceptDrops(True)
+        self.preview.viewport().installEventFilter(self)
+
+        stack = QStackedLayout(self)
+        self._stack = stack
+        stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.addWidget(self.preview)
+
+        self.overlay = QFrame()
+        self.overlay.setObjectName("dropOverlay")
+        self.overlay.setAcceptDrops(True)
+        self.overlay.installEventFilter(self)
+        overlay_layout = QVBoxLayout(self.overlay)
+        overlay_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        overlay_layout.setSpacing(12)
+        overlay_layout.setContentsMargins(36, 36, 36, 36)
+
+        self.drop_icon = QLabel("＋")
+        self.drop_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.drop_icon.setStyleSheet(
+            "font-size: 42px; font-weight: 300; color: #315fbd;"
+            "background: #e8efff; border-radius: 32px; min-width: 64px; min-height: 64px;"
+        )
+        self.drop_title = QLabel()
+        self.drop_title.setObjectName("drop_hint_label")
+        self.drop_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.drop_title.setStyleSheet("font-size: 24px; font-weight: 700; color: #182230;")
+        self.drop_subtitle = QLabel()
+        self.drop_subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.drop_subtitle.setWordWrap(True)
+        self.drop_subtitle.setStyleSheet("font-size: 14px; line-height: 1.5; color: #5d6878;")
+        self.choose_button = QPushButton("画像を選ぶ")
+        self.choose_button.setObjectName("choose_image_button")
+        self.choose_button.setMinimumHeight(42)
+        self.choose_button.setMinimumWidth(160)
+        self.choose_button.setStyleSheet(
+            "QPushButton { background: #315fbd; color: white; border: 0; border-radius: 8px;"
+            "font-weight: 700; padding: 8px 20px; }"
+            "QPushButton:pressed { background: #244b99; }"
+        )
+        self.choose_button.clicked.connect(self.choose_requested)
+
+        overlay_layout.addStretch(1)
+        overlay_layout.addWidget(self.drop_icon, 0, Qt.AlignmentFlag.AlignHCenter)
+        overlay_layout.addWidget(self.drop_title)
+        overlay_layout.addWidget(self.drop_subtitle)
+        overlay_layout.addWidget(self.choose_button, 0, Qt.AlignmentFlag.AlignHCenter)
+        overlay_layout.addStretch(1)
+        stack.addWidget(self.overlay)
+        self.clear_image()
+
+    @staticmethod
+    def _paths_from_mime(mime_data) -> list[Path]:
+        if not mime_data.hasUrls():
+            return []
+        return [
+            Path(url.toLocalFile())
+            for url in mime_data.urls()
+            if url.isLocalFile()
+            and Path(url.toLocalFile()).is_file()
+            and Path(url.toLocalFile()).suffix.lower() in SUPPORTED_SUFFIXES
+        ]
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+        if self.isEnabled() and self._paths_from_mime(event.mimeData()):
+            self.set_drag_active(True)
+            event.acceptProposedAction()
+        else:
+            self.set_drag_active(False)
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if self.isEnabled() and self._paths_from_mime(event.mimeData()):
+            self.set_drag_active(True)
+            event.acceptProposedAction()
+        else:
+            self.set_drag_active(False)
+            event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        self.set_drag_active(False)
+        event.accept()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
+        paths = self._paths_from_mime(event.mimeData())
+        self.set_drag_active(False)
+        if paths and self.isEnabled():
+            self.paths_dropped.emit(paths)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        event_type = event.type()
+        if event_type == QEvent.Type.DragEnter:
+            self.dragEnterEvent(event)
+            return event.isAccepted()
+        if event_type == QEvent.Type.DragMove:
+            self.dragMoveEvent(event)
+            return event.isAccepted()
+        if event_type == QEvent.Type.DragLeave:
+            self.dragLeaveEvent(event)
+            return True
+        if event_type == QEvent.Type.Drop:
+            self.dropEvent(event)
+            return event.isAccepted()
+        return super().eventFilter(watched, event)
+
+    def set_image(self, image: QImage) -> None:
+        self.preview.set_image(image)
+        self._has_image = True
+        self.set_drag_active(False)
+
+    def clear_image(self) -> None:
+        self.preview.clear_image()
+        self._has_image = False
+        self.set_drag_active(False)
+
+    def set_drag_active(self, active: bool) -> None:
+        if active:
+            self._stack.setCurrentWidget(self.overlay)
+            self.drop_title.setText("ここにドロップして画像を読み込み")
+            self.drop_subtitle.setText("PNG / JPG / WebP・複数枚まとめて追加できます")
+            self.choose_button.hide()
+            self.drop_icon.setText("↓")
+            self.overlay.setStyleSheet(
+                "QFrame#dropOverlay { border: 3px dashed #315fbd; border-radius: 16px;"
+                "background: #eaf1ff; }"
+            )
+            self.overlay.show()
+            self.overlay.raise_()
+            return
+
+        self.drop_title.setText("画像をここにドロップ")
+        self.drop_subtitle.setText("PNG / JPG / WebP\n複数枚まとめて追加できます")
+        self.choose_button.show()
+        self.drop_icon.setText("＋")
+        self.overlay.setStyleSheet(
+            "QFrame#dropOverlay { border: 2px dashed #8f9bad; border-radius: 16px;"
+            "background: #f7f9fc; }"
+        )
+        if self._has_image:
+            self._stack.setCurrentWidget(self.preview)
+            self.overlay.hide()
+        else:
+            self._stack.setCurrentWidget(self.overlay)
+            self.overlay.show()
+            self.overlay.raise_()
+
+
+class CollapsibleSection(QWidget):
+    """Purpose-first settings section with immediate, predictable disclosure."""
+
+    def __init__(self, title: str, description: str, content: QWidget, expanded: bool = False) -> None:
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 8)
+        layout.setSpacing(6)
+
+        self.toggle = QToolButton()
+        self.toggle.setText(title)
+        self.toggle.setCheckable(True)
+        self.toggle.setChecked(expanded)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        self.toggle.setStyleSheet(
+            "QToolButton { text-align: left; font-size: 15px; font-weight: 700;"
+            "padding: 10px 8px; border: 0; background: #eef2f7; border-radius: 8px; }"
+            "QToolButton:hover { background: #e4eaf2; }"
+        )
+
+        self.description = QLabel(description)
+        self.description.setWordWrap(True)
+        self.description.setStyleSheet("color: #667085; padding: 0 10px 4px 28px;")
+        self.content = content
+        self.content.setVisible(expanded)
+        self.toggle.toggled.connect(self._set_expanded)
+
+        layout.addWidget(self.toggle)
+        layout.addWidget(self.description)
+        layout.addWidget(self.content)
+
+    @Slot(bool)
+    def _set_expanded(self, expanded: bool) -> None:
+        self.toggle.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        self.content.setVisible(expanded)
+
+
 class ProcessingWorker(QObject):
     progress = Signal(int)
     file_status = Signal(int, str, str)
@@ -142,7 +371,7 @@ class ProcessingWorker(QObject):
                 result = process_image(path, self.options)
                 if self.copy_mode:
                     self.copy_ready.emit(result.data)
-                    detail = f"Copied · {result.width} × {result.height} · {human_bytes(result.size_bytes)}"
+                    detail = f"コピー完了 · {result.width} × {result.height} · {human_bytes(result.size_bytes)}"
                 else:
                     destination = unique_output_path(self._folder_for(path), path, result.format)
                     write_processed(result, destination, self.options.preserve_timestamp)
@@ -175,36 +404,37 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._build_content()
         self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage("Drop PNG / JPEG / WebP here, or choose Open")
+        self.statusBar().showMessage("中央へ画像をドロップするか、「画像を開く」を選んでください")
 
     def _build_toolbar(self) -> None:
-        toolbar = self.addToolBar("Quick actions")
+        toolbar = self.addToolBar("かんたん変換")
         toolbar.setMovable(False)
-        self.open_action = QAction("Open", self)
+        self.open_action = QAction("画像を開く", self)
         self.open_action.setShortcut("Ctrl+O")
         self.open_action.triggered.connect(self.open_files)
-        self.export_action = QAction("Export", self)
+        self.export_action = QAction("画像を保存", self)
         self.export_action.setShortcut("Ctrl+S")
         self.export_action.triggered.connect(self.export_all)
-        self.copy_action = QAction("Copy", self)
+        self.copy_action = QAction("クリップボードにコピー", self)
         self.copy_action.setShortcut("Ctrl+C")
         self.copy_action.triggered.connect(self.copy_current)
-        self.reset_action = QAction("Reset", self)
+        self.reset_action = QAction("設定をリセット", self)
         self.reset_action.triggered.connect(self.reset_settings)
         toolbar.addActions([self.open_action, self.export_action, self.copy_action, self.reset_action])
 
     def _build_content(self) -> None:
         self.navigation = QTabWidget()
         self.navigation.setDocumentMode(True)
-        self.navigation.addTab(self._build_quick_page(), "Quick")
+        self.navigation.addTab(self._build_quick_page(), "かんたん変換")
         self.thumbnail_page = ThumbnailPage()
         self.thumbnail_page.processing_changed.connect(self._thumbnail_processing_changed)
         self.navigation.addTab(self.thumbnail_page, "文字サムネ")
-        for name in ("Edit", "Enhance", "Video"):
-            placeholder = QLabel(f"{name} · Future phase")
+        for name in ("画像加工", "高画質化", "動画加工"):
+            placeholder = QLabel(f"{name} · 今後追加予定")
             placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            index = self.navigation.addTab(placeholder, name)
+            index = self.navigation.addTab(placeholder, f"{name}（今後追加予定）")
             self.navigation.setTabEnabled(index, False)
+            self.navigation.setTabToolTip(index, "今後追加予定")
         self.navigation.currentChanged.connect(self._navigation_changed)
         self.setCentralWidget(self.navigation)
         self._navigation_changed(0)
@@ -214,21 +444,39 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self._settings_panel())
 
         center = QWidget()
+        center.setMinimumWidth(400)
         center_layout = QVBoxLayout(center)
-        self.preview = PreviewCanvas()
-        center_layout.addWidget(self.preview, 1)
-        self.info_label = QLabel("No image loaded")
+        center_layout.setContentsMargins(8, 8, 8, 8)
+        self.drop_zone = DropZone()
+        self.drop_zone.choose_requested.connect(self.open_files)
+        self.drop_zone.paths_dropped.connect(self.load_paths)
+        self.preview = self.drop_zone.preview
+        center_layout.addWidget(self.drop_zone, 1)
+        self.info_label = QLabel("")
+        self.info_label.setObjectName("preview_info_label")
         self.info_label.setWordWrap(True)
-        self.info_label.setStyleSheet("padding: 8px; background: #f2f3f5;")
+        self.info_label.setTextFormat(Qt.TextFormat.RichText)
+        self.info_label.setStyleSheet(
+            "padding: 12px 14px; background: #f4f6f8; border-radius: 8px; color: #273142;"
+        )
+        self.info_label.hide()
         center_layout.addWidget(self.info_label)
         splitter.addWidget(center)
 
         batch_box = QWidget()
+        batch_box.setObjectName("loaded_images_panel")
+        batch_box.setMinimumWidth(240)
         batch_layout = QVBoxLayout(batch_box)
-        batch_layout.setContentsMargins(0, 0, 0, 0)
-        batch_layout.addWidget(QLabel("Files"))
+        batch_layout.setContentsMargins(8, 8, 8, 8)
+        self.files_heading = QLabel("読み込んだ画像　0枚")
+        self.files_heading.setStyleSheet("font-size: 16px; font-weight: 700;")
+        batch_layout.addWidget(self.files_heading)
+        files_help = QLabel("ここではプレビューする画像を選択できます")
+        files_help.setWordWrap(True)
+        files_help.setStyleSheet("color: #667085;")
+        batch_layout.addWidget(files_help)
         self.file_tree = QTreeWidget()
-        self.file_tree.setHeaderLabels(["File", "Input", "Status"])
+        self.file_tree.setHeaderLabels(["ファイル名", "容量", "状態"])
         self.file_tree.setAlternatingRowColors(True)
         self.file_tree.currentItemChanged.connect(self._tree_selection_changed)
         batch_layout.addWidget(self.file_tree, 1)
@@ -236,111 +484,180 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         batch_layout.addWidget(self.progress)
         splitter.addWidget(batch_box)
-        splitter.setSizes([300, 580, 300])
+        splitter.setChildrenCollapsible(False)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 0)
+        splitter.setSizes([300, 620, 260])
         return splitter
 
     def _settings_panel(self) -> QWidget:
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.setSpacing(10)
 
-        resize_group = QGroupBox("Resize")
-        form = QFormLayout(resize_group)
+        heading = QLabel("何をしたいですか？")
+        heading.setStyleSheet("font-size: 20px; font-weight: 750; color: #182230;")
+        guidance = QLabel("必要な項目だけ開いて設定できます")
+        guidance.setStyleSheet("color: #667085; padding-bottom: 4px;")
+        layout.addWidget(heading)
+        layout.addWidget(guidance)
+
+        capacity_content = QWidget()
+        self.capacity_form = QFormLayout(capacity_content)
+        self.target_combo = QComboBox()
+        for label, value in (
+            ("指定しない", None),
+            ("500 KB以下", 500 * 1024),
+            ("1 MB以下", 1024 * 1024),
+            ("2 MB以下", 2 * 1024 * 1024),
+            ("5 MB以下", 5 * 1024 * 1024),
+            ("自由入力", "custom"),
+        ):
+            self.target_combo.addItem(label, value)
+        self.target_combo.currentIndexChanged.connect(self._settings_changed)
+        self.capacity_form.addRow("目標容量", self.target_combo)
+        self.custom_kb = self._spin(1, 1024 * 1024, 1024)
+        self.custom_kb.setSuffix(" KB")
+        self.custom_kb.valueChanged.connect(self._settings_changed)
+        self.capacity_form.addRow("自由入力", self.custom_kb)
+        self.quality_spin = self._spin(1, 100, 95)
+        self.quality_spin.setToolTip("目標容量以下になる最大画質を探索します")
+        self.quality_spin.valueChanged.connect(self._settings_changed)
+        self.capacity_form.addRow("画質の上限", self.quality_spin)
+        self.target_warning = QLabel(
+            "PNGのままでは容量目標を達成できない場合があります。"
+            "必要なら「画像形式を変える」でJPEGまたはWebPを選択してください。"
+        )
+        self.target_warning.setWordWrap(True)
+        self.target_warning.setStyleSheet("color: #b54708;")
+        self.capacity_form.addRow("", self.target_warning)
+        capacity_section = CollapsibleSection(
+            "容量を小さくする",
+            "1MB以下など、ファイル容量を減らします",
+            capacity_content,
+        )
+        capacity_content.setObjectName("capacity_settings")
+        layout.addWidget(capacity_section)
+
+        resize_content = QWidget()
+        self.resize_form = QFormLayout(resize_content)
         self.resize_mode = QComboBox()
         for mode in ResizeMode:
-            self.resize_mode.addItem(mode.value, mode)
+            self.resize_mode.addItem(RESIZE_LABELS[mode], mode)
         self.resize_mode.currentIndexChanged.connect(self._settings_changed)
-        form.addRow("Mode", self.resize_mode)
+        self.resize_form.addRow("変更方法", self.resize_mode)
         self.width_spin = self._spin(1, 30000, 1600)
         self.height_spin = self._spin(1, 30000, 1600)
-        self.aspect_check = QCheckBox("Keep aspect ratio")
+        self.aspect_check = QCheckBox("縦横比を維持")
         self.aspect_check.setChecked(True)
         self.long_edge_spin = self._spin(1, 30000, 1600)
         self.long_edge_spin.setSingleStep(128)
         self.percent_spin = self._spin(1, 1000, 100)
         self.percent_spin.setSuffix(" %")
-        for widget in (self.width_spin, self.height_spin, self.aspect_check, self.long_edge_spin, self.percent_spin):
+        for widget in (
+            self.width_spin,
+            self.height_spin,
+            self.aspect_check,
+            self.long_edge_spin,
+            self.percent_spin,
+        ):
             if isinstance(widget, QCheckBox):
                 widget.toggled.connect(self._settings_changed)
             else:
                 widget.valueChanged.connect(self._settings_changed)
-        form.addRow("Width", self.width_spin)
-        form.addRow("Height", self.height_spin)
-        form.addRow("", self.aspect_check)
-        form.addRow("Long edge", self.long_edge_spin)
-        form.addRow("Scale", self.percent_spin)
-        layout.addWidget(resize_group)
+        self.resize_form.addRow("幅", self.width_spin)
+        self.resize_form.addRow("高さ", self.height_spin)
+        self.resize_form.addRow("", self.aspect_check)
+        self.resize_form.addRow("長辺", self.long_edge_spin)
+        self.resize_form.addRow("倍率", self.percent_spin)
+        resize_section = CollapsibleSection(
+            "画像サイズを変更する",
+            "長辺1600px、50%などに変更します",
+            resize_content,
+        )
+        resize_content.setObjectName("resize_settings")
+        layout.addWidget(resize_section)
 
-        output_group = QGroupBox("Output")
-        output_form = QFormLayout(output_group)
+        format_content = QWidget()
+        self.format_form = QFormLayout(format_content)
         self.format_combo = QComboBox()
         for output_format in OutputFormat:
-            self.format_combo.addItem(output_format.value, output_format)
+            self.format_combo.addItem(FORMAT_LABELS[output_format], output_format)
         self.format_combo.currentIndexChanged.connect(self._settings_changed)
-        output_form.addRow("Format", self.format_combo)
-        self.target_combo = QComboBox()
-        for label, value in (("No target", None), ("≤ 500 KB", 500 * 1024), ("≤ 1 MB", 1024 * 1024),
-                             ("≤ 2 MB", 2 * 1024 * 1024), ("≤ 5 MB", 5 * 1024 * 1024), ("Custom", "custom")):
-            self.target_combo.addItem(label, value)
-        self.target_combo.currentIndexChanged.connect(self._settings_changed)
-        output_form.addRow("Target size", self.target_combo)
-        self.target_warning = QLabel("PNGは容量目標を達成できない場合があります。必要ならJPEGまたはWebPを選択してください。")
-        self.target_warning.setWordWrap(True)
-        self.target_warning.setStyleSheet("color: #b54708;")
-        output_form.addRow("", self.target_warning)
-        self.custom_kb = self._spin(1, 1024 * 1024, 1024)
-        self.custom_kb.setSuffix(" KB")
-        self.custom_kb.valueChanged.connect(self._settings_changed)
-        output_form.addRow("Custom", self.custom_kb)
-        self.quality_spin = self._spin(1, 100, 95)
-        self.quality_spin.setToolTip("Maximum quality; target-size mode searches below this value")
-        self.quality_spin.valueChanged.connect(self._settings_changed)
-        output_form.addRow("Max quality", self.quality_spin)
+        self.format_form.addRow("保存形式", self.format_combo)
         self.background_combo = QComboBox()
-        self.background_combo.addItems(["White", "Black"])
+        self.background_combo.addItem("白", (255, 255, 255))
+        self.background_combo.addItem("黒", (0, 0, 0))
         self.background_combo.currentIndexChanged.connect(self._settings_changed)
-        output_form.addRow("JPEG alpha", self.background_combo)
-        self.metadata_check = QCheckBox("Remove metadata (privacy)")
-        self.metadata_check.setChecked(True)
-        self.timestamp_check = QCheckBox("Preserve modified time")
-        self.timestamp_check.setChecked(True)
-        output_form.addRow("", self.metadata_check)
-        output_form.addRow("", self.timestamp_check)
-        layout.addWidget(output_group)
+        self.format_form.addRow("透明部分の背景", self.background_combo)
+        format_section = CollapsibleSection(
+            "画像形式を変える",
+            "PNG / JPEG / WebPへ変換します",
+            format_content,
+        )
+        format_content.setObjectName("format_settings")
+        layout.addWidget(format_section)
 
-        transform_group = QGroupBox("Rotate / Flip")
-        transform_layout = QVBoxLayout(transform_group)
+        transform_content = QWidget()
+        transform_layout = QVBoxLayout(transform_content)
+        transform_layout.setContentsMargins(0, 4, 0, 0)
         for transform in Transform:
-            button = QPushButton(transform.value)
-            button.clicked.connect(lambda checked=False, value=transform: self.add_transform(value))
+            button = QPushButton(TRANSFORM_LABELS[transform])
+            button.clicked.connect(
+                lambda checked=False, value=transform: self.add_transform(value)
+            )
             transform_layout.addWidget(button)
-        self.transform_label = QLabel("No transform")
+        self.transform_label = QLabel("変更なし")
         self.transform_label.setWordWrap(True)
+        self.transform_label.setStyleSheet("color: #667085; padding: 6px;")
         transform_layout.addWidget(self.transform_label)
-        layout.addWidget(transform_group)
+        transform_section = CollapsibleSection(
+            "回転・反転する",
+            "画像の向きを変更します",
+            transform_content,
+        )
+        transform_content.setObjectName("transform_settings")
+        layout.addWidget(transform_section)
 
-        folder_group = QGroupBox("Destination")
-        folder_form = QFormLayout(folder_group)
+        destination_content = QWidget()
+        self.destination_form = QFormLayout(destination_content)
         self.destination_combo = QComboBox()
-        self.destination_combo.addItems(["Same folder", "Desktop", "Custom folder"])
-        self.destination_combo.currentTextChanged.connect(self._destination_changed)
-        folder_form.addRow("Folder", self.destination_combo)
-        self.processed_check = QCheckBox("Use Processed subfolder")
+        self.destination_combo.addItem("元画像と同じ場所", "Same folder")
+        self.destination_combo.addItem("デスクトップ", "Desktop")
+        self.destination_combo.addItem("指定したフォルダー", "Custom folder")
+        self.destination_combo.currentIndexChanged.connect(self._destination_changed)
+        self.destination_form.addRow("保存先", self.destination_combo)
+        self.processed_check = QCheckBox("処理済みサブフォルダーを使う")
         self.processed_check.setChecked(True)
-        folder_form.addRow("", self.processed_check)
-        self.folder_button = QPushButton("Choose folder…")
+        self.destination_form.addRow("", self.processed_check)
+        self.folder_button = QPushButton("保存先を選ぶ…")
         self.folder_button.clicked.connect(self.choose_folder)
-        folder_form.addRow("", self.folder_button)
-        layout.addWidget(folder_group)
+        self.destination_form.addRow("", self.folder_button)
+        self.metadata_check = QCheckBox("位置情報・撮影情報などを削除")
+        self.metadata_check.setChecked(True)
+        self.timestamp_check = QCheckBox("元画像の更新日時を引き継ぐ")
+        self.timestamp_check.setChecked(True)
+        self.destination_form.addRow("", self.metadata_check)
+        self.destination_form.addRow("", self.timestamp_check)
+        destination_section = CollapsibleSection(
+            "保存先とプライバシー",
+            "保存場所、画像情報、更新日時を設定します",
+            destination_content,
+        )
+        destination_content.setObjectName("destination_settings")
+        layout.addWidget(destination_section)
+        layout.addStretch(1)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(content)
         scroll.setMinimumWidth(285)
-        self._destination_changed(self.destination_combo.currentText())
+        scroll.setMaximumWidth(340)
+        self._destination_changed()
         self._settings_changed()
         return scroll
-
     @staticmethod
     def _spin(minimum: int, maximum: int, value: int) -> QSpinBox:
         spin = QSpinBox()
@@ -350,64 +667,94 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def open_files(self) -> None:
-        names, _ = QFileDialog.getOpenFileNames(self, "Open images", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        names, _ = QFileDialog.getOpenFileNames(
+            self,
+            "画像を開く",
+            "",
+            "画像ファイル (*.png *.jpg *.jpeg *.webp)",
+        )
         if names:
             self.load_paths([Path(name) for name in names])
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
-        if self.navigation.currentIndex() != 0:
+        if self.navigation.currentIndex() != 0 or self._thread is not None:
+            self.drop_zone.set_drag_active(False)
             event.ignore()
             return
-        if self._thread is not None:
-            event.ignore()
-            return
-        if event.mimeData().hasUrls() and any(
-            url.isLocalFile() and Path(url.toLocalFile()).suffix.lower() in SUPPORTED_SUFFIXES
-            for url in event.mimeData().urls()
-        ):
+        if DropZone._paths_from_mime(event.mimeData()):
+            self.drop_zone.set_drag_active(True)
             event.acceptProposedAction()
+        else:
+            self.drop_zone.set_drag_active(False)
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        self.dragEnterEvent(event)
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        self.drop_zone.set_drag_active(False)
+        event.accept()
 
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
-        if self.navigation.currentIndex() != 0:
+        if self.navigation.currentIndex() != 0 or self._thread is not None:
             event.ignore()
             return
-        if self._thread is not None:
+        paths = DropZone._paths_from_mime(event.mimeData())
+        self.drop_zone.set_drag_active(False)
+        if paths:
+            self.load_paths(paths)
+            event.acceptProposedAction()
+        else:
             event.ignore()
-            return
-        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
-        self.load_paths(paths)
-        event.acceptProposedAction()
 
     def load_paths(self, paths: list[Path]) -> None:
         if self._thread is not None:
             return
         valid: list[ImageInfo] = []
         errors: list[str] = []
+        known_paths = {str(info.path.resolve()).casefold() for info in self.files}
+        duplicate_count = 0
         for path in paths:
             if path.suffix.lower() not in SUPPORTED_SUFFIXES:
-                errors.append(f"Unsupported format: {path.name}")
+                errors.append(f"対応していない形式です: {path.name}")
                 continue
             try:
                 info = read_image_info(path)
+                key = str(info.path.resolve()).casefold()
+                if key in known_paths:
+                    duplicate_count += 1
+                    continue
+                known_paths.add(key)
                 valid.append(info)
                 LOGGER.info("File open: %s", path)
             except ProcessingError as exc:
                 LOGGER.exception("File open failed: %s", path)
                 errors.append(str(exc))
         if valid:
-            self.files = valid
-            self.file_tree.clear()
+            was_empty = not self.files
+            first_new_row = len(self.files)
+            self.files.extend(valid)
             for info in valid:
-                item = QTreeWidgetItem([info.path.name, human_bytes(info.size_bytes), "Waiting"])
+                item = QTreeWidgetItem([info.path.name, human_bytes(info.size_bytes), "待機中"])
                 item.setToolTip(0, str(info.path))
                 self.file_tree.addTopLevelItem(item)
-            self.file_tree.setCurrentItem(self.file_tree.topLevelItem(0))
-            mode = "Single Image Mode" if len(valid) == 1 else f"Batch Mode · {len(valid)} images"
-            self.statusBar().showMessage(mode)
-            self.export_action.setText("Export" if len(valid) == 1 else "Convert All")
+            if was_empty:
+                self.file_tree.setCurrentItem(self.file_tree.topLevelItem(first_new_row))
+            count = len(self.files)
+            self.files_heading.setText(f"読み込んだ画像　{count}枚")
+            self.statusBar().showMessage(
+                "画像を1枚読み込みました"
+                if len(valid) == 1
+                else f"画像を{len(valid)}枚追加しました"
+            )
+            self.export_action.setText(
+                "画像を保存" if count == 1 else f"{count}枚をまとめて保存"
+            )
+            self._update_quick_actions()
+        elif duplicate_count:
+            self.statusBar().showMessage("すでに読み込まれている画像です")
         if errors:
-            QMessageBox.warning(self, "Some files could not be opened", "\n".join(errors))
-
+            QMessageBox.warning(self, "開けなかった画像があります", "\n".join(errors))
     @Slot(QTreeWidgetItem, QTreeWidgetItem)
     def _tree_selection_changed(self, current: QTreeWidgetItem | None, previous: QTreeWidgetItem | None) -> None:
         del previous
@@ -425,18 +772,24 @@ class MainWindow(QMainWindow):
                 image = normalize_orientation(opened).convert("RGBA")
                 image.thumbnail((2400, 2400), Image.Resampling.LANCZOS)
                 raw = image.tobytes("raw", "RGBA")
-                qimage = QImage(raw, image.width, image.height, image.width * 4, QImage.Format.Format_RGBA8888).copy()
-            self.preview.set_image(qimage)
+                qimage = QImage(
+                    raw,
+                    image.width,
+                    image.height,
+                    image.width * 4,
+                    QImage.Format.Format_RGBA8888,
+                ).copy()
+            self.drop_zone.set_image(qimage)
         except Exception:
             LOGGER.exception("Preview failed: %s", info.path)
-            self.preview.clear_image()
+            self.drop_zone.clear_image()
         self._settings_changed()
 
     def options(self) -> ProcessingOptions:
         target = self.target_combo.currentData()
         if target == "custom":
             target = self.custom_kb.value() * 1024
-        background = (255, 255, 255) if self.background_combo.currentText() == "White" else (0, 0, 0)
+        background = tuple(self.background_combo.currentData())
         return ProcessingOptions(
             resize_mode=ResizeMode(self.resize_mode.currentData()),
             width=self.width_spin.value(),
@@ -457,16 +810,30 @@ class MainWindow(QMainWindow):
     def _settings_changed(self) -> None:
         mode = ResizeMode(self.resize_mode.currentData())
         dimensions = mode is ResizeMode.DIMENSIONS
-        self.width_spin.setVisible(dimensions)
-        self.height_spin.setVisible(dimensions)
-        self.aspect_check.setVisible(dimensions)
-        self.long_edge_spin.setVisible(mode is ResizeMode.LONG_EDGE)
-        self.percent_spin.setVisible(mode is ResizeMode.PERCENTAGE)
-        self.custom_kb.setVisible(self.target_combo.currentData() == "custom")
+        self.resize_form.setRowVisible(self.width_spin, dimensions)
+        self.resize_form.setRowVisible(self.height_spin, dimensions)
+        self.resize_form.setRowVisible(self.aspect_check, dimensions)
+        self.resize_form.setRowVisible(
+            self.long_edge_spin, mode is ResizeMode.LONG_EDGE
+        )
+        self.resize_form.setRowVisible(
+            self.percent_spin, mode is ResizeMode.PERCENTAGE
+        )
+        self.capacity_form.setRowVisible(
+            self.custom_kb, self.target_combo.currentData() == "custom"
+        )
         selected = OutputFormat(self.format_combo.currentData())
+        self.format_form.setRowVisible(
+            self.background_combo, selected is OutputFormat.JPEG
+        )
         current_is_png = any(info.format == "PNG" for info in self.files)
-        output_is_png = selected is OutputFormat.PNG or (selected is OutputFormat.SAME and current_is_png)
-        self.target_warning.setVisible(self.target_combo.currentData() is not None and output_is_png)
+        output_is_png = selected is OutputFormat.PNG or (
+            selected is OutputFormat.SAME and current_is_png
+        )
+        self.capacity_form.setRowVisible(
+            self.target_warning,
+            self.target_combo.currentData() is not None and output_is_png,
+        )
         self._update_info()
 
     def _update_info(self) -> None:
@@ -479,17 +846,35 @@ class MainWindow(QMainWindow):
                 width, height = height, width
         out_width, out_height = output_dimensions(width, height, self.options())
         selected = OutputFormat(self.format_combo.currentData())
-        out_format = info.format if selected is OutputFormat.SAME else selected.value.upper()
-        target = self.target_combo.currentText()
-        size_plan = target if self.options().target_bytes else "Auto"
-        self.info_label.setText(
-            f"Original  ·  {info.path.name}  ·  {info.width} × {info.height}  ·  {info.format}  ·  {human_bytes(info.size_bytes)}\n"
-            f"Output  ·  {out_width} × {out_height}  ·  {out_format}  ·  {size_plan}"
+        out_format = (
+            info.format if selected is OutputFormat.SAME else FORMAT_LABELS[selected]
         )
+        unchanged = (
+            ResizeMode(self.resize_mode.currentData()) is ResizeMode.NONE
+            and selected is OutputFormat.SAME
+            and not self.transform_queue
+        )
+        if self.options().target_bytes:
+            size_plan = self.target_combo.currentText()
+        elif unchanged:
+            size_plan = f"約{human_bytes(info.size_bytes)}"
+        else:
+            size_plan = "容量は保存時に確定"
+        self.info_label.setText(
+            f"<b>元画像</b><br>"
+            f"{html.escape(info.path.name)}<br>"
+            f"{info.width} × {info.height} / {info.format} / "
+            f"{human_bytes(info.size_bytes)}"
+            f"<br><br><b>保存後（見込み）</b><br>"
+            f"{out_width} × {out_height} / {out_format} / {size_plan}"
+        )
+        self.info_label.show()
 
     def add_transform(self, transform: Transform) -> None:
         self.transform_queue.append(transform)
-        self.transform_label.setText(" → ".join(item.value for item in self.transform_queue))
+        self.transform_label.setText(
+            " → ".join(TRANSFORM_LABELS[item] for item in self.transform_queue)
+        )
         self._update_info()
 
     @Slot()
@@ -502,30 +887,37 @@ class MainWindow(QMainWindow):
         self.timestamp_check.setChecked(True)
         self.background_combo.setCurrentIndex(0)
         self.transform_queue.clear()
-        self.transform_label.setText("No transform")
+        self.transform_label.setText("変更なし")
         self.progress.setValue(0)
         for index in range(self.file_tree.topLevelItemCount()):
-            self.file_tree.topLevelItem(index).setText(2, "Waiting")
+            self.file_tree.topLevelItem(index).setText(2, "待機中")
         self._settings_changed()
 
-    @Slot(str)
-    def _destination_changed(self, value: str) -> None:
+    def _destination_changed(self, *_args) -> None:
+        value = self.destination_combo.currentData()
         self.folder_button.setEnabled(value == "Custom folder")
         self.processed_check.setEnabled(value == "Same folder")
 
     @Slot()
     def choose_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Choose output folder")
+        folder = QFileDialog.getExistingDirectory(self, "保存先を選ぶ")
         if folder:
             self.custom_folder = Path(folder)
-            self.folder_button.setText(self.custom_folder.name or str(self.custom_folder))
+            self.folder_button.setText(
+                self.custom_folder.name or str(self.custom_folder)
+            )
 
     @Slot()
     def export_all(self) -> None:
         if not self.files:
-            QMessageBox.information(self, "No image", "Open or drop an image first.")
+            QMessageBox.information(
+                self, "画像がありません", "先に画像を開くかドロップしてください。"
+            )
             return
-        if self.destination_combo.currentText() == "Custom folder" and not self.custom_folder:
+        if (
+            self.destination_combo.currentData() == "Custom folder"
+            and not self.custom_folder
+        ):
             self.choose_folder()
             if not self.custom_folder:
                 return
@@ -538,7 +930,9 @@ class MainWindow(QMainWindow):
     @Slot()
     def copy_current(self) -> None:
         if not 0 <= self.current_index < len(self.files):
-            QMessageBox.information(self, "No image", "Open or drop an image first.")
+            QMessageBox.information(
+                self, "画像がありません", "先に画像を開くかドロップしてください。"
+            )
             return
         self._start_worker(
             [self.files[self.current_index].path],
@@ -546,22 +940,28 @@ class MainWindow(QMainWindow):
             row_indices=[self.current_index],
         )
 
-    def _start_worker(self, paths: list[Path], copy_mode: bool, row_indices: list[int]) -> None:
+    def _start_worker(
+        self, paths: list[Path], copy_mode: bool, row_indices: list[int]
+    ) -> None:
         if self._thread is not None:
-            QMessageBox.information(self, "Processing", "Please wait for the current operation.")
+            QMessageBox.information(
+                self, "処理中", "現在の処理が終わるまでお待ちください。"
+            )
             return
         self.progress.setValue(0)
         self.open_action.setEnabled(False)
         self.export_action.setEnabled(False)
         self.copy_action.setEnabled(False)
         self.reset_action.setEnabled(False)
+        self.drop_zone.set_drag_active(False)
+        self.drop_zone.setEnabled(False)
         self.navigation.setTabEnabled(1, False)
         self._thread = QThread(self)
         self._worker = ProcessingWorker(
             paths,
             copy.deepcopy(self.options()),
             copy_mode,
-            self.destination_combo.currentText(),
+            self.destination_combo.currentData(),
             self.custom_folder,
             self.processed_check.isChecked(),
             row_indices,
@@ -577,11 +977,11 @@ class MainWindow(QMainWindow):
         self._thread.finished.connect(self._thread.deleteLater)
         self._thread.finished.connect(self._clear_worker_refs)
         self._thread.start()
-
     @Slot()
     def _clear_worker_refs(self) -> None:
         self._worker = None
         self._thread = None
+        self.drop_zone.setEnabled(True)
         self.navigation.setTabEnabled(1, True)
         self._update_quick_actions()
 
@@ -593,9 +993,12 @@ class MainWindow(QMainWindow):
     def _update_quick_actions(self) -> None:
         enabled = self.navigation.currentIndex() == 0 and self._thread is None
         self.open_action.setEnabled(enabled)
-        self.export_action.setEnabled(enabled)
-        self.copy_action.setEnabled(enabled)
+        self.export_action.setEnabled(enabled and bool(self.files))
+        self.copy_action.setEnabled(enabled and bool(self.files))
         self.reset_action.setEnabled(enabled)
+        if not enabled:
+            self.drop_zone.set_drag_active(False)
+        self.drop_zone.setEnabled(enabled)
 
     @Slot(bool)
     def _thumbnail_processing_changed(self, processing: bool) -> None:
@@ -603,32 +1006,47 @@ class MainWindow(QMainWindow):
 
     @Slot(int, str, str)
     def _on_file_status(self, index: int, status: str, detail: str) -> None:
+        status_label = {
+            "Processing": "処理中",
+            "Done": "完了",
+            "Error": "エラー",
+        }.get(status, status)
         if 0 <= index < self.file_tree.topLevelItemCount():
             item = self.file_tree.topLevelItem(index)
-            item.setText(2, status)
+            item.setText(2, status_label)
             item.setToolTip(2, detail)
-        self.statusBar().showMessage(detail or status)
+        self.statusBar().showMessage(detail or status_label)
 
     @Slot(bytes)
     def _set_clipboard(self, data: bytes) -> None:
         image = QImage()
         if not image.loadFromData(data):
-            QMessageBox.warning(self, "Clipboard error", "Clipboard用画像を作成できませんでした。")
+            QMessageBox.warning(
+                self,
+                "コピーできませんでした",
+                "クリップボード用画像を作成できませんでした。",
+            )
             return
         QApplication.clipboard().setImage(image)
-        self.statusBar().showMessage("Image copied to Clipboard")
+        self.statusBar().showMessage("画像をクリップボードにコピーしました")
 
     @Slot(int, int)
     def _on_finished(self, succeeded: int, failed: int) -> None:
         if failed:
-            self.statusBar().showMessage(f"Finished · {succeeded} done · {failed} error")
-            QMessageBox.warning(self, "Completed with errors", f"Done: {succeeded}\nError: {failed}\n詳細は一覧のTooltipとログを確認してください。")
+            self.statusBar().showMessage(
+                f"完了 · 成功 {succeeded}件 · エラー {failed}件"
+            )
+            QMessageBox.warning(
+                self,
+                "一部の処理でエラーが発生しました",
+                f"成功: {succeeded}件\nエラー: {failed}件\n"
+                "詳細は一覧のツールチップとログを確認してください。",
+            )
         else:
-            self.statusBar().showMessage(f"Finished · {succeeded} done")
-
+            self.statusBar().showMessage(f"完了 · {succeeded}件を保存しました")
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._thread is not None or not self.thumbnail_page.can_close():
-            QMessageBox.information(self, "Processing", "処理の完了後に閉じてください。")
+            QMessageBox.information(self, "処理中", "処理の完了後に閉じてください。")
             event.ignore()
             return
         event.accept()

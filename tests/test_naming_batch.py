@@ -58,7 +58,7 @@ def test_window_can_start_a_second_worker_after_thread_teardown(tmp_path: Path) 
     window = MainWindow()
     window.files = [read_image_info(source)]
     window.custom_folder = output
-    window.destination_combo.setCurrentText("Custom folder")
+    window.destination_combo.setCurrentIndex(window.destination_combo.findData("Custom folder"))
 
     for _ in range(2):
         window._start_worker([source], copy_mode=False, row_indices=[0])
