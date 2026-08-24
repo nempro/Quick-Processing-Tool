@@ -237,8 +237,8 @@ def test_quick_inputs_define_distinct_interaction_states(
         "QSpinBox:disabled",
     ):
         assert selector in style
-    assert "background-color: #e9eef4" in style
-    assert "border: 2px solid #315fbd" in style
+    assert "background-color: #dce5ef" in style
+    assert "border: 2px solid #2457b2" in style
     assert "background-color: #f3f4f6" in style
 
 def test_settings_are_purpose_first_and_future_tabs_are_disabled(

@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PIL import Image, ImageChops
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, QTimer, Qt
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import QApplication
 
@@ -270,6 +270,95 @@ def test_thumbnail_page_empty_state_and_canvas_presets() -> None:
     page.canvas_preset_combo.setCurrentIndex(page.canvas_preset_combo.count() - 1)
     assert page.width_spin.isEnabled()
     assert page.height_spin.isEnabled()
+    page.close()
+
+
+def test_thumbnail_layout_has_no_horizontal_scroll_and_balanced_columns() -> None:
+    app = QApplication.instance()
+    assert app is not None
+    page = ThumbnailPage()
+    page.resize(1180, 760)
+    page.show()
+    app.processEvents()
+
+    assert page.settings_scroll.horizontalScrollBarPolicy() == (
+        Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    )
+    assert page.settings_scroll.horizontalScrollBar().maximum() == 0
+    assert not page.settings_scroll.horizontalScrollBar().isVisible()
+    assert page.settings_content.width() <= page.settings_scroll.viewport().width()
+
+    sizes = page.workspace_splitter.sizes()
+    total = sum(sizes)
+    ratios = [size / total for size in sizes]
+    assert ratios[0] == pytest.approx(0.30, abs=0.02)
+    assert ratios[1] == pytest.approx(0.43, abs=0.02)
+    assert ratios[2] == pytest.approx(0.27, abs=0.02)
+
+    page.resize(900, 700)
+    app.processEvents()
+    narrow_sizes = page.workspace_splitter.sizes()
+    assert narrow_sizes[0] >= 280
+    assert narrow_sizes[1] >= 360
+    assert narrow_sizes[2] >= 250
+    assert page.settings_scroll.horizontalScrollBar().maximum() == 0
+    assert page.settings_content.width() <= page.settings_scroll.viewport().width()
+
+    page.resize(1440, 800)
+    app.processEvents()
+    wide_sizes = page.workspace_splitter.sizes()
+    assert wide_sizes[1] > wide_sizes[0] > wide_sizes[2]
+    assert page.settings_scroll.horizontalScrollBar().maximum() == 0
+    assert page.settings_content.width() <= page.settings_scroll.viewport().width()
+    page.close()
+
+
+def test_thumbnail_headings_are_role_based_without_step_numbers() -> None:
+    page = ThumbnailPage()
+    assert page.settings_heading.text() == "サムネイル設定"
+    assert page.canvas_group.title() == "サイズ"
+    assert page.appearance_group.title() == "見た目"
+    assert page.export_group.title() == "保存"
+    assert page.titles_heading.text() == "タイトル"
+    visible_headings = [
+        page.settings_heading.text(),
+        page.canvas_group.title(),
+        page.appearance_group.title(),
+        page.export_group.title(),
+        page.titles_heading.text(),
+    ]
+    assert not any(label[:2] in {"1.", "2.", "3.", "4."} for label in visible_headings)
+    page.close()
+
+
+def test_thumbnail_inputs_define_clear_interaction_states() -> None:
+    page = ThumbnailPage()
+    style = page.workspace_splitter.styleSheet()
+    for selector in (
+        "QComboBox:hover",
+        "QComboBox:focus",
+        "QComboBox:disabled",
+        "QSpinBox:hover",
+        "QSpinBox:focus",
+        "QSpinBox:disabled",
+        "QPlainTextEdit:hover",
+        "QPlainTextEdit:focus",
+        "QPlainTextEdit:disabled",
+        "QPushButton:hover",
+        "QPushButton:focus",
+        "QPushButton:disabled",
+        "QCheckBox:hover",
+        "QCheckBox:focus",
+        "QCheckBox:disabled",
+    ):
+        assert selector in style
+    assert "background-color: #dce5ef" in style
+    assert "border: 2px solid #2457b2" in style
+    assert "background-color: #f3f4f6" in style
+    toggle_style = page.details_section.toggle.styleSheet()
+    assert "QToolButton:hover" in toggle_style
+    assert "QToolButton:focus" in toggle_style
+    assert "QToolButton:disabled" in toggle_style
     page.close()
 
 

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QToolButton,
@@ -50,6 +51,7 @@ from .thumbnail_renderer import (
     render_thumbnail,
     write_thumbnail_output,
 )
+from .ui_styles import INPUT_CONTROL_STYLE
 
 
 LOGGER = logging.getLogger(__name__)
@@ -59,7 +61,7 @@ ALIGNMENT_LABELS = {
     TextAlignment.CENTER: "中央揃え",
     TextAlignment.RIGHT: "右揃え",
 }
-THUMBNAIL_STYLE = """
+THUMBNAIL_STYLE = INPUT_CONTROL_STYLE + """
 QGroupBox {
     font-size: 14px;
     font-weight: 700;
@@ -75,48 +77,10 @@ QGroupBox::title {
     padding: 0 5px;
     color: #182230;
 }
-QComboBox, QSpinBox {
-    background-color: #e9eef4;
-    color: #182230;
-    border: 1px solid #8d99a8;
-    border-radius: 6px;
-    padding: 5px 28px 5px 8px;
-    min-height: 28px;
-    selection-background-color: #315fbd;
-    selection-color: #ffffff;
-}
-QSpinBox {
-    padding-right: 22px;
-}
-QComboBox:hover, QSpinBox:hover {
-    background-color: #e2eaf3;
-    border-color: #617389;
-}
-QComboBox:focus, QSpinBox:focus {
-    background-color: #ffffff;
-    border: 2px solid #315fbd;
-    padding: 4px 27px 4px 7px;
-}
-QSpinBox:focus {
-    padding-right: 21px;
-}
-QComboBox:disabled, QSpinBox:disabled {
-    background-color: #f3f4f6;
-    color: #9aa1aa;
-    border: 1px solid #cfd4da;
-}
-QComboBox QAbstractItemView {
-    background-color: #ffffff;
-    color: #182230;
-    border: 1px solid #7a8796;
-    selection-background-color: #dce7ff;
-    selection-color: #182230;
-    outline: 0;
-}
 QPlainTextEdit {
-    background-color: #f7f9fc;
+    background-color: #f4f7fb;
     color: #182230;
-    border: 2px solid #7e8da0;
+    border: 2px solid #6f8094;
     border-radius: 8px;
     padding: 10px;
     font-size: 14px;
@@ -124,23 +88,62 @@ QPlainTextEdit {
     selection-color: #ffffff;
 }
 QPlainTextEdit:hover {
-    background-color: #f2f6fb;
-    border-color: #5f7187;
+    background-color: #edf3f9;
+    border-color: #405b79;
 }
 QPlainTextEdit:focus {
     background-color: #ffffff;
-    border: 2px solid #315fbd;
+    border: 2px solid #2457b2;
 }
 QPlainTextEdit:disabled {
     background-color: #f3f4f6;
     color: #9aa1aa;
-    border-color: #cfd4da;
+    border-color: #d4d8de;
+}
+QPushButton {
+    min-height: 28px;
+    background-color: #f5f7fa;
+    color: #182230;
+    border: 1px solid #7b899a;
+    border-radius: 6px;
+    padding: 5px 10px;
+}
+QPushButton:hover {
+    background-color: #e5edf6;
+    border-color: #405b79;
+}
+QPushButton:focus {
+    background-color: #ffffff;
+    border: 2px solid #2457b2;
+    padding: 4px 9px;
+}
+QPushButton:disabled {
+    background-color: #f3f4f6;
+    color: #9aa1aa;
+    border: 1px solid #d4d8de;
+}
+QCheckBox {
+    color: #182230;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    padding: 4px;
+}
+QCheckBox:hover {
+    background-color: #e5edf6;
+}
+QCheckBox:focus {
+    border-color: #2457b2;
+    background-color: #f7faff;
+}
+QCheckBox:disabled {
+    color: #9aa1aa;
+    background-color: transparent;
 }
 QPushButton#generateButton {
     min-height: 44px;
     background-color: #315fbd;
     color: #ffffff;
-    border: 0;
+    border: 1px solid #315fbd;
     border-radius: 8px;
     padding: 8px 16px;
     font-size: 15px;
@@ -148,6 +151,12 @@ QPushButton#generateButton {
 }
 QPushButton#generateButton:hover {
     background-color: #284fa1;
+    border-color: #284fa1;
+}
+QPushButton#generateButton:focus {
+    background-color: #284fa1;
+    border: 2px solid #173a82;
+    padding: 7px 15px;
 }
 QPushButton#generateButton:pressed {
     background-color: #203f82;
@@ -155,6 +164,7 @@ QPushButton#generateButton:pressed {
 QPushButton#generateButton:disabled {
     background-color: #d9dee6;
     color: #8f98a6;
+    border-color: #d9dee6;
 }
 """
 
@@ -174,8 +184,12 @@ class CollapsibleSection(QWidget):
         self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.toggle.setStyleSheet(
             "QToolButton { text-align: left; font-weight: 700; padding: 7px;"
-            "border: 0; background: #eef2f7; border-radius: 6px; }"
-            "QToolButton:hover { background: #e3eaf2; }"
+            "border: 1px solid #c3ceda; background: #e8eef5;"
+            "color: #182230; border-radius: 6px; }"
+            "QToolButton:hover { background: #dbe6f1; border-color: #405b79; }"
+            "QToolButton:focus { border: 2px solid #2457b2; padding: 6px; }"
+            "QToolButton:disabled { background: #f3f4f6; color: #9aa1aa;"
+            "border-color: #d4d8de; }"
         )
         self.description = QLabel(description)
         self.description.setWordWrap(True)
@@ -315,36 +329,48 @@ class ThumbnailPage(QWidget):
 
     def _build_ui(self) -> None:
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.workspace_splitter = splitter
         splitter.setObjectName("thumbnail_workspace")
         splitter.setStyleSheet(THUMBNAIL_STYLE)
 
         settings_scroll = QScrollArea()
+        self.settings_scroll = settings_scroll
         settings_scroll.setWidgetResizable(True)
-        settings_scroll.setMinimumWidth(300)
-        settings_scroll.setMaximumWidth(360)
+        settings_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        settings_scroll.setMinimumWidth(280)
+        settings_scroll.setMaximumWidth(560)
         settings_content = QWidget()
+        self.settings_content = settings_content
+        settings_content.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
         settings_layout = QVBoxLayout(settings_content)
         settings_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         settings_layout.setSpacing(10)
 
-        settings_heading = QLabel("サイズと見た目")
-        settings_heading.setStyleSheet(
+        self.settings_heading = QLabel("サムネイル設定")
+        self.settings_heading.setStyleSheet(
             "font-size: 20px; font-weight: 750; color: #182230;"
         )
         settings_intro = QLabel(
-            "代表1枚のプレビューを見ながら共通デザインを設定します"
+            "プレビューを見ながら共通デザインを設定します"
         )
         settings_intro.setWordWrap(True)
         settings_intro.setStyleSheet("color: #667085;")
-        settings_layout.addWidget(settings_heading)
+        settings_layout.addWidget(self.settings_heading)
         settings_layout.addWidget(settings_intro)
 
-        canvas_group = QGroupBox("2. サイズ")
-        self.canvas_form = QFormLayout(canvas_group)
+        self.canvas_group = QGroupBox("サイズ")
+        self.canvas_form = QFormLayout(self.canvas_group)
+        self._configure_form(self.canvas_form)
         self.canvas_preset_combo = QComboBox()
+        self._configure_combo(self.canvas_preset_combo)
         for preset in CANVAS_PRESETS:
             self.canvas_preset_combo.addItem(
-                f"{preset.name}　{preset.width} × {preset.height}",
+                preset.name,
                 preset,
             )
         self.canvas_preset_combo.addItem(CUSTOM_CANVAS_LABEL, None)
@@ -358,17 +384,19 @@ class ThumbnailPage(QWidget):
         self.height_spin.setSuffix(" px")
         self.canvas_form.addRow("幅", self.width_spin)
         self.canvas_form.addRow("高さ", self.height_spin)
-        settings_layout.addWidget(canvas_group)
+        settings_layout.addWidget(self.canvas_group)
 
-        appearance_group = QGroupBox("3. 見た目")
-        appearance_layout = QVBoxLayout(appearance_group)
+        self.appearance_group = QGroupBox("見た目")
+        appearance_layout = QVBoxLayout(self.appearance_group)
         appearance_form = QFormLayout()
+        self._configure_form(appearance_form)
         self.background_button = QPushButton()
         self.background_button.clicked.connect(self._choose_background)
         self._update_color_button(self.background_button, self._background_color)
         appearance_form.addRow("背景色", self.background_button)
 
         self.font_combo = QFontComboBox()
+        self._configure_combo(self.font_combo)
         self._select_default_font()
         appearance_form.addRow("フォント", self.font_combo)
 
@@ -382,6 +410,7 @@ class ThumbnailPage(QWidget):
         appearance_form.addRow("文字色", self.font_color_button)
 
         self.alignment_combo = QComboBox()
+        self._configure_combo(self.alignment_combo)
         for alignment in TextAlignment:
             self.alignment_combo.addItem(ALIGNMENT_LABELS[alignment], alignment.value)
         self.alignment_combo.setCurrentIndex(
@@ -396,6 +425,7 @@ class ThumbnailPage(QWidget):
 
         details_content = QWidget()
         details_form = QFormLayout(details_content)
+        self._configure_form(details_form)
         self.min_font_size_spin = self._spin(8, 500, 36)
         self.min_font_size_spin.setSuffix(" px")
         self.margin_spin = self._spin(0, 2000, 100)
@@ -411,11 +441,13 @@ class ThumbnailPage(QWidget):
             details_content,
         )
         appearance_layout.addWidget(self.details_section)
-        settings_layout.addWidget(appearance_group)
+        settings_layout.addWidget(self.appearance_group)
 
-        export_group = QGroupBox("4. 保存")
-        self.export_form = QFormLayout(export_group)
+        self.export_group = QGroupBox("保存")
+        self.export_form = QFormLayout(self.export_group)
+        self._configure_form(self.export_form)
         self.format_combo = QComboBox()
+        self._configure_combo(self.format_combo)
         for output_format in ThumbnailFormat:
             self.format_combo.addItem(output_format.value, output_format.value)
         self.format_combo.setCurrentIndex(
@@ -426,6 +458,12 @@ class ThumbnailPage(QWidget):
         self.export_form.addRow("JPEG品質", self.quality_spin)
         self.folder_label = QLabel(str(self.output_folder))
         self.folder_label.setWordWrap(True)
+        self.folder_label.setMinimumWidth(0)
+        self.folder_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.folder_label.setToolTip(str(self.output_folder))
         self.folder_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -433,14 +471,14 @@ class ThumbnailPage(QWidget):
         self.folder_button.clicked.connect(self.choose_output_folder)
         self.export_form.addRow("保存先", self.folder_label)
         self.export_form.addRow("", self.folder_button)
-        settings_layout.addWidget(export_group)
+        settings_layout.addWidget(self.export_group)
         settings_layout.addStretch(1)
 
         settings_scroll.setWidget(settings_content)
         splitter.addWidget(settings_scroll)
 
         center = QWidget()
-        center.setMinimumWidth(420)
+        center.setMinimumWidth(360)
         center_layout = QVBoxLayout(center)
         center_layout.setContentsMargins(8, 8, 8, 8)
         preview_heading = QLabel("プレビュー")
@@ -480,16 +518,16 @@ class ThumbnailPage(QWidget):
 
         batch = QWidget()
         batch.setObjectName("thumbnail_titles_panel")
-        batch.setMinimumWidth(350)
+        batch.setMinimumWidth(250)
         batch_layout = QVBoxLayout(batch)
         batch_layout.setContentsMargins(8, 8, 8, 8)
         batch_layout.setSpacing(8)
 
-        titles_heading = QLabel("1. タイトル")
-        titles_heading.setStyleSheet(
+        self.titles_heading = QLabel("タイトル")
+        self.titles_heading.setStyleSheet(
             "font-size: 20px; font-weight: 750; color: #182230;"
         )
-        batch_layout.addWidget(titles_heading)
+        batch_layout.addWidget(self.titles_heading)
         titles_help = QLabel("1行につき1枚のサムネイルを作成します")
         titles_help.setStyleSheet("color: #667085;")
         batch_layout.addWidget(titles_help)
@@ -552,10 +590,10 @@ class ThumbnailPage(QWidget):
         splitter.addWidget(batch)
 
         splitter.setChildrenCollapsible(False)
-        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 0)
-        splitter.setSizes([330, 600, 390])
+        splitter.setStretchFactor(2, 1)
+        splitter.setSizes([350, 500, 315])
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -582,10 +620,36 @@ class ThumbnailPage(QWidget):
         self._format_changed()
 
     @staticmethod
+    def _configure_form(form: QFormLayout) -> None:
+        form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+
+    @staticmethod
+    def _configure_combo(combo: QComboBox) -> None:
+        combo.setMinimumWidth(0)
+        combo.setMinimumContentsLength(10)
+        combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+
+    @staticmethod
     def _spin(minimum: int, maximum: int, value: int) -> QSpinBox:
         spin = QSpinBox()
         spin.setRange(minimum, maximum)
         spin.setValue(value)
+        spin.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         return spin
 
     def _select_default_font(self) -> None:
@@ -614,9 +678,13 @@ class ThumbnailPage(QWidget):
         contrast = "#000000" if color.lightness() > 150 else "#FFFFFF"
         button.setText(color.name().upper())
         button.setStyleSheet(
-            f"background: {color.name()}; color: {contrast};"
-            "border: 1px solid #7d8998; border-radius: 6px;"
-            "min-height: 30px; font-weight: 700;"
+            f"QPushButton {{ background: {color.name()}; color: {contrast};"
+            "border: 1px solid #65768a; border-radius: 6px;"
+            "min-height: 30px; font-weight: 700; }}"
+            "QPushButton:hover { border: 2px solid #2457b2; }"
+            "QPushButton:focus { border: 2px solid #173a82; }"
+            "QPushButton:disabled { background: #f3f4f6; color: #9aa1aa;"
+            "border: 1px solid #d4d8de; }"
         )
 
     @Slot()
@@ -779,6 +847,7 @@ class ThumbnailPage(QWidget):
         if folder:
             self.output_folder = Path(folder)
             self.folder_label.setText(str(self.output_folder))
+            self.folder_label.setToolTip(str(self.output_folder))
 
     @Slot()
     def generate_all(self) -> None:
