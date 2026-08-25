@@ -47,6 +47,7 @@ from .pipeline import process_image, read_image_info, write_processed
 from .processors.resize import output_dimensions
 from .processors.transform import normalize_orientation
 from .thumbnail_ui import ThumbnailPage
+from .edit_ui import QuickEditPage
 from .upscale_ui import UpscalePage
 from .ui_styles import INPUT_CONTROL_STYLE
 
@@ -473,11 +474,9 @@ class MainWindow(QMainWindow):
         self.thumbnail_page = ThumbnailPage()
         self.thumbnail_page.processing_changed.connect(self._thumbnail_processing_changed)
         self.thumbnail_tab = self.navigation.addTab(self.thumbnail_page, "文字サムネ")
-        placeholder = QLabel("画像加工 · 今後追加予定")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_edit_tab = self.navigation.addTab(placeholder, "画像加工（今後追加予定）")
-        self.navigation.setTabEnabled(self.image_edit_tab, False)
-        self.navigation.setTabToolTip(self.image_edit_tab, "今後追加予定")
+        self.edit_page = QuickEditPage()
+        self.edit_page.processing_changed.connect(self._edit_processing_changed)
+        self.image_edit_tab = self.navigation.addTab(self.edit_page, "画像加工")
         self.upscale_page = UpscalePage()
         self.upscale_page.processing_changed.connect(self._upscale_processing_changed)
         self.upscale_tab = self.navigation.addTab(self.upscale_page, "高画質化")
@@ -1059,11 +1058,20 @@ class MainWindow(QMainWindow):
     def _thumbnail_processing_changed(self, processing: bool) -> None:
         self.navigation.setTabEnabled(self.quick_tab, not processing)
         self.navigation.setTabEnabled(self.upscale_tab, not processing)
+        self.navigation.setTabEnabled(self.image_edit_tab, not processing)
 
     @Slot(bool)
     def _upscale_processing_changed(self, processing: bool) -> None:
         self.navigation.setTabEnabled(self.quick_tab, not processing)
         self.navigation.setTabEnabled(self.thumbnail_tab, not processing)
+        self.navigation.setTabEnabled(self.image_edit_tab, not processing)
+
+    @Slot(bool)
+    def _edit_processing_changed(self, processing: bool) -> None:
+        self.navigation.setTabEnabled(self.quick_tab, not processing)
+        self.navigation.setTabEnabled(self.thumbnail_tab, not processing)
+        self.navigation.setTabEnabled(self.upscale_tab, not processing)
+        self.navigation.setTabEnabled(self.image_edit_tab, not processing)
 
     @Slot(int, str, str)
     def _on_file_status(self, index: int, status: str, detail: str) -> None:
@@ -1110,11 +1118,13 @@ class MainWindow(QMainWindow):
         if (
             self._thread is not None
             or not self.thumbnail_page.can_close()
+            or not self.edit_page.can_close()
             or not self.upscale_page.can_close()
         ):
             QMessageBox.information(self, "処理中", "処理の完了後に閉じてください。")
             event.ignore()
             return
         self.thumbnail_page.save_state()
+        self.edit_page.cleanup()
         self.upscale_page.cleanup()
         event.accept()

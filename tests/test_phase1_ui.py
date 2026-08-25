@@ -267,11 +267,12 @@ def test_settings_are_purpose_first_and_future_tabs_are_disabled(
 
     assert window.navigation.tabText(0) == "かんたん変換"
     assert window.navigation.tabText(1) == "文字サムネ"
+    assert window.navigation.tabText(2) == "画像加工"
+    assert window.navigation.isTabEnabled(2)
     assert window.navigation.tabText(3) == "高画質化"
     assert window.navigation.isTabEnabled(3)
-    for index in (2, 4):
-        assert not window.navigation.isTabEnabled(index)
-        assert window.navigation.tabToolTip(index) == "今後追加予定"
+    assert not window.navigation.isTabEnabled(4)
+    assert window.navigation.tabToolTip(4) == "今後追加予定"
 
 
 def test_navigation_tabs_have_uniform_larger_click_targets(
