@@ -267,7 +267,9 @@ def test_settings_are_purpose_first_and_future_tabs_are_disabled(
 
     assert window.navigation.tabText(0) == "かんたん変換"
     assert window.navigation.tabText(1) == "文字サムネ"
-    for index in (2, 3, 4):
+    assert window.navigation.tabText(3) == "高画質化"
+    assert window.navigation.isTabEnabled(3)
+    for index in (2, 4):
         assert not window.navigation.isTabEnabled(index)
         assert window.navigation.tabToolTip(index) == "今後追加予定"
 

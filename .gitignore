@@ -6,3 +6,7 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+
+/runtime/upscaler/realesrgan-ncnn-vulkan/
+/runtime/upscaler/*.zip
+/qa-local/

@@ -47,6 +47,7 @@ from .pipeline import process_image, read_image_info, write_processed
 from .processors.resize import output_dimensions
 from .processors.transform import normalize_orientation
 from .thumbnail_ui import ThumbnailPage
+from .upscale_ui import UpscalePage
 from .ui_styles import INPUT_CONTROL_STYLE
 
 
@@ -468,16 +469,23 @@ class MainWindow(QMainWindow):
         self.navigation.setStyleSheet(NAVIGATION_TAB_STYLE)
         self.navigation.tabBar().setExpanding(False)
         self.navigation.tabBar().setUsesScrollButtons(True)
-        self.navigation.addTab(self._build_quick_page(), "かんたん変換")
+        self.quick_tab = self.navigation.addTab(self._build_quick_page(), "かんたん変換")
         self.thumbnail_page = ThumbnailPage()
         self.thumbnail_page.processing_changed.connect(self._thumbnail_processing_changed)
-        self.navigation.addTab(self.thumbnail_page, "文字サムネ")
-        for name in ("画像加工", "高画質化", "動画加工"):
-            placeholder = QLabel(f"{name} · 今後追加予定")
-            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            index = self.navigation.addTab(placeholder, f"{name}（今後追加予定）")
-            self.navigation.setTabEnabled(index, False)
-            self.navigation.setTabToolTip(index, "今後追加予定")
+        self.thumbnail_tab = self.navigation.addTab(self.thumbnail_page, "文字サムネ")
+        placeholder = QLabel("画像加工 · 今後追加予定")
+        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_edit_tab = self.navigation.addTab(placeholder, "画像加工（今後追加予定）")
+        self.navigation.setTabEnabled(self.image_edit_tab, False)
+        self.navigation.setTabToolTip(self.image_edit_tab, "今後追加予定")
+        self.upscale_page = UpscalePage()
+        self.upscale_page.processing_changed.connect(self._upscale_processing_changed)
+        self.upscale_tab = self.navigation.addTab(self.upscale_page, "高画質化")
+        placeholder = QLabel("動画加工 · 今後追加予定")
+        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_tab = self.navigation.addTab(placeholder, "動画加工（今後追加予定）")
+        self.navigation.setTabEnabled(self.video_tab, False)
+        self.navigation.setTabToolTip(self.video_tab, "今後追加予定")
         self.navigation.currentChanged.connect(self._navigation_changed)
         self.setCentralWidget(self.navigation)
         self._navigation_changed(0)
@@ -1000,7 +1008,8 @@ class MainWindow(QMainWindow):
         self.reset_action.setEnabled(False)
         self.drop_zone.set_drag_active(False)
         self.drop_zone.setEnabled(False)
-        self.navigation.setTabEnabled(1, False)
+        self.navigation.setTabEnabled(self.thumbnail_tab, False)
+        self.navigation.setTabEnabled(self.upscale_tab, False)
         self._thread = QThread(self)
         self._worker = ProcessingWorker(
             paths,
@@ -1027,7 +1036,8 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._thread = None
         self.drop_zone.setEnabled(True)
-        self.navigation.setTabEnabled(1, True)
+        self.navigation.setTabEnabled(self.thumbnail_tab, True)
+        self.navigation.setTabEnabled(self.upscale_tab, True)
         self._update_quick_actions()
 
     @Slot(int)
@@ -1047,7 +1057,13 @@ class MainWindow(QMainWindow):
 
     @Slot(bool)
     def _thumbnail_processing_changed(self, processing: bool) -> None:
-        self.navigation.setTabEnabled(0, not processing)
+        self.navigation.setTabEnabled(self.quick_tab, not processing)
+        self.navigation.setTabEnabled(self.upscale_tab, not processing)
+
+    @Slot(bool)
+    def _upscale_processing_changed(self, processing: bool) -> None:
+        self.navigation.setTabEnabled(self.quick_tab, not processing)
+        self.navigation.setTabEnabled(self.thumbnail_tab, not processing)
 
     @Slot(int, str, str)
     def _on_file_status(self, index: int, status: str, detail: str) -> None:
@@ -1091,9 +1107,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"完了 · {succeeded}件を保存しました")
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        if self._thread is not None or not self.thumbnail_page.can_close():
+        if (
+            self._thread is not None
+            or not self.thumbnail_page.can_close()
+            or not self.upscale_page.can_close()
+        ):
             QMessageBox.information(self, "処理中", "処理の完了後に閉じてください。")
             event.ignore()
             return
         self.thumbnail_page.save_state()
+        self.upscale_page.cleanup()
         event.accept()
