@@ -44,7 +44,7 @@ QPushButton { min-height: 30px; background: #f5f7fa; color: #182230;
 QPushButton:hover { background: #e5edf6; border-color: #405b79; }
 QPushButton:focus { background: white; border: 2px solid #2457b2; padding: 4px 9px; }
 QPushButton:disabled { background: #f3f4f6; color: #9aa1aa; border-color: #d4d8de; }
-QRadioButton#scaleOption { min-height: 42px; min-width: 78px; padding: 7px 18px;
+QRadioButton#scaleOption { min-height: 42px; min-width: 0; padding: 7px 4px;
  background-color: #e8eef5; color: #243447; border: 2px solid #8da0b5;
  border-radius: 8px; font-size: 16px; font-weight: 600; }
 QRadioButton#scaleOption::indicator { width: 0; height: 0; }
@@ -300,12 +300,16 @@ class UpscalePage(QWidget):
         ll.addWidget(help_text)
 
         scale_box = QGroupBox("拡大倍率")
-        scale_layout = QHBoxLayout(scale_box); scale_layout.setSpacing(8)
+        scale_box.setMinimumWidth(0)
+        scale_layout = QHBoxLayout(scale_box)
+        scale_layout.setContentsMargins(6, 6, 6, 6)
+        scale_layout.setSpacing(4)
         self.scale_2 = QRadioButton("2倍"); self.scale_4 = QRadioButton("4倍")
         for scale_button in (self.scale_2, self.scale_4):
             scale_button.setObjectName("scaleOption")
+            scale_button.setMinimumWidth(0)
             scale_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            scale_layout.addWidget(scale_button)
+            scale_layout.addWidget(scale_button, 1)
         self.scale_2.setChecked(True); ll.addWidget(scale_box)
 
         mode_box = QGroupBox("画像タイプ"); mode_layout = QHBoxLayout(mode_box)

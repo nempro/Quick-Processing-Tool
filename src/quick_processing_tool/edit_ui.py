@@ -11,15 +11,17 @@ from PySide6.QtGui import (
     QGuiApplication,
     QDragEnterEvent,
     QDropEvent,
-    QFontDatabase,
     QImage,
     QPainter,
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QColorDialog,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -29,6 +31,9 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -41,9 +46,9 @@ from PySide6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
-    QFontComboBox,
 )
 
+from .font_catalog import FontCatalog
 from .editing import (
     CanvasBackground,
     CanvasSettings,
@@ -112,6 +117,159 @@ QSlider::handle:horizontal { width: 18px; margin: -6px 0; border-radius: 9px;
 QSlider::handle:horizontal:hover { background: #e5edff; border-color: #173a82; }
 QSlider:disabled { color: #9aa1aa; }
 """
+
+
+class FontPickerDialog(QDialog):
+    def __init__(self, catalog: FontCatalog, current_family: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.catalog = catalog
+        self._selected_family = catalog.resolve_family(current_family)
+        self.setWindowTitle("フォントを選ぶ")
+        self.setMinimumWidth(360)
+        layout = QVBoxLayout(self)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("フォントを検索")
+        self.search_edit.setClearButtonEnabled(True)
+        layout.addWidget(self.search_edit)
+        layout.addWidget(QLabel("よく使うフォント"))
+        self.preferred_list = QListWidget()
+        self.preferred_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.preferred_list.setMaximumHeight(150)
+        layout.addWidget(self.preferred_list)
+        layout.addWidget(QLabel("インストール済みフォント"))
+        self.all_list = QListWidget()
+        self.all_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        layout.addWidget(self.all_list, 1)
+        self.file_button = QPushButton("フォントファイルを選ぶ…")
+        self.file_button.clicked.connect(self._choose_file)
+        layout.addWidget(self.file_button)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+        self.search_edit.textChanged.connect(self._filter)
+        self.preferred_list.itemClicked.connect(self._item_selected)
+        self.all_list.itemClicked.connect(self._item_selected)
+        self.preferred_list.currentItemChanged.connect(self._current_item_changed)
+        self.all_list.currentItemChanged.connect(self._current_item_changed)
+        self.preferred_list.itemDoubleClicked.connect(lambda _item: self.accept())
+        self.all_list.itemDoubleClicked.connect(lambda _item: self.accept())
+        self._populate()
+
+    @property
+    def selected_family(self) -> str:
+        return self._selected_family
+
+    def _populate(self) -> None:
+        families = self.catalog.families()
+        preferred = self.catalog.preferred_families()
+        self.preferred_list.clear()
+        self.all_list.clear()
+        for family in preferred:
+            item = QListWidgetItem(family)
+            item.setData(Qt.ItemDataRole.UserRole, family)
+            self.preferred_list.addItem(item)
+        for family in families:
+            item = QListWidgetItem(family)
+            item.setData(Qt.ItemDataRole.UserRole, family)
+            self.all_list.addItem(item)
+        self._filter(self.search_edit.text())
+        self._select_visible(self._selected_family)
+
+    def _select_visible(self, family: str) -> None:
+        for widget in (self.preferred_list, self.all_list):
+            for row in range(widget.count()):
+                item = widget.item(row)
+                if item.data(Qt.ItemDataRole.UserRole) == family:
+                    widget.setCurrentItem(item)
+                    return
+
+    def _filter(self, query: str) -> None:
+        query = query.casefold().strip()
+        for widget in (self.preferred_list, self.all_list):
+            for row in range(widget.count()):
+                item = widget.item(row)
+                item.setHidden(bool(query) and query not in item.text().casefold())
+
+    def _current_item_changed(self, item: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
+        if item is not None and not item.isHidden():
+            self._item_selected(item)
+
+    def _item_selected(self, item: QListWidgetItem) -> None:
+        if item is None:
+            return
+        source = next(
+            (widget for widget in (self.preferred_list, self.all_list) if widget.row(item) >= 0),
+            None,
+        )
+        for widget in (self.preferred_list, self.all_list):
+            if widget is not source:
+                widget.blockSignals(True)
+                widget.clearSelection()
+                widget.blockSignals(False)
+        self._selected_family = str(item.data(Qt.ItemDataRole.UserRole))
+
+    def accept(self) -> None:
+        # The last explicit item selection is authoritative; never prefer one list
+        # merely because it happens to retain a current row.
+        super().accept()
+
+    def _choose_file(self) -> None:
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "フォントファイルを選ぶ", "", "フォント (*.ttf *.otf)"
+        )
+        if not filename:
+            return
+        result = self.catalog.register_file(Path(filename))
+        if not result.succeeded:
+            QMessageBox.warning(self, "フォントを読み込めません", result.error)
+            return
+        self._populate()
+        self._selected_family = result.families[0]
+        self.accept()
+
+
+class FontPickerButton(QPushButton):
+    family_changed = Signal(str)
+
+    def __init__(self, catalog: FontCatalog, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.catalog = catalog
+        self._family = catalog.default_family()
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.clicked.connect(self._open_picker)
+        self._update_display()
+
+    def family(self) -> str:
+        return self._family
+
+    def set_family(self, family: str, *, resolve: bool = True) -> None:
+        resolved = self.catalog.resolve_family(family) if resolve else family
+        if not resolved:
+            resolved = self.catalog.default_family()
+        changed = resolved != self._family
+        self._family = resolved
+        self._update_display()
+        if changed:
+            self.family_changed.emit(self._family)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._update_display()
+
+    def _update_display(self) -> None:
+        width = max(80, self.width() - 24)
+        self.setText(self.fontMetrics().elidedText(self._family, Qt.TextElideMode.ElideRight, width))
+        self.setToolTip(self._family)
+
+    def _open_picker(self) -> None:
+        picker = FontPickerDialog(self.catalog, self._family, self)
+        if picker.exec() == QDialog.DialogCode.Accepted:
+            self.set_family(picker.selected_family)
 
 
 class IMEPlainTextEdit(QPlainTextEdit):
@@ -414,6 +572,7 @@ class QuickEditPage(QWidget):
     def __init__(self, service: EditService | None = None) -> None:
         super().__init__()
         self.service = service or EditService()
+        self.font_catalog = FontCatalog()
         self.source_path: Path | None = None
         self.output_folder: Path | None = None
         self._output_folder_explicit = False
@@ -503,8 +662,8 @@ class QuickEditPage(QWidget):
         self.text_edit = IMEPlainTextEdit()
         self.text_edit.setPlaceholderText("例：おはよう")
         self.text_edit.setFixedHeight(72)
-        self.font_combo = QFontComboBox()
-        self._select_default_font(self.font_combo)
+        self.font_combo = FontPickerButton(self.font_catalog)
+        self._select_default_font()
         self.font_size_spin = self._spin(8, 500, 64, " px")
         self.bold_check = QCheckBox("太字")
         self.bold_check.setChecked(True)
@@ -756,21 +915,8 @@ class QuickEditPage(QWidget):
         spin.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         return spin
 
-    @staticmethod
-    def _select_default_font(combo: QFontComboBox) -> None:
-        families = QFontDatabase.families()
-        by_name = {family.casefold(): family for family in families}
-        preferred = next(
-            (
-                by_name[name.casefold()]
-                for name in ("Yu Gothic UI", "Yu Gothic", "Meiryo", "BIZ UDPGothic", "Noto Sans JP")
-                if name.casefold() in by_name
-            ),
-            combo.currentFont().family(),
-        )
-        index = combo.findText(preferred)
-        if index >= 0:
-            combo.setCurrentIndex(index)
+    def _select_default_font(self) -> None:
+        self.font_combo.set_family(self.font_catalog.default_family())
 
     def _connect_controls(self) -> None:
         for combo in (
@@ -793,7 +939,7 @@ class QuickEditPage(QWidget):
         for check in (self.bold_check, self.outline_enabled, self.transparency_enabled):
             check.toggled.connect(self._control_changed)
         self.text_edit.textChanged.connect(self._control_changed)
-        self.font_combo.currentFontChanged.connect(self._control_changed)
+        self.font_combo.family_changed.connect(self._control_changed)
         self.tolerance_slider.valueChanged.connect(self._slider_changed)
         self.softness_slider.valueChanged.connect(self._slider_changed)
         self.format_combo.currentIndexChanged.connect(self._update_save_options)
@@ -896,7 +1042,7 @@ class QuickEditPage(QWidget):
             text=TextSettings(
                 self.text_enabled.isChecked(),
                 self.text_edit.toPlainText(),
-                self.font_combo.currentFont().family(),
+                self.font_combo.family(),
                 self.font_size_spin.value(),
                 self.bold_check.isChecked(),
                 (self._text_color.red(), self._text_color.green(), self._text_color.blue(), self._text_color.alpha()),
@@ -939,10 +1085,7 @@ class QuickEditPage(QWidget):
         self._canvas_color = QColor(*settings.canvas.custom_color)
         self.text_enabled.setChecked(settings.text.enabled)
         self.text_edit.setPlainText(settings.text.text)
-        self.font_combo.setCurrentFont(self.font_combo.currentFont())
-        font_index = self.font_combo.findText(settings.text.font_family)
-        if font_index >= 0:
-            self.font_combo.setCurrentIndex(font_index)
+        self.font_combo.set_family(settings.text.font_family)
         self.font_size_spin.setValue(settings.text.font_size)
         self.bold_check.setChecked(settings.text.bold)
         self._text_color = QColor(*settings.text.color)
