@@ -5,6 +5,7 @@ import tempfile
 import time
 from pathlib import Path
 from threading import Event
+from typing import Callable
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -30,6 +31,7 @@ class UpscaleService:
         options: UpscaleOptions,
         progress: ProgressCallback,
         cancel_event: Event,
+        stage: Callable[[str], None] | None = None,
     ) -> UpscaleResult:
         started = time.perf_counter()
         source_path = source_path.resolve()
@@ -64,6 +66,8 @@ class UpscaleService:
             engine_output = temp / "upscaled.png"
             normalized_source = source.convert("RGBA" if self._has_alpha(source) else "RGB")
             normalized_source.save(normalized, format="PNG")
+            if stage is not None:
+                stage("processing")
             self.backend.upscale(
                 normalized,
                 engine_output,
@@ -90,6 +94,8 @@ class UpscaleService:
             if cancel_event.is_set():
                 raise UpscaleCancelledError("高画質化をキャンセルしました。")
             try:
+                if stage is not None:
+                    stage("saving")
                 data = encode_once(image, output_format, options.jpeg_quality, (255, 255, 255))
                 if cancel_event.is_set():
                     raise UpscaleCancelledError("高画質化をキャンセルしました。")
