@@ -442,6 +442,7 @@ class MainWindow(QMainWindow):
         self.transform_queue: list[Transform] = []
         self._thread: QThread | None = None
         self._worker: ProcessingWorker | None = None
+        self._last_navigation_index = -1
 
         self._build_toolbar()
         self._build_content()
@@ -1041,7 +1042,10 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _navigation_changed(self, index: int) -> None:
-        del index
+        previous = self._last_navigation_index
+        if previous == getattr(self, "image_edit_tab", -1) and index != previous:
+            self.edit_page.finish_ime(clear_focus=True)
+        self._last_navigation_index = index
         self._update_quick_actions()
 
     def _update_quick_actions(self) -> None:

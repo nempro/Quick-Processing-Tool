@@ -8,6 +8,7 @@ from PySide6.QtCore import QEvent, QObject, Qt, QThread, QTimer, QUrl, Signal, S
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
+    QGuiApplication,
     QDragEnterEvent,
     QDropEvent,
     QFontDatabase,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
@@ -110,6 +112,21 @@ QSlider::handle:horizontal { width: 18px; margin: -6px 0; border-radius: 9px;
 QSlider::handle:horizontal:hover { background: #e5edff; border-color: #173a82; }
 QSlider:disabled { color: #9aa1aa; }
 """
+
+
+class IMEPlainTextEdit(QPlainTextEdit):
+    """Plain text editor that finishes native IME composition at focus boundaries."""
+
+    def finish_ime(self) -> None:
+        input_method = QGuiApplication.inputMethod()
+        if input_method is not None:
+            input_method.commit()
+            input_method.reset()
+            input_method.hide()
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802
+        self.finish_ime()
+        super().focusOutEvent(event)
 
 
 class ElidedPathLabel(QLabel):
@@ -430,27 +447,34 @@ class QuickEditPage(QWidget):
         self.setStyleSheet(EDIT_STYLE)
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        left_scroll = QScrollArea()
-        left_scroll.setWidgetResizable(True)
-        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        left_scroll.setMinimumWidth(280)
-        left_scroll.setMaximumWidth(355)
+        self.settings_scroll = QScrollArea()
+        self.settings_scroll.setWidgetResizable(True)
+        self.settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.settings_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.settings_scroll.setMinimumWidth(250)
+        self.settings_scroll.setMaximumWidth(355)
         left = QWidget()
+        left.setMinimumWidth(0)
+        left.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         ll = QVBoxLayout(left)
         ll.setContentsMargins(12, 12, 8, 12)
         heading = QLabel("何をしますか？")
         heading.setStyleSheet("font-size: 18px; font-weight: 700; color: #182230;")
         ll.addWidget(heading)
-        history_row = QHBoxLayout()
+        history_row = QGridLayout()
+        history_row.setSpacing(4)
         self.undo_button = QPushButton("元に戻す")
         self.redo_button = QPushButton("やり直す")
         self.reset_button = QPushButton("加工をリセット")
+        for button in (self.undo_button, self.redo_button, self.reset_button):
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.undo_button.clicked.connect(self.undo)
         self.redo_button.clicked.connect(self.redo)
         self.reset_button.clicked.connect(self.reset_edits)
-        history_row.addWidget(self.undo_button)
-        history_row.addWidget(self.redo_button)
-        history_row.addWidget(self.reset_button)
+        history_row.addWidget(self.undo_button, 0, 0)
+        history_row.addWidget(self.redo_button, 0, 1)
+        history_row.addWidget(self.reset_button, 1, 0, 1, 2)
         ll.addLayout(history_row)
 
         filter_content = QWidget()
@@ -476,7 +500,7 @@ class QuickEditPage(QWidget):
         self.text_details = QWidget()
         text_form = QFormLayout(self.text_details)
         self._configure_form(text_form)
-        self.text_edit = QPlainTextEdit()
+        self.text_edit = IMEPlainTextEdit()
         self.text_edit.setPlaceholderText("例：おはよう")
         self.text_edit.setFixedHeight(72)
         self.font_combo = QFontComboBox()
@@ -606,8 +630,8 @@ class QuickEditPage(QWidget):
         )
         ll.addWidget(self.canvas_section)
         ll.addStretch()
-        left_scroll.setWidget(left)
-        splitter.addWidget(left_scroll)
+        self.settings_scroll.setWidget(left)
+        splitter.addWidget(self.settings_scroll)
 
         center = QWidget()
         cl = QVBoxLayout(center)
@@ -765,7 +789,8 @@ class QuickEditPage(QWidget):
             self.canvas_height_spin,
         ):
             spin.valueChanged.connect(self._control_changed)
-        for check in (self.text_enabled, self.bold_check, self.outline_enabled, self.transparency_enabled):
+        self.text_enabled.toggled.connect(self._text_toggled)
+        for check in (self.bold_check, self.outline_enabled, self.transparency_enabled):
             check.toggled.connect(self._control_changed)
         self.text_edit.textChanged.connect(self._control_changed)
         self.font_combo.currentFontChanged.connect(self._control_changed)
@@ -774,11 +799,19 @@ class QuickEditPage(QWidget):
         self.format_combo.currentIndexChanged.connect(self._update_save_options)
 
     def _section_expanded(self, active: CollapsibleSection, expanded: bool) -> None:
-        if not expanded:
-            return
-        for section in self.sections:
-            if section is not active and section.toggle.isChecked():
-                section.toggle.setChecked(False)
+        # Sections are independent so users can keep all settings visible while scrolling.
+        del active, expanded
+
+    def finish_ime(self, clear_focus: bool = False) -> None:
+        self.text_edit.finish_ime()
+        if clear_focus:
+            self.text_edit.clearFocus()
+
+    @Slot(bool)
+    def _text_toggled(self, enabled: bool) -> None:
+        if not enabled:
+            self.finish_ime(clear_focus=True)
+        self._control_changed()
 
     @Slot()
     def choose_image(self) -> None:
@@ -807,6 +840,7 @@ class QuickEditPage(QWidget):
         except (OSError, UnidentifiedImageError, ValueError):
             QMessageBox.warning(self, "画像を開けません", "PNG / JPEG / WebP画像を選んでください。")
             return
+        self.finish_ime(clear_focus=True)
         self.source_path = path.resolve()
         self._source_size = (width, height)
         self._source_format = source_format
@@ -1015,6 +1049,7 @@ class QuickEditPage(QWidget):
 
     @Slot()
     def reset_edits(self) -> None:
+        self.finish_ime(clear_focus=True)
         if not self.source_path:
             return
         default = EditSettings()

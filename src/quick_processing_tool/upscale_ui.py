@@ -25,6 +25,7 @@ from .upscaler.batch import (
     BatchCallbacks, BatchJob, BatchOutcome, QueueStatus, UpscaleQueueItem,
     run_sequential_batch,
 )
+from .upscaler.guard import ProjectedOutput, projected_output
 
 LOGGER = logging.getLogger(__name__)
 SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -32,6 +33,7 @@ STATUS_TEXT = {
     QueueStatus.WAITING: "待機", QueueStatus.PROCESSING: "処理中",
     QueueStatus.SAVING: "保存中", QueueStatus.DONE: "完了",
     QueueStatus.FAILED: "失敗", QueueStatus.CANCELLED: "キャンセル",
+    QueueStatus.WARNING: "大きすぎる可能性", QueueStatus.SKIPPED: "スキップ",
 }
 UPSCALE_STYLE = INPUT_CONTROL_STYLE + """
 QGroupBox { font-size: 14px; font-weight: 700; border: 1px solid #d7dde5;
@@ -191,12 +193,13 @@ class UpscaleBatchWorker(QObject):
     completed = Signal(object)
     finished = Signal()
 
-    def __init__(self, service: UpscaleService, jobs: list[BatchJob], options: UpscaleOptions, cancel_event: Event) -> None:
+    def __init__(self, service: UpscaleService, jobs: list[BatchJob], options: UpscaleOptions, cancel_event: Event, skipped_jobs: list[BatchJob] | None = None) -> None:
         super().__init__()
         self.service = service
         self.jobs = jobs
         self.options = options
         self.cancel_event = cancel_event
+        self.skipped_jobs = skipped_jobs or []
 
     @Slot()
     def run(self) -> None:
@@ -207,7 +210,7 @@ class UpscaleBatchWorker(QObject):
             progress=self.batch_progress.emit,
         )
         try:
-            outcome = run_sequential_batch(self.service, self.jobs, self.options, self.cancel_event, callbacks)
+            outcome = run_sequential_batch(self.service, self.jobs, self.options, self.cancel_event, callbacks, self.skipped_jobs)
             self.completed.emit(outcome)
         except Exception:
             LOGGER.exception("Unexpected upscale batch worker failure")
@@ -217,7 +220,7 @@ class UpscaleBatchWorker(QObject):
                     QueueStatus.FAILED.value,
                     "バッチ処理を完了できませんでした",
                 )
-            self.completed.emit(BatchOutcome(len(self.jobs), 0, len(self.jobs), 0, 0.0))
+            self.completed.emit(BatchOutcome(len(self.jobs) + len(self.skipped_jobs), 0, len(self.jobs), 0, 0.0, len(self.skipped_jobs)))
         finally:
             self.finished.emit()
 
@@ -459,6 +462,7 @@ class UpscalePage(QWidget):
             self.queue_feedback.setText(feedback)
         if errors:
             QMessageBox.warning(self, "一部の画像を追加できませんでした", "\n".join(errors))
+        self._refresh_large_warnings()
         self._clear_summary(); self._update_actions()
 
     @Slot(QTreeWidgetItem, QTreeWidgetItem)
@@ -493,10 +497,50 @@ class UpscalePage(QWidget):
         for index, item in enumerate(self.items):
             item.status = QueueStatus.WAITING; item.detail = ""; item.result = None
             self._update_queue_row(index)
+        self._refresh_large_warnings()
         self._view_after = False; self._clear_summary()
         if self.items:
             self._show_selected()
         self._update_actions()
+
+    def _projected(self, item: UpscaleQueueItem) -> ProjectedOutput:
+        return projected_output(item.width, item.height, self._scale())
+
+    def _large_indices(self) -> list[int]:
+        return [index for index, item in enumerate(self.items) if self._projected(item).is_large]
+
+    def _refresh_large_warnings(self) -> None:
+        for index, item in enumerate(self.items):
+            if item.result is not None or item.status in {QueueStatus.PROCESSING, QueueStatus.SAVING}:
+                continue
+            projected = self._projected(item)
+            if projected.is_large:
+                item.status = QueueStatus.WARNING
+                item.detail = f"{projected.width} × {projected.height} / 約{projected.megapixels:.1f}MP。GPUメモリ不足や処理失敗の可能性があります。"
+            else:
+                item.status = QueueStatus.WAITING
+                item.detail = ""
+            self._update_queue_row(index)
+
+    def _large_output_choice(self, indices: list[int]) -> str:
+        lines = []
+        for index in indices:
+            projected = self._projected(self.items[index])
+            lines.append(f"{self.items[index].source_path.name}: {projected.width} × {projected.height} / 約{projected.megapixels:.1f}メガピクセル")
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("大きな画像を処理します")
+        box.setText("この画像は高画質化後に非常に大きくなります。\n\n" + "\n".join(lines))
+        box.setInformativeText("GPUメモリ不足や処理失敗の可能性があります。")
+        skip = box.addButton("大きい画像をスキップ", QMessageBox.ButtonRole.AcceptRole)
+        proceed = box.addButton("それでも処理", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() is skip:
+            return "skip"
+        if box.clickedButton() is proceed:
+            return "continue"
+        return "cancel"
 
     def _update_output_info(self) -> None:
         if not 0 <= self.current_index < len(self.items):
@@ -509,7 +553,9 @@ class UpscalePage(QWidget):
                 f"高画質化後（保存済み）\n{item.result.width} × {item.result.height} / {self._human_bytes(item.result.size_bytes)}\n{item.result.output_path.name}"
             )
         else:
-            self.output_info.setText(f"高画質化後（見込み）\n{item.width * scale} × {item.height * scale}\n{scale}倍 / {mode}")
+            projected = self._projected(item)
+            warning = "\n大きすぎる可能性" if projected.is_large else ""
+            self.output_info.setText(f"高画質化後（見込み）\n{projected.width} × {projected.height}\n約{projected.megapixels:.1f}MP / {scale}倍 / {mode}{warning}")
     def _options(self) -> UpscaleOptions:
         return UpscaleOptions(
             scale=self._scale(),
@@ -533,31 +579,49 @@ class UpscalePage(QWidget):
     def start(self) -> None:
         if not self.items or self._thread is not None:
             return
-        available = self.service.backend.check_availability()
-        if not available.available:
-            QMessageBox.warning(self, "高画質化を開始できません", available.user_message + "\n\nREADMEのRuntime設定を確認してください。")
-            return
         if self._output_folder_explicit and self.output_folder is not None:
             if self.output_folder.exists() and not self.output_folder.is_dir():
                 QMessageBox.warning(self, "保存先を使用できません", "保存先フォルダーを選び直してください。")
                 return
 
+        large_indices = self._large_indices()
+        choice = self._large_output_choice(large_indices) if large_indices else "continue"
+        if choice == "cancel":
+            return
+        skipped_indices = set(large_indices if choice == "skip" else [])
+
         options = self._options()
         jobs: list[BatchJob] = []
+        skipped_jobs: list[BatchJob] = []
+        for index, item in enumerate(self.items):
+            folder = self.output_folder if self._output_folder_explicit and self.output_folder else item.source_path.parent
+            job = BatchJob(index, item.source_path, folder)
+            (skipped_jobs if index in skipped_indices else jobs).append(job)
+        if jobs:
+            available = self.service.backend.check_availability()
+            if not available.available:
+                QMessageBox.warning(self, "高画質化を開始できません", available.user_message + "\n\nREADMEのRuntime設定を確認してください。")
+                return
         for index, item in enumerate(self.items):
             item.status = QueueStatus.WAITING; item.detail = ""; item.result = None
             self._update_queue_row(index)
-            folder = self.output_folder if self._output_folder_explicit and self.output_folder else item.source_path.parent
-            jobs.append(BatchJob(index, item.source_path, folder))
+            if index in skipped_indices:
+                item.status = QueueStatus.SKIPPED
+                item.detail = "大きすぎる可能性があるためスキップ"
+                self._update_queue_row(index)
         self._view_after = False
         self._show_selected()
         self._clear_summary()
         self._cancel_event = Event()
-        self.progress.setRange(0, len(jobs)); self.progress.setValue(0); self.progress.show()
-        self.progress_label.setText(f"0 / {len(jobs)}枚 完了"); self.progress_label.show()
+        total_jobs = len(jobs) + len(skipped_jobs)
+        self.progress.setRange(0, total_jobs); self.progress.setValue(0); self.progress.show()
+        self.progress_label.setText(f"0 / {total_jobs}枚 完了"); self.progress_label.show()
+        if not jobs:
+            self._on_completed(BatchOutcome(total_jobs, 0, 0, 0, 0.0, len(skipped_jobs)))
+            return
         self._set_processing(True)
         self._thread = QThread(self)
-        self._worker = UpscaleBatchWorker(self.service, jobs, options, self._cancel_event)
+        self._worker = UpscaleBatchWorker(self.service, jobs, options, self._cancel_event, skipped_jobs)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.item_status.connect(self._on_item_status)
@@ -614,9 +678,10 @@ class UpscalePage(QWidget):
     @Slot(object)
     def _on_completed(self, outcome: BatchOutcome) -> None:
         self._last_outcome = outcome
+        completed = outcome.succeeded + outcome.failed + outcome.skipped
         self.progress.setRange(0, outcome.total)
-        self.progress.setValue(outcome.succeeded + outcome.failed)
-        self.progress_label.setText(f"{outcome.succeeded + outcome.failed} / {outcome.total}枚 処理済み")
+        self.progress.setValue(completed)
+        self.progress_label.setText(f"{completed} / {outcome.total}枚 処理済み")
         if outcome.cancelled:
             headline = "処理をキャンセルしました"
             detail = f"{outcome.succeeded}枚保存 / {outcome.failed}件失敗 / {outcome.cancelled}枚未完了"
@@ -624,7 +689,17 @@ class UpscalePage(QWidget):
         elif outcome.failed:
             headline = "一部の画像を生成できませんでした"
             detail = f"{outcome.succeeded}枚保存 / {outcome.failed}件失敗"
+            if outcome.skipped:
+                detail += f" / {outcome.skipped}枚スキップ"
             color = "#c62828"
+        elif outcome.skipped and not outcome.succeeded:
+            headline = "大きい画像をスキップしました"
+            detail = f"{outcome.skipped}枚スキップ"
+            color = "#9a6700"
+        elif outcome.skipped:
+            headline = f"✓ {outcome.succeeded}枚の画像を保存しました"
+            detail = f"{outcome.skipped}枚スキップ"
+            color = "#137333"
         else:
             if outcome.total == 1:
                 headline = f"✓ {self._scale()}倍の画像を保存しました"
@@ -691,7 +766,8 @@ class UpscalePage(QWidget):
         color = {
             QueueStatus.DONE: QColor("#137333"), QueueStatus.FAILED: QColor("#c62828"),
             QueueStatus.PROCESSING: QColor("#2457b2"), QueueStatus.SAVING: QColor("#2457b2"),
-            QueueStatus.CANCELLED: QColor("#9a6700"),
+            QueueStatus.CANCELLED: QColor("#9a6700"), QueueStatus.WARNING: QColor("#9a6700"),
+            QueueStatus.SKIPPED: QColor("#9a6700"),
         }.get(item.status, QColor("#273142"))
         row.setForeground(2, color)
 

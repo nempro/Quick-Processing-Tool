@@ -18,6 +18,8 @@ LOGGER = logging.getLogger(__name__)
 
 class QueueStatus(str, Enum):
     WAITING = "waiting"
+    WARNING = "warning"
+    SKIPPED = "skipped"
     PROCESSING = "processing"
     SAVING = "saving"
     DONE = "done"
@@ -52,6 +54,7 @@ class BatchOutcome:
     failed: int
     cancelled: int
     duration_seconds: float
+    skipped: int = 0
 
 
 @dataclass(frozen=True)
@@ -68,20 +71,33 @@ def run_sequential_batch(
     options: UpscaleOptions,
     cancel_event: Event,
     callbacks: BatchCallbacks,
+    skipped_jobs: list[BatchJob] | None = None,
 ) -> BatchOutcome:
     """Process one item at a time and keep already verified outputs on cancellation."""
     started = time.perf_counter()
     succeeded = 0
     failed = 0
     cancelled = 0
+    skipped = 0
     processed = 0
-    total = len(jobs)
+    skipped_jobs = skipped_jobs or []
+    total = len(jobs) + len(skipped_jobs)
     LOGGER.info(
         "Batch upscale start: total=%d scale=%sx mode=%s",
         total,
         options.scale,
         options.mode.value,
     )
+
+    for skipped_job in skipped_jobs:
+        callbacks.status(
+            skipped_job.queue_index,
+            QueueStatus.SKIPPED,
+            "大きすぎる可能性があるためスキップ",
+        )
+        skipped += 1
+        processed += 1
+        callbacks.progress(processed, total)
 
     for position, job in enumerate(jobs, start=1):
         if cancel_event.is_set():
@@ -138,13 +154,14 @@ def run_sequential_batch(
         callbacks.progress(processed, total)
 
     duration = time.perf_counter() - started
-    outcome = BatchOutcome(total, succeeded, failed, cancelled, duration)
+    outcome = BatchOutcome(total, succeeded, failed, cancelled, duration, skipped)
     LOGGER.info(
-        "Upscale batch finished: total=%d succeeded=%d failed=%d cancelled=%d duration=%.3fs",
+        "Batch upscale finished: total=%d succeeded=%d failed=%d cancelled=%d skipped=%d duration=%.3fs",
         total,
         succeeded,
         failed,
         cancelled,
+        skipped,
         duration,
     )
     return outcome
