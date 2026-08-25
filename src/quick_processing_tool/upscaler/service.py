@@ -87,14 +87,21 @@ class UpscaleService:
                 )
             if self._has_alpha(source) and output_format in {"PNG", "WEBP"} and not self._has_alpha(image):
                 raise UpscaleProcessingError("透明部分を保持できませんでした。")
+            if cancel_event.is_set():
+                raise UpscaleCancelledError("高画質化をキャンセルしました。")
             try:
                 data = encode_once(image, output_format, options.jpeg_quality, (255, 255, 255))
+                if cancel_event.is_set():
+                    raise UpscaleCancelledError("高画質化をキャンセルしました。")
                 output = write_unique_bytes(
                     output_folder,
                     f"{source_path.stem}_{options.scale}x",
                     extension,
                     data,
                 )
+                if cancel_event.is_set():
+                    output.unlink(missing_ok=True)
+                    raise UpscaleCancelledError("高画質化をキャンセルしました。")
             except OSError as exc:
                 LOGGER.exception("Upscale save failed: %s", output_folder)
                 raise UpscaleSaveError("高画質化した画像を保存できませんでした。") from exc
@@ -106,8 +113,14 @@ class UpscaleService:
                 verified.load()
                 if verified.size != (width * options.scale, height * options.scale):
                     raise OSError("invalid output dimensions")
+            if cancel_event.is_set():
+                output.unlink(missing_ok=True)
+                raise UpscaleCancelledError("高画質化をキャンセルしました。")
         except OSError as exc:
-            output.unlink(missing_ok=True)
+            try:
+                output.unlink(missing_ok=True)
+            except OSError:
+                LOGGER.exception("Invalid upscale output could not be removed: %s", output)
             raise UpscaleSaveError("保存した画像を確認できませんでした。") from exc
 
         duration = time.perf_counter() - started

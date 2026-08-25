@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-import tempfile
+import time
 from pathlib import Path
 from threading import Event
 
@@ -12,6 +12,8 @@ from PIL import Image
 from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import QApplication
+
+import quick_processing_tool.upscaler.service as upscale_service_module
 
 from quick_processing_tool.upscale_ui import UpscalePage
 from quick_processing_tool.upscaler.backend import BackendAvailability, UpscaleBackend
@@ -151,6 +153,9 @@ def test_upscale_page_has_clear_defaults_and_single_image_flow(
     assert page.drop_zone.title.text() == "画像をここにドロップ"
     assert page.drop_zone.choose.text() == "画像を選ぶ"
     assert page.scale_2.isChecked()
+    assert page.scale_2.objectName() == "scaleOption"
+    assert page.scale_4.objectName() == "scaleOption"
+    assert ":checked" in page.styleSheet()
     assert page.illustration.isChecked()
     page.load_image(source)
     app.processEvents()
@@ -159,10 +164,8 @@ def test_upscale_page_has_clear_defaults_and_single_image_flow(
     assert page.start_button.isEnabled()
     assert page.start_button.text() == "2倍で高画質化を開始"
     page.result = UpscaleResult(source, 62, 34, source.stat().st_size, 1.0, UpscaleMode.ILLUSTRATION, 2, "Mock GPU")
-    page.save_button.setEnabled(True)
     page.scale_4.setChecked(True)
     assert page.result is None
-    assert not page.save_button.isEnabled()
     assert "124 × 68" in page.output_info.text()
     page.photo.setChecked(True)
     assert "写真" in page.output_info.text()
@@ -196,7 +199,7 @@ def test_upscale_drop_zone_accepts_supported_image(
     assert page.drop_zone.title.text() == "画像をここにドロップ"
     page.close()
 
-def test_indeterminate_progress_and_temporary_failure_cleanup(
+def test_indeterminate_progress_switches_to_numeric(
     app: QApplication,
 ) -> None:
     page = UpscalePage(UpscaleService(MockBackend()))
@@ -205,13 +208,6 @@ def test_indeterminate_progress_and_temporary_failure_cleanup(
     page._on_progress(37)
     assert page.progress.maximum() == 100
     assert page.progress.value() == 37
-
-    page._result_temp = tempfile.TemporaryDirectory(prefix="upscale-test-")
-    temporary_path = Path(page._result_temp.name)
-    assert temporary_path.is_dir()
-    page._on_failed("UpscaleProcessingError", "失敗")
-    assert page._result_temp is None
-    assert not temporary_path.exists()
     page.close()
 
 def test_invalid_input_and_jpeg_webp_outputs(tmp_path: Path) -> None:
@@ -251,3 +247,68 @@ def test_unavailable_backend_disables_start(
     assert not page.start_button.isEnabled()
     assert "準備されていません" in page.engine_label.text()
     page.close()
+
+def test_upscale_page_auto_saves_verified_result(
+    app: QApplication, tmp_path: Path
+) -> None:
+    source = tmp_path / "automatic.png"
+    make_image(source, "RGB")
+    destination = tmp_path / "saved"
+    page = UpscalePage(UpscaleService(MockBackend()))
+    page.show()
+    app.processEvents()
+    page.load_image(source)
+    assert page.output_folder == source.parent
+    page.output_folder = destination
+    page._output_folder_explicit = True
+    page.folder_label.set_path(destination)
+
+    page.start()
+    deadline = time.monotonic() + 5
+    while not page.can_close() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    app.processEvents()
+
+    assert page.can_close()
+    assert page.result is not None
+    output = page.result.output_path
+    assert output.parent == destination
+    assert output.name == "automatic_2x.png"
+    assert output.is_file()
+    assert output.stat().st_size > 0
+    with Image.open(output) as reopened:
+        reopened.load()
+        assert reopened.size == (26, 18)
+    assert page._saved_output == output
+    assert page.saved_box.isVisible()
+    assert "✓ 2倍の画像を保存しました" in page.result_label.text()
+    assert output.name in page.result_label.text()
+    assert page.saved_path.toolTip() == str(destination)
+    assert not hasattr(page, "save_button")
+    page.close()
+
+
+def test_cancel_after_final_write_removes_auto_saved_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "cancel-race.png"
+    make_image(source, "RGB")
+    destination = tmp_path / "cancelled-output"
+    cancel_event = Event()
+    original_write = upscale_service_module.write_unique_bytes
+
+    def write_then_cancel(*args, **kwargs):
+        output = original_write(*args, **kwargs)
+        cancel_event.set()
+        return output
+
+    monkeypatch.setattr(
+        upscale_service_module, "write_unique_bytes", write_then_cancel
+    )
+    with pytest.raises(UpscaleCancelledError):
+        UpscaleService(MockBackend()).run(
+            source, destination, UpscaleOptions(),
+            lambda _value: None, cancel_event,
+        )
+    assert not list(destination.glob("*"))

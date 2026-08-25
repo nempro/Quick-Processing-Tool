@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import tempfile
 from pathlib import Path
 from threading import Event
 
@@ -15,7 +14,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget, QComboBox,
 )
 
-from .naming import write_unique_bytes
 from .ui_styles import INPUT_CONTROL_STYLE
 from .upscaler import RealESRGANNCNNBackend, UpscaleMode, UpscaleOptions, UpscaleOutputFormat, UpscaleResult, UpscaleService
 from .upscaler.errors import (
@@ -43,6 +41,31 @@ QPushButton { min-height: 30px; background: #f5f7fa; color: #182230;
 QPushButton:hover { background: #e5edf6; border-color: #405b79; }
 QPushButton:focus { background: white; border: 2px solid #2457b2; padding: 4px 9px; }
 QPushButton:disabled { background: #f3f4f6; color: #9aa1aa; border-color: #d4d8de; }
+QRadioButton#scaleOption {
+    min-height: 42px;
+    min-width: 78px;
+    padding: 7px 18px;
+    background-color: #e8eef5;
+    color: #243447;
+    border: 2px solid #8da0b5;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 600;
+}
+QRadioButton#scaleOption::indicator { width: 0; height: 0; }
+QRadioButton#scaleOption:hover:!checked { background-color: #dbe6f1; border-color: #405b79; }
+QRadioButton#scaleOption:checked {
+    background-color: #315fbd;
+    color: #ffffff;
+    border-color: #174a9c;
+    font-weight: 700;
+}
+QRadioButton#scaleOption:focus { border-color: #102f6b; }
+QRadioButton#scaleOption:disabled {
+    background-color: #f3f4f6;
+    color: #9aa1aa;
+    border-color: #d4d8de;
+}
 QPushButton#upscaleStart { min-height: 46px; background: #315fbd; color: white;
  border: 1px solid #315fbd; border-radius: 8px; font-size: 15px; font-weight: 700; }
 QPushButton#upscaleStart:hover { background: #284fa1; }
@@ -230,8 +253,8 @@ class UpscalePage(QWidget):
         self.service = service or UpscaleService(RealESRGANNCNNBackend())
         self.source_path: Path | None = None
         self.output_folder = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation))
+        self._output_folder_explicit = False
         self.result: UpscaleResult | None = None
-        self._result_temp: tempfile.TemporaryDirectory[str] | None = None
         self._thread: QThread | None = None
         self._worker: UpscaleWorker | None = None
         self._cancel_event: Event | None = None
@@ -244,9 +267,13 @@ class UpscalePage(QWidget):
         left = QWidget(); left.setMinimumWidth(250); left.setMaximumWidth(330)
         ll = QVBoxLayout(left); ll.setContentsMargins(12, 12, 8, 12)
         heading = QLabel("高画質化設定"); heading.setStyleSheet("font-size: 18px; font-weight: 700;"); ll.addWidget(heading)
-        scale_box = QGroupBox("拡大倍率"); scale_layout = QHBoxLayout(scale_box)
-        self.scale_2 = QRadioButton("2倍"); self.scale_4 = QRadioButton("4倍"); self.scale_2.setChecked(True)
-        scale_layout.addWidget(self.scale_2); scale_layout.addWidget(self.scale_4); ll.addWidget(scale_box)
+        scale_box = QGroupBox("拡大倍率"); scale_layout = QHBoxLayout(scale_box); scale_layout.setSpacing(8)
+        self.scale_2 = QRadioButton("2倍"); self.scale_4 = QRadioButton("4倍")
+        for scale_button in (self.scale_2, self.scale_4):
+            scale_button.setObjectName("scaleOption")
+            scale_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            scale_layout.addWidget(scale_button)
+        self.scale_2.setChecked(True); ll.addWidget(scale_box)
         mode_box = QGroupBox("画像タイプ"); mode_layout = QHBoxLayout(mode_box)
         self.illustration = QRadioButton("イラスト"); self.photo = QRadioButton("写真"); self.illustration.setChecked(True)
         mode_layout.addWidget(self.illustration); mode_layout.addWidget(self.photo); ll.addWidget(mode_box)
@@ -284,7 +311,6 @@ class UpscalePage(QWidget):
         self.progress_label = QLabel(""); self.progress = QProgressBar(); self.progress.hide(); self.progress_label.hide()
         rl.addWidget(self.progress_label); rl.addWidget(self.progress)
         self.result_label = QLabel(""); self.result_label.setWordWrap(True); rl.addWidget(self.result_label)
-        self.save_button = QPushButton("画像を保存"); self.save_button.setEnabled(False); self.save_button.clicked.connect(self.save_result); rl.addWidget(self.save_button)
         self.saved_box = QWidget(); saved = QVBoxLayout(self.saved_box); saved.setContentsMargins(0, 6, 0, 0)
         saved.addWidget(QLabel("保存先")); self.saved_path = ElidedPathLabel(); saved.addWidget(self.saved_path)
         self.open_folder_button = QPushButton("保存先を開く"); self.open_folder_button.clicked.connect(self.open_saved_folder); saved.addWidget(self.open_folder_button)
@@ -317,7 +343,9 @@ class UpscalePage(QWidget):
         except OSError:
             QMessageBox.warning(self, "画像を開けません", "PNG / JPEG / WebP画像を選んでください。"); return
         self._clear_result(); self.source_path = path.resolve(); self._source_size = (width, height); self._source_format = fmt; self._source_alpha = alpha
-        self.output_folder = self.source_path.parent; self.folder_label.set_path(self.output_folder)
+        if not self._output_folder_explicit:
+            self.output_folder = self.source_path.parent
+        self.folder_label.set_path(self.output_folder)
         self.drop_zone.preview.set_image_path(self.source_path); self.drop_zone.set_empty(False)
         self.original_info.setText(f"元画像\n{width} × {height}\n{fmt} / {self._human_bytes(self.source_path.stat().st_size)}\n{self.source_path.name}")
         self._settings_changed(); self._update_actions()
@@ -339,7 +367,10 @@ class UpscalePage(QWidget):
     @Slot()
     def choose_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "高画質化画像の保存先を選ぶ", str(self.output_folder))
-        if folder: self.output_folder = Path(folder); self.folder_label.set_path(self.output_folder)
+        if folder:
+            self.output_folder = Path(folder).resolve()
+            self._output_folder_explicit = True
+            self.folder_label.set_path(self.output_folder)
 
     @Slot()
     def start(self) -> None:
@@ -347,11 +378,14 @@ class UpscalePage(QWidget):
         available = self.service.backend.check_availability()
         if not available.available:
             QMessageBox.warning(self, "高画質化を開始できません", available.user_message + "\n\nREADMEのRuntime設定を確認してください。"); return
-        self._clear_result(); self._result_temp = tempfile.TemporaryDirectory(prefix="quick-processing-upscale-result-")
+        if self.output_folder.exists() and not self.output_folder.is_dir():
+            QMessageBox.warning(self, "保存先を使用できません", "保存先フォルダーを選び直してください。")
+            return
+        self._clear_result()
         self._cancel_event = Event(); options = self._options()
         self.progress.setRange(0, 0); self.progress.show(); self.progress_label.setText("高画質化しています…"); self.progress_label.show()
         self._set_processing(True)
-        self._thread = QThread(self); self._worker = UpscaleWorker(self.service, self.source_path, Path(self._result_temp.name), options, self._cancel_event)
+        self._thread = QThread(self); self._worker = UpscaleWorker(self.service, self.source_path, self.output_folder, options, self._cancel_event)
         self._worker.moveToThread(self._thread); self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_progress); self._worker.succeeded.connect(self._on_succeeded); self._worker.failed.connect(self._on_failed); self._worker.cancelled.connect(self._on_cancelled)
         self._worker.finished.connect(self._thread.quit); self._thread.finished.connect(self._worker.deleteLater); self._thread.finished.connect(self._thread.deleteLater); self._thread.finished.connect(self._clear_worker_refs)
@@ -369,20 +403,21 @@ class UpscalePage(QWidget):
 
     @Slot(object)
     def _on_succeeded(self, result: UpscaleResult) -> None:
-        self.result = result; self.progress.setRange(0, 100); self.progress.setValue(100); self.progress_label.setText("高画質化が完了しました")
-        self.result_label.setStyleSheet("color: #137333; font-weight: 700;"); self.result_label.setText(f"✓ {result.scale}倍の高画質化が完了しました\n{result.duration_seconds:.1f}秒")
-        self.after_button.setEnabled(True); self.save_button.setEnabled(True); self.show_after()
+        self.result = result; self._saved_output = result.output_path
+        self.progress.setRange(0, 100); self.progress.setValue(100); self.progress_label.setText("高画質化が完了しました")
+        self.result_label.setStyleSheet("color: #137333; font-weight: 700;")
+        self.result_label.setText(f"✓ {result.scale}倍の画像を保存しました\n{result.output_path.name}")
+        self.saved_path.set_path(result.output_path.parent); self.saved_box.show()
+        self.after_button.setEnabled(True); self.show_after()
 
     @Slot(str, str)
     def _on_failed(self, code: str, message: str) -> None:
         self.progress.hide(); self.progress_label.setText(message); self.result_label.setStyleSheet("color: #c62828; font-weight: 700;"); self.result_label.setText("処理を完了できませんでした")
         LOGGER.error("Upscale UI failure: code=%s message=%s", code, message)
-        self._discard_temporary_result()
 
     @Slot()
     def _on_cancelled(self) -> None:
         self.progress.hide(); self.progress_label.setText("高画質化をキャンセルしました"); self.result_label.clear()
-        self._discard_temporary_result()
 
     @Slot()
     def _clear_worker_refs(self) -> None:
@@ -406,35 +441,20 @@ class UpscalePage(QWidget):
         if self.result and self.result.output_path.is_file(): self.drop_zone.preview.set_image_path(self.result.output_path); self.before_button.setEnabled(True); self.after_button.setEnabled(False)
 
     @Slot()
-    def save_result(self) -> None:
-        if not self.result or not self.result.output_path.is_file(): return
-        try:
-            output = write_unique_bytes(self.output_folder, self.result.output_path.stem, self.result.output_path.suffix, self.result.output_path.read_bytes())
-            with Image.open(output) as checked: checked.load()
-        except OSError:
-            QMessageBox.warning(self, "保存できません", "保存先へ画像を書き込めませんでした。"); return
-        self._saved_output = output; self.saved_path.set_path(output.parent); self.saved_box.show(); self.result_label.setText(f"✓ {self.result.scale}倍の画像を保存しました\n{output.name}")
-
-    @Slot()
     def open_saved_folder(self) -> None:
         output = getattr(self, "_saved_output", None)
         if not output or not output.parent.is_dir() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(output.parent))):
             QMessageBox.warning(self, "保存先を開けません", "Windows Explorerで保存先を開けませんでした。")
 
     def _clear_result(self) -> None:
-        self.result = None; self.after_button.setEnabled(False); self.save_button.setEnabled(False); self.result_label.clear(); self.progress.hide(); self.progress_label.hide(); self.saved_box.hide(); self._saved_output = None
-        if self._result_temp: self._result_temp.cleanup(); self._result_temp = None
-
-    def _discard_temporary_result(self) -> None:
-        if self._result_temp:
-            self._result_temp.cleanup()
-            self._result_temp = None
+        self.result = None; self.after_button.setEnabled(False); self.result_label.clear()
+        self.progress.hide(); self.progress_label.hide(); self.saved_box.hide(); self._saved_output = None
 
     def can_close(self) -> bool:
         return self._thread is None
 
     def cleanup(self) -> None:
-        if self._result_temp: self._result_temp.cleanup(); self._result_temp = None
+        pass
 
     @staticmethod
     def _human_bytes(size: int) -> str:
