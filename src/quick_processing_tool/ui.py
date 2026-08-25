@@ -51,6 +51,45 @@ from .ui_styles import INPUT_CONTROL_STYLE
 
 
 LOGGER = logging.getLogger(__name__)
+NAVIGATION_TAB_STYLE = """
+QTabWidget::pane {
+    border: 0;
+    border-top: 1px solid #cbd5e1;
+}
+QTabBar::tab {
+    min-height: 24px;
+    padding: 7px 16px;
+    margin-right: 2px;
+    background-color: #edf1f5;
+    color: #344054;
+    border: 1px solid #c7d0db;
+    border-bottom: 1px solid #aeb9c6;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+}
+QTabBar::tab:hover:!selected:!disabled {
+    background-color: #dfe9f4;
+    color: #173a63;
+    border-color: #8095ab;
+}
+QTabBar::tab:selected {
+    padding: 6px 15px;
+    background-color: #ffffff;
+    color: #174ea6;
+    border: 2px solid #315fbd;
+    border-bottom: 3px solid #315fbd;
+    font-weight: 700;
+}
+QTabBar::tab:disabled {
+    background-color: #f3f4f6;
+    color: #a1a8b2;
+    border-color: #dde1e6;
+    font-weight: 500;
+}
+"""
+
 SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 RESIZE_LABELS = {
     ResizeMode.NONE: "変更しない",
@@ -426,6 +465,9 @@ class MainWindow(QMainWindow):
     def _build_content(self) -> None:
         self.navigation = QTabWidget()
         self.navigation.setDocumentMode(True)
+        self.navigation.setStyleSheet(NAVIGATION_TAB_STYLE)
+        self.navigation.tabBar().setExpanding(False)
+        self.navigation.tabBar().setUsesScrollButtons(True)
         self.navigation.addTab(self._build_quick_page(), "かんたん変換")
         self.thumbnail_page = ThumbnailPage()
         self.thumbnail_page.processing_changed.connect(self._thumbnail_processing_changed)

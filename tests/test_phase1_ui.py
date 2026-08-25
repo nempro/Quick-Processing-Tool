@@ -272,6 +272,36 @@ def test_settings_are_purpose_first_and_future_tabs_are_disabled(
         assert window.navigation.tabToolTip(index) == "今後追加予定"
 
 
+def test_navigation_tabs_have_uniform_larger_click_targets(
+    window: MainWindow,
+) -> None:
+    window.resize(1180, 760)
+    window.show()
+    QApplication.processEvents()
+
+    tab_bar = window.navigation.tabBar()
+    heights = [
+        tab_bar.tabRect(index).height()
+        for index in range(tab_bar.count())
+    ]
+    assert len(set(heights)) == 1
+    assert 39 <= heights[0] <= 43
+    assert not tab_bar.expanding()
+    assert window.navigation.currentWidget().height() >= 650
+
+    style = window.navigation.styleSheet()
+    for selector in (
+        "QTabBar::tab {",
+        "QTabBar::tab:hover:!selected:!disabled",
+        "QTabBar::tab:selected",
+        "QTabBar::tab:disabled",
+    ):
+        assert selector in style
+    assert "padding: 7px 16px" in style
+    assert "font-size: 14px" in style
+    assert "border-bottom: 3px solid #315fbd" in style
+
+
 def test_duplicate_drop_does_not_duplicate_the_loaded_list(
     window: MainWindow, tmp_path: Path
 ) -> None:
