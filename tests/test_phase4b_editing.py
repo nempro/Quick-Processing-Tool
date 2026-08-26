@@ -85,6 +85,32 @@ def test_cached_palette_mapping_recolor_changes_values_only() -> None:
     assert result.getpixel((0, 0))[:3] == (1, 2, 3)
 
 
+
+def test_palette_recolor_single_and_multiple_changes_apply_expected_indices() -> None:
+    image = Image.new("RGBA", (3, 1))
+    image.putdata([
+        (255, 0, 0, 255),
+        (0, 255, 0, 255),
+        (0, 0, 255, 180),
+    ])
+    mapping = extract_palette(image, 6)
+    first_index, second_index, third_index = mapping.indices
+
+    single = list(mapping.palette)
+    single[first_index] = (120, 30, 220)
+    single_result = apply_palette_mapping(image, mapping, tuple(single))
+    assert single_result.getpixel((0, 0))[:3] == (120, 30, 220)
+
+    multiple = list(mapping.palette)
+    multiple[first_index] = (120, 30, 220)
+    multiple[second_index] = (15, 25, 35)
+    multiple[third_index] = (250, 210, 180)
+    multi_result = apply_palette_mapping(image, mapping, tuple(multiple))
+    assert multi_result.getpixel((0, 0))[:3] == (120, 30, 220)
+    assert multi_result.getpixel((1, 0))[:3] == (15, 25, 35)
+    assert multi_result.getpixel((2, 0)) == (250, 210, 180, 180)
+
+
 def test_palette_counts_and_transparent_only_contract() -> None:
     image = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
     assert extract_palette(image, 5).palette == ()
@@ -116,6 +142,12 @@ def test_material_ui_defaults_and_vertical_scroll(qt_app) -> None:
     assert page.settings().palette.color_count == 6
     assert not page.settings().sticker.enabled
     assert not page.settings().line_art.enabled
+    assert page.palette_extract_button.text() == "色を取り出す"
+    assert page.palette_quantize_enabled.text() == "6色に整理する"
+    assert not page.palette_quantize_enabled.isEnabled()
+    assert page.palette_quantize_guide_label.text() == "先に色を取り出してください"
+    assert not page.palette_send_button.isVisible()
+    assert not page.palette_open_button.isVisible()
     assert page.settings_scroll.horizontalScrollBar().maximum() == 0
     page.material_section.toggle.click()
     qt_app.processEvents()
@@ -173,6 +205,7 @@ def test_palette_upstream_change_clears_and_undo_restores(qt_app, tmp_path: Path
     assert page.settings().palette.mapping == ()
     assert not page.settings().palette.quantize_enabled
     assert page._palette_needs_reextract
+    assert page.palette_quantize_guide_label.text() == "画像が変更されました。もう一度色を取り出してください。"
     page.undo()
     assert page.settings().filter_preset.value == "none"
     assert page.settings().palette.mapping == (0, 1)
@@ -185,6 +218,34 @@ def test_palette_upstream_change_clears_and_undo_restores(qt_app, tmp_path: Path
     page.line_art_enabled.setChecked(True)
     qt_app.processEvents()
     assert page.settings().palette.mapping == (0, 1)
+    page.close()
+
+
+
+def test_palette_count_change_clears_and_requests_reextract(qt_app, tmp_path: Path) -> None:
+    from quick_processing_tool.edit_ui import QuickEditPage
+    from quick_processing_tool.editing import EditSettings
+
+    source = tmp_path / "count-change.png"
+    Image.new("RGB", (4, 1), "red").save(source)
+    page = QuickEditPage()
+    page.load_image(source)
+    settings = EditSettings(palette=PaletteSettings(True, True, 6, ((255, 0, 0),), ((255, 0, 0),), (0, 0, 0, 0), 4, 1))
+    page.apply_settings(settings)
+    page._control_changed()
+
+    page.palette_count_combo.setCurrentIndex(page.palette_count_combo.findData(5))
+    qt_app.processEvents()
+    assert page.settings().palette.palette == ()
+    assert page.settings().palette.replacements == ()
+    assert page.settings().palette.mapping == ()
+    assert not page.settings().palette.quantize_enabled
+    assert page._palette_needs_reextract
+    assert page.palette_quantize_guide_label.text() == "色数が変更されました。5色で取り直してください。"
+
+    page.undo()
+    assert page.settings().palette.color_count == 6
+    assert page.settings().palette.palette == ((255, 0, 0),)
     page.close()
 
 
@@ -506,7 +567,7 @@ def test_palette_extract_only_keeps_preview_unquantized_until_toggle() -> None:
     assert quantized.tobytes() != image.tobytes()
 
 
-def test_palette_rows_and_reset_and_handoff(qt_app, tmp_path: Path) -> None:
+def test_palette_rows_reset_and_handoff_use_recolored_values(qt_app, tmp_path: Path) -> None:
     from quick_processing_tool.edit_ui import QuickEditPage
 
     source = tmp_path / "palette-ui.png"
@@ -515,15 +576,20 @@ def test_palette_rows_and_reset_and_handoff(qt_app, tmp_path: Path) -> None:
     image.save(source)
 
     page = QuickEditPage()
+    page.show()
     page.load_image(source)
     mapping = extract_palette(Image.open(source), 6)
-    page._on_palette_extracted((page._palette_generation, 1, page._palette_source_identity(source), (page.settings().filter_preset.value, page.settings().transparency, page.settings().palette.color_count), mapping))
-    token = page._palette_active_request = (page._palette_generation, 99, page._palette_source_identity(source), (page.settings().filter_preset.value, page.settings().transparency, page.settings().palette.color_count))
+    token = (page._palette_generation, 99, page._palette_source_identity(source), (page.settings().filter_preset.value, page.settings().transparency, page.settings().palette.color_count))
+    page._palette_active_request = token
     page._on_palette_extracted((*token, mapping))
     qt_app.processEvents()
+    assert page.palette_current_label.text() == "現在の配色"
+    assert page.palette_instruction_label.text() == "抽出した色をクリックして、好きな配色へ変更できます。"
     assert page.palette_chips_layout.count() >= len(mapping.palette) * 3
+    assert page.palette_quantize_enabled.text() == "6色に整理する"
     assert page.palette_send_button.isEnabled()
     assert page.palette_send_button.text() == "現在の配色をドット絵パレットへ送る"
+    assert page.palette_open_button.isEnabled()
 
     page._palette_replacements = tuple(reversed(mapping.palette))
     page._rebuild_palette_chips()
@@ -538,7 +604,24 @@ def test_palette_rows_and_reset_and_handoff(qt_app, tmp_path: Path) -> None:
     page.close()
 
 
-def test_main_window_palette_handoff_switches_tab_and_preserves_pixel_source(qt_app, tmp_path: Path) -> None:
+def test_main_window_extract_palette_does_not_switch_tabs(qt_app, tmp_path: Path) -> None:
+    from quick_processing_tool.ui import MainWindow
+
+    window = MainWindow()
+    source = tmp_path / "extract-stays.png"
+    Image.new("RGB", (4, 1), "red").save(source)
+    window.navigation.setCurrentIndex(window.image_edit_tab)
+    window.edit_page.load_image(source)
+    mapping = extract_palette(Image.open(source), 6)
+    token = (window.edit_page._palette_generation, 7, window.edit_page._palette_source_identity(source), (window.edit_page.settings().filter_preset.value, window.edit_page.settings().transparency, window.edit_page.settings().palette.color_count))
+    window.edit_page._palette_active_request = token
+    window.edit_page._on_palette_extracted((*token, mapping))
+    qt_app.processEvents()
+    assert window.navigation.currentIndex() == window.image_edit_tab
+    window.close()
+
+
+def test_main_window_palette_handoff_preserves_pixel_source_without_switching_tabs(qt_app, tmp_path: Path) -> None:
     from quick_processing_tool.ui import MainWindow
 
     window = MainWindow()
@@ -555,11 +638,14 @@ def test_main_window_palette_handoff_switches_tab_and_preserves_pixel_source(qt_
     history_index = window.pixel_page.canvas.history._index
     history_len = len(window.pixel_page.canvas.history._entries)
     reference = window.pixel_page.reference
+    window.navigation.setCurrentIndex(window.image_edit_tab)
 
-    window._handoff_palette_to_pixel(((1, 2, 3), (4, 5, 6), (7, 8, 9), (10, 11, 12), (13, 14, 15), (16, 17, 18)))
+    colors = ((1, 2, 3), (4, 5, 6), (7, 8, 9), (10, 11, 12), (13, 14, 15), (16, 17, 18))
+    window._handoff_palette_to_pixel(colors)
     qt_app.processEvents()
-    assert window.navigation.currentIndex() == window.pixel_tab
-    assert window.pixel_page._received_palette == ((1, 2, 3), (4, 5, 6), (7, 8, 9), (10, 11, 12), (13, 14, 15), (16, 17, 18))
+    assert window.navigation.currentIndex() == window.image_edit_tab
+    assert window.pixel_page._received_palette == colors
+    assert window.pixel_page.palette_status_label.text() == "✓ 6色のパレットを受け取りました"
     assert window.pixel_page.source_path == source
     assert window.pixel_page.reference == reference
     assert window.pixel_page.filename_edit.text() == "keep_name"
@@ -572,6 +658,10 @@ def test_main_window_palette_handoff_switches_tab_and_preserves_pixel_source(qt_
     assert window.pixel_page.canvas.history._index == history_index
     assert len(window.pixel_page.canvas.history._entries) == history_len
     assert window.pixel_page._palette_selected_index == -1
+
+    window._open_pixel_tab_from_edit()
+    qt_app.processEvents()
+    assert window.navigation.currentIndex() == window.pixel_tab
     window.close()
 
 

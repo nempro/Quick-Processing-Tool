@@ -619,6 +619,7 @@ class PaletteExtractionThread(QThread):
 class QuickEditPage(QWidget):
     processing_changed = Signal(bool)
     palette_handoff_requested = Signal(object)
+    palette_open_requested = Signal()
 
     def __init__(self, service: EditService | None = None) -> None:
         super().__init__()
@@ -658,6 +659,8 @@ class QuickEditPage(QWidget):
         self._selected_palette_index = -1
         self._palette_source_signature = None
         self._palette_needs_reextract = False
+        self._palette_extracted_color_count: int | None = None
+        self._palette_status_message = ""
         self._invalidating_palette = False
         self._text_history_dirty = False
         self._build_ui()
@@ -926,18 +929,41 @@ class QuickEditPage(QWidget):
         palette_layout = QVBoxLayout(palette_group)
         self.palette_enabled = QCheckBox("代表色を抽出")
         self.palette_enabled.setVisible(False)
-        self.palette_quantize_enabled = QCheckBox("この色数に整理する")
-        palette_layout.addWidget(self.palette_quantize_enabled)
         palette_row = QHBoxLayout()
         self.palette_count_combo = QComboBox()
         for count in (5, 6, 8):
             self.palette_count_combo.addItem(f"{count}色", count)
         self.palette_count_combo.setCurrentIndex(self.palette_count_combo.findData(6))
-        self.palette_extract_button = QPushButton("代表色を抽出")
+        self.palette_extract_button = QPushButton("色を取り出す")
         self.palette_extract_button.clicked.connect(self.extract_palette)
         palette_row.addWidget(self.palette_count_combo, 1)
         palette_row.addWidget(self.palette_extract_button, 1)
+        self.palette_intro_label = QLabel("画像から5〜8色の代表色を取り出して、好きな色へ置き換えられます。")
+        self.palette_intro_label.setWordWrap(True)
+        self.palette_intro_label.setStyleSheet("color: #667085;")
+        palette_layout.addWidget(self.palette_intro_label)
         palette_layout.addLayout(palette_row)
+        self.palette_quantize_enabled = QCheckBox()
+        palette_layout.addWidget(self.palette_quantize_enabled)
+        self.palette_quantize_guide_label = QLabel()
+        self.palette_quantize_guide_label.setWordWrap(True)
+        self.palette_quantize_guide_label.setStyleSheet("color: #9a6700;")
+        palette_layout.addWidget(self.palette_quantize_guide_label)
+        self.palette_current_label = QLabel("現在の配色")
+        self.palette_current_label.setStyleSheet("font-size: 15px; font-weight: 700; color: #182230;")
+        palette_layout.addWidget(self.palette_current_label)
+        self.palette_instruction_label = QLabel("抽出した色をクリックして、好きな配色へ変更できます。")
+        self.palette_instruction_label.setWordWrap(True)
+        self.palette_instruction_label.setStyleSheet("color: #667085;")
+        palette_layout.addWidget(self.palette_instruction_label)
+        self.palette_columns_widget = QWidget()
+        palette_columns_layout = QGridLayout(self.palette_columns_widget)
+        palette_columns_layout.setContentsMargins(0, 0, 0, 0)
+        palette_columns_layout.setHorizontalSpacing(6)
+        palette_columns_layout.addWidget(QLabel("元の色"), 0, 0)
+        palette_columns_layout.addWidget(QLabel(""), 0, 1)
+        palette_columns_layout.addWidget(QLabel("変更後"), 0, 2)
+        palette_layout.addWidget(self.palette_columns_widget)
         self.palette_chips_widget = QWidget()
         self.palette_chips_layout = QGridLayout(self.palette_chips_widget)
         self.palette_chips_layout.setContentsMargins(0, 2, 0, 2)
@@ -949,11 +975,21 @@ class QuickEditPage(QWidget):
         self.palette_reset_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.palette_reset_button.clicked.connect(self.reset_palette)
         palette_layout.addWidget(self.palette_reset_button)
+        self.palette_other_uses_label = QLabel("ほかで使う")
+        self.palette_other_uses_label.setStyleSheet("color: #667085; font-size: 12px; font-weight: 700;")
+        palette_layout.addWidget(self.palette_other_uses_label)
+        palette_actions_row = QHBoxLayout()
         self.palette_send_button = QPushButton("現在の配色をドット絵パレットへ送る")
         self.palette_send_button.setMinimumWidth(0)
         self.palette_send_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.palette_send_button.clicked.connect(self.send_palette_to_pixel)
-        palette_layout.addWidget(self.palette_send_button)
+        palette_actions_row.addWidget(self.palette_send_button, 1)
+        self.palette_open_button = QPushButton("ドット絵を開く")
+        self.palette_open_button.setMinimumWidth(0)
+        self.palette_open_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.palette_open_button.clicked.connect(self.open_pixel_tab)
+        palette_actions_row.addWidget(self.palette_open_button)
+        palette_layout.addLayout(palette_actions_row)
         self.palette_feedback_label = QLabel()
         self.palette_feedback_label.setWordWrap(True)
         self.palette_feedback_label.setStyleSheet("color: #137333; font-weight: 700;")
@@ -1127,9 +1163,9 @@ class QuickEditPage(QWidget):
             self.canvas_background_combo,
             self.line_art_amount_combo,
             self.line_art_background_combo,
-            self.palette_count_combo,
         ):
             combo.currentIndexChanged.connect(self._control_changed)
+        self.palette_count_combo.currentIndexChanged.connect(self._palette_count_changed)
         for spin in (
             self.font_size_spin,
             self.outline_width_spin,
@@ -1373,6 +1409,8 @@ class QuickEditPage(QWidget):
         self._palette_mapping_digest = settings.palette.mapping_digest
         self._palette_source_signature = self._upstream_signature(settings)
         self._palette_needs_reextract = False
+        self._palette_extracted_color_count = settings.palette.color_count if settings.palette.palette else None
+        self._palette_status_message = ""
         self._rebuild_palette_chips()
         self._update_color_button(self.text_color_button, self._text_color)
         self._update_color_button(self.outline_color_button, self._outline_color)
@@ -1398,13 +1436,56 @@ class QuickEditPage(QWidget):
             + hover
         )
 
+    def _set_palette_feedback(self, text: str, tone: str = "success") -> None:
+        color = {"success": "#137333", "warning": "#9a6700", "info": "#315fbd"}.get(tone, "#137333")
+        self.palette_feedback_label.setStyleSheet(f"color: {color}; font-weight: 700;")
+        self.palette_feedback_label.setText(text)
+
+    def _update_palette_quantize_text(self) -> None:
+        count = int(self.palette_count_combo.currentData())
+        self.palette_quantize_enabled.setText(f"{count}色に整理する")
+
+    def _clear_palette_state(self, message: str = "", *, needs_reextract: bool, preview_message: str | None = None) -> None:
+        self._palette_values = ()
+        self._palette_replacements = ()
+        self._palette_mapping = ()
+        self._palette_mapping_size = (0, 0)
+        self._palette_mapping_digest = ""
+        self._selected_palette_index = -1
+        self._palette_extracted_color_count = None
+        previous_enabled = self.palette_enabled.blockSignals(True)
+        self.palette_enabled.setChecked(False)
+        self.palette_enabled.blockSignals(previous_enabled)
+        previous_quantize = self.palette_quantize_enabled.blockSignals(True)
+        self.palette_quantize_enabled.setChecked(False)
+        self.palette_quantize_enabled.blockSignals(previous_quantize)
+        self._palette_needs_reextract = needs_reextract
+        self._palette_status_message = message
+        self._set_palette_feedback("", "success")
+        self._rebuild_palette_chips()
+        if preview_message:
+            self.preview_status.setText(preview_message)
+
     def _update_palette_controls(self) -> None:
+        self._update_palette_quantize_text()
         has_palette = bool(self._palette_values)
+        self.palette_intro_label.setVisible(not has_palette)
+        self.palette_current_label.setVisible(has_palette)
+        self.palette_instruction_label.setVisible(has_palette)
+        self.palette_columns_widget.setVisible(has_palette)
+        self.palette_reset_button.setVisible(has_palette)
         self.palette_reset_button.setEnabled(has_palette and self._palette_replacements != self._palette_values)
+        self.palette_other_uses_label.setVisible(has_palette)
+        self.palette_send_button.setVisible(has_palette)
         self.palette_send_button.setEnabled(has_palette)
+        self.palette_open_button.setVisible(has_palette)
+        self.palette_open_button.setEnabled(has_palette)
         self.palette_quantize_enabled.setEnabled(has_palette)
-        if not has_palette and not self.palette_feedback_label.text():
-            self.palette_feedback_label.setText("")
+        status_text = ""
+        if not has_palette:
+            status_text = self._palette_status_message or "先に色を取り出してください"
+        self.palette_quantize_guide_label.setText(status_text)
+        self.palette_quantize_guide_label.setVisible(bool(status_text))
 
     def _rebuild_palette_chips(self) -> None:
         while self.palette_chips_layout.count():
@@ -1412,10 +1493,6 @@ class QuickEditPage(QWidget):
             if item.widget() is not None:
                 item.widget().deleteLater()
         if not self._palette_values:
-            empty = QLabel("代表色を抽出すると、ここで元の色と置き換え先を並べて調整できます。")
-            empty.setWordWrap(True)
-            empty.setStyleSheet("color: #667085;")
-            self.palette_chips_layout.addWidget(empty, 0, 0, 1, 4)
             self._update_palette_controls()
             return
         for index, source_color in enumerate(self._palette_values):
@@ -1494,8 +1571,10 @@ class QuickEditPage(QWidget):
         self._palette_mapping_size = (mapping.width, mapping.height)
         self._palette_mapping_digest = mapping.digest
         self._palette_needs_reextract = False
+        self._palette_extracted_color_count = int(signature[2])
+        self._palette_status_message = ""
         self.palette_enabled.setChecked(True)
-        self.palette_feedback_label.setText("代表色を抽出しました。必要なら置き換え先だけ変えられます。")
+        self._set_palette_feedback("", "success")
         self._rebuild_palette_chips()
         self._control_changed()
 
@@ -1525,7 +1604,8 @@ class QuickEditPage(QWidget):
             self._palette_replacements = self._palette_values
             self._selected_palette_index = -1
             self._palette_needs_reextract = False
-            self.palette_feedback_label.setText("置き換え先を元の配色へ戻しました。")
+            self._palette_status_message = ""
+            self._set_palette_feedback("元の配色に戻しました。", "info")
             self._rebuild_palette_chips()
             self._control_changed()
 
@@ -1540,7 +1620,8 @@ class QuickEditPage(QWidget):
         values = list(self._palette_replacements)
         values[index] = (color.red(), color.green(), color.blue())
         self._palette_replacements = tuple(values)
-        self.palette_feedback_label.setText(f"代表色 {index + 1} の置き換え先を更新しました。")
+        self._palette_status_message = ""
+        self._set_palette_feedback(f"代表色 {index + 1} の置き換え先を更新しました。", "info")
         self._rebuild_palette_chips()
         self._control_changed()
 
@@ -1576,25 +1657,28 @@ class QuickEditPage(QWidget):
             return
         self._invalidating_palette = True
         try:
-            self._palette_values = ()
-            self._palette_replacements = ()
-            self._palette_mapping = ()
-            self._palette_mapping_size = (0, 0)
-            self._palette_mapping_digest = ""
-            self._selected_palette_index = -1
-            previous_enabled = self.palette_enabled.blockSignals(True)
-            self.palette_enabled.setChecked(False)
-            self.palette_enabled.blockSignals(previous_enabled)
-            previous_quantize = self.palette_quantize_enabled.blockSignals(True)
-            self.palette_quantize_enabled.setChecked(False)
-            self.palette_quantize_enabled.blockSignals(previous_quantize)
-            self._palette_needs_reextract = True
-            self.palette_feedback_label.setText("")
-            self._rebuild_palette_chips()
-            self.preview_status.setText("元画像の変更後は、代表色をもう一度抽出してください。")
+            self._clear_palette_state(
+                "画像が変更されました。もう一度色を取り出してください。",
+                needs_reextract=True,
+                preview_message="画像が変更されました。もう一度色を取り出してください。",
+            )
         finally:
             self._palette_source_signature = signature
             self._invalidating_palette = False
+
+    @Slot()
+    def _palette_count_changed(self, *_args) -> None:
+        self._update_palette_quantize_text()
+        if self._applying:
+            return
+        requested = int(self.palette_count_combo.currentData())
+        if self._palette_values and self._palette_extracted_color_count != requested:
+            self._clear_palette_state(
+                f"色数が変更されました。{requested}色で取り直してください。",
+                needs_reextract=True,
+                preview_message=f"色数が変更されました。{requested}色で取り直してください。",
+            )
+        self._control_changed()
 
     @Slot()
     def _control_changed(self, *_args) -> None:
@@ -1936,12 +2020,15 @@ class QuickEditPage(QWidget):
     def send_palette_to_pixel(self) -> None:
         colors = self._palette_replacements or self._palette_values
         if not colors:
-            self.palette_feedback_label.setStyleSheet("color: #9a6700; font-weight: 700;")
-            self.palette_feedback_label.setText("先に代表色を抽出してください。")
+            self._set_palette_feedback("先に色を取り出してください。", "warning")
             return
-        self.palette_feedback_label.setStyleSheet("color: #137333; font-weight: 700;")
-        self.palette_feedback_label.setText(f"✓ {len(colors)}色のパレットをドット絵へ送りました")
+        self._set_palette_feedback(f"✓ {len(colors)}色のパレットをドット絵へ送りました", "success")
         self.palette_handoff_requested.emit(colors)
+
+    @Slot()
+    def open_pixel_tab(self) -> None:
+        if self._palette_values:
+            self.palette_open_requested.emit()
 
     @Slot()
     def choose_output_folder(self) -> None:
@@ -2057,6 +2144,8 @@ class QuickEditPage(QWidget):
             self.palette_count_combo,
             self.palette_extract_button,
             self.palette_reset_button,
+            self.palette_send_button,
+            self.palette_open_button,
             self.palette_chips_widget,
             self.undo_button,
             self.redo_button,
