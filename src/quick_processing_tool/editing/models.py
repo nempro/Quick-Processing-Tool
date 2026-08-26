@@ -48,6 +48,18 @@ class EditOutputFormat(str, Enum):
     JPEG = "JPEG"
     WEBP = "WEBP"
 
+class LineArtAmount(str, Enum):
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+
+
+class LineArtBackground(str, Enum):
+    TRANSPARENT = "transparent"
+    WHITE = "white"
+    BLACK = "black"
+    CUSTOM = "custom"
+
 
 @dataclass(frozen=True, slots=True)
 class TransparencySettings:
@@ -103,11 +115,54 @@ class TextSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class StickerSettings:
+    enabled: bool = False
+    outline_color: tuple[int, int, int, int] = (255, 255, 255, 255)
+    outline_width: int = 8
+    shadow_enabled: bool = False
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.outline_width <= 50:
+            raise ValueError("Sticker outline width must be between 1 and 50")
+
+
+@dataclass(frozen=True, slots=True)
+class LineArtSettings:
+    enabled: bool = False
+    amount: LineArtAmount = LineArtAmount.NORMAL
+    line_color: tuple[int, int, int, int] = (0, 0, 0, 255)
+    background: LineArtBackground = LineArtBackground.TRANSPARENT
+    custom_background: tuple[int, int, int, int] = (255, 255, 255, 255)
+
+
+@dataclass(frozen=True, slots=True)
+class PaletteSettings:
+    enabled: bool = False
+    quantize_enabled: bool = False
+    color_count: int = 6
+    palette: tuple[tuple[int, int, int], ...] = ()
+    replacements: tuple[tuple[int, int, int], ...] = ()
+    mapping: tuple[int, ...] = ()
+    mapping_width: int = 0
+    mapping_height: int = 0
+    mapping_digest: str = ""
+
+    def __post_init__(self) -> None:
+        if self.color_count not in (5, 6, 8):
+            raise ValueError("Palette color count must be 5, 6, or 8")
+        if self.replacements and len(self.replacements) != len(self.palette):
+            raise ValueError("Palette replacements must match palette length")
+
+
+@dataclass(frozen=True, slots=True)
 class EditSettings:
     filter_preset: FilterPreset = FilterPreset.NONE
     transparency: TransparencySettings = field(default_factory=TransparencySettings)
     canvas: CanvasSettings = field(default_factory=CanvasSettings)
     text: TextSettings = field(default_factory=TextSettings)
+    sticker: StickerSettings = field(default_factory=StickerSettings)
+    line_art: LineArtSettings = field(default_factory=LineArtSettings)
+    palette: PaletteSettings = field(default_factory=PaletteSettings)
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGroupBox,
     QGridLayout,
     QGraphicsPixmapItem,
     QGraphicsScene,
@@ -57,12 +59,18 @@ from .editing import (
     EditService,
     EditSettings,
     FilterPreset,
+    LineArtAmount,
+    LineArtBackground,
+    LineArtSettings,
+    PaletteSettings,
     PlacementMode,
+    StickerSettings,
     TextPosition,
     TextSettings,
     TransparencySettings,
 )
-from .editing.renderer import load_normalized, render_path_preview
+from .editing.palette import extract_palette
+from .editing.renderer import load_normalized, prepare_palette_source, render_path_preview
 from .editing.service import EditProcessingError, SOURCE_FORMATS
 from .editing.text import pil_to_qimage
 from .ui_styles import INPUT_CONTROL_STYLE
@@ -566,6 +574,35 @@ class EditExportWorker(QObject):
             self.finished.emit()
 
 
+class PaletteExtractionThread(QThread):
+    succeeded = Signal(object)
+    failed = Signal(str, object)
+
+    def __init__(self, source: Path, settings: EditSettings, generation: int, request_id: int, source_identity, settings_signature) -> None:
+        super().__init__()
+        self.source = source
+        self.settings = settings
+        self.generation = generation
+        self.request_id = request_id
+        self.source_identity = source_identity
+        self.settings_signature = settings_signature
+
+    def run(self) -> None:
+        try:
+            if self.isInterruptionRequested():
+                return
+            source = load_normalized(self.source)
+            source.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+            prepared = prepare_palette_source(source, self.settings)
+            mapping = extract_palette(prepared, self.settings.palette.color_count)
+            if self.isInterruptionRequested():
+                return
+            self.succeeded.emit((self.generation, self.request_id, self.source_identity, self.settings_signature, mapping))
+        except Exception:
+            LOGGER.exception("Palette extraction failed: %s", self.source)
+            self.failed.emit("代表色を抽出できませんでした。", (self.generation, self.request_id, self.source_identity, self.settings_signature))
+
+
 class QuickEditPage(QWidget):
     processing_changed = Signal(bool)
 
@@ -583,6 +620,9 @@ class QuickEditPage(QWidget):
         self._last_output: Path | None = None
         self._thread: QThread | None = None
         self._worker: EditExportWorker | None = None
+        self._palette_thread: PaletteExtractionThread | None = None
+        self._palette_request_id = 0
+        self._palette_active_request = None
         self._applying = True
         self._show_original = False
         self._history: list[EditSettings] = []
@@ -591,6 +631,19 @@ class QuickEditPage(QWidget):
         self._outline_color = QColor("#000000")
         self._target_color = QColor("#FFFFFF")
         self._canvas_color = QColor("#FFFFFF")
+        self._sticker_outline_color = QColor("#FFFFFF")
+        self._line_art_color = QColor("#000000")
+        self._line_art_background_color = QColor("#FFFFFF")
+        self._palette_values: tuple[tuple[int, int, int], ...] = ()
+        self._palette_replacements: tuple[tuple[int, int, int], ...] = ()
+        self._palette_mapping: tuple[int, ...] = ()
+        self._palette_mapping_size = (0, 0)
+        self._palette_mapping_digest = ""
+        self._palette_generation = 0
+        self._selected_palette_index = -1
+        self._palette_source_signature = None
+        self._palette_needs_reextract = False
+        self._invalidating_palette = False
         self._build_ui()
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
@@ -599,6 +652,7 @@ class QuickEditPage(QWidget):
         self._applying = False
         self._history = [self.settings()]
         self._history_index = 0
+        self._palette_source_signature = self._upstream_signature(self.settings())
         self._update_visibility()
         self._update_actions()
 
@@ -616,7 +670,7 @@ class QuickEditPage(QWidget):
         left.setMinimumWidth(0)
         left.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         ll = QVBoxLayout(left)
-        ll.setContentsMargins(12, 12, 8, 12)
+        ll.setContentsMargins(4, 12, 4, 12)
         heading = QLabel("何をしますか？")
         heading.setStyleSheet("font-size: 18px; font-weight: 700; color: #182230;")
         ll.addWidget(heading)
@@ -756,10 +810,13 @@ class QuickEditPage(QWidget):
         ):
             self.canvas_preset_combo.addItem(label, value)
         self.custom_canvas = QWidget()
+        self.custom_canvas.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         custom_row = QHBoxLayout(self.custom_canvas)
         custom_row.setContentsMargins(0, 0, 0, 0)
         self.canvas_width_spin = self._spin(1, 10000, 320, " px")
         self.canvas_height_spin = self._spin(1, 10000, 320, " px")
+        self.canvas_width_spin.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.canvas_height_spin.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         custom_row.addWidget(self.canvas_width_spin)
         custom_row.addWidget(QLabel("×"))
         custom_row.addWidget(self.canvas_height_spin)
@@ -788,6 +845,68 @@ class QuickEditPage(QWidget):
             canvas_content,
         )
         ll.addWidget(self.canvas_section)
+
+        material_content = QWidget()
+        material_layout = QVBoxLayout(material_content)
+        material_layout.setContentsMargins(8, 2, 4, 6)
+        sticker_group = QGroupBox("ステッカー化")
+        sticker_form = QFormLayout(sticker_group)
+        self.sticker_enabled = QCheckBox("有効")
+        self.sticker_outline_width_spin = self._spin(1, 50, 8, " px")
+        self.sticker_outline_color_button = QPushButton()
+        self.sticker_outline_color_button.clicked.connect(self.choose_sticker_color)
+        self.sticker_shadow_enabled = QCheckBox("影を付ける")
+        sticker_form.addRow("ステッカー化", self.sticker_enabled)
+        sticker_form.addRow("フチ色", self.sticker_outline_color_button)
+        sticker_form.addRow("フチ太さ", self.sticker_outline_width_spin)
+        sticker_form.addRow("", self.sticker_shadow_enabled)
+        material_layout.addWidget(sticker_group)
+        line_group = QGroupBox("線画にする")
+        line_form = QFormLayout(line_group)
+        self.line_art_enabled = QCheckBox("有効")
+        self.line_art_amount_combo = QComboBox()
+        self.line_art_amount_combo.addItem("少ない", LineArtAmount.LOW.value)
+        self.line_art_amount_combo.addItem("普通", LineArtAmount.NORMAL.value)
+        self.line_art_amount_combo.addItem("多い", LineArtAmount.HIGH.value)
+        self.line_art_color_button = QPushButton()
+        self.line_art_color_button.clicked.connect(self.choose_line_art_color)
+        self.line_art_background_combo = QComboBox()
+        for label, value in (("透明", LineArtBackground.TRANSPARENT.value), ("白", LineArtBackground.WHITE.value), ("黒", LineArtBackground.BLACK.value), ("指定色", LineArtBackground.CUSTOM.value)):
+            self.line_art_background_combo.addItem(label, value)
+        self.line_art_background_color_button = QPushButton()
+        self.line_art_background_color_button.clicked.connect(self.choose_line_art_background_color)
+        line_form.addRow("線画にする", self.line_art_enabled)
+        line_form.addRow("線の量", self.line_art_amount_combo)
+        line_form.addRow("線色", self.line_art_color_button)
+        line_form.addRow("背景", self.line_art_background_combo)
+        line_form.addRow("指定色", self.line_art_background_color_button)
+        material_layout.addWidget(line_group)
+        palette_group = QGroupBox("色を整理・変える")
+        palette_layout = QVBoxLayout(palette_group)
+        self.palette_enabled = QCheckBox("代表色を抽出")
+        self.palette_quantize_enabled = QCheckBox("この色数に整理する")
+        palette_row = QHBoxLayout()
+        self.palette_count_combo = QComboBox()
+        for count in (5, 6, 8):
+            self.palette_count_combo.addItem(f"{count}色", count)
+        self.palette_count_combo.setCurrentIndex(self.palette_count_combo.findData(6))
+        self.palette_extract_button = QPushButton("代表色を抽出")
+        self.palette_extract_button.clicked.connect(self.extract_palette)
+        self.palette_reset_button = QPushButton("元の配色に戻す")
+        self.palette_reset_button.clicked.connect(self.reset_palette)
+        self.palette_chips_widget = QWidget()
+        self.palette_chips_layout = QHBoxLayout(self.palette_chips_widget)
+        self.palette_chips_layout.setContentsMargins(0, 2, 0, 2)
+        palette_layout.addWidget(self.palette_enabled)
+        palette_layout.addWidget(self.palette_quantize_enabled)
+        palette_row.addWidget(self.palette_count_combo, 1)
+        palette_row.addWidget(self.palette_extract_button, 1)
+        palette_layout.addLayout(palette_row)
+        palette_layout.addWidget(self.palette_chips_widget)
+        palette_layout.addWidget(self.palette_reset_button)
+        material_layout.addWidget(palette_group)
+        self.material_section = CollapsibleSection("素材化", "ステッカー、線画、代表色を目的別に作ります", material_content)
+        ll.addWidget(self.material_section)
         ll.addStretch()
         self.settings_scroll.setWidget(left)
         splitter.addWidget(self.settings_scroll)
@@ -891,6 +1010,7 @@ class QuickEditPage(QWidget):
             self.text_section,
             self.transparency_section,
             self.canvas_section,
+            self.material_section,
         ]
         for section in self.sections:
             section.expanded.connect(lambda expanded, active=section: self._section_expanded(active, expanded))
@@ -899,6 +1019,9 @@ class QuickEditPage(QWidget):
         self._update_color_button(self.outline_color_button, self._outline_color)
         self._update_color_button(self.target_color_button, self._target_color)
         self._update_color_button(self.canvas_color_button, self._canvas_color)
+        self._update_color_button(self.sticker_outline_color_button, self._sticker_outline_color)
+        self._update_color_button(self.line_art_color_button, self._line_art_color)
+        self._update_color_button(self.line_art_background_color_button, self._line_art_background_color)
 
     @staticmethod
     def _configure_form(form: QFormLayout) -> None:
@@ -926,6 +1049,9 @@ class QuickEditPage(QWidget):
             self.placement_combo,
             self.padding_combo,
             self.canvas_background_combo,
+            self.line_art_amount_combo,
+            self.line_art_background_combo,
+            self.palette_count_combo,
         ):
             combo.currentIndexChanged.connect(self._control_changed)
         for spin in (
@@ -933,10 +1059,11 @@ class QuickEditPage(QWidget):
             self.outline_width_spin,
             self.canvas_width_spin,
             self.canvas_height_spin,
+            self.sticker_outline_width_spin,
         ):
             spin.valueChanged.connect(self._control_changed)
         self.text_enabled.toggled.connect(self._text_toggled)
-        for check in (self.bold_check, self.outline_enabled, self.transparency_enabled):
+        for check in (self.bold_check, self.outline_enabled, self.transparency_enabled, self.sticker_enabled, self.sticker_shadow_enabled, self.line_art_enabled, self.palette_enabled, self.palette_quantize_enabled):
             check.toggled.connect(self._control_changed)
         self.text_edit.textChanged.connect(self._control_changed)
         self.font_combo.family_changed.connect(self._control_changed)
@@ -969,6 +1096,8 @@ class QuickEditPage(QWidget):
     def load_image(self, path: Path) -> None:
         if self._thread is not None:
             return
+        if self._palette_thread is not None:
+            self.cancel_palette_extraction()
         path = Path(path)
         try:
             if path.suffix.lower() not in SUPPORTED_SUFFIXES:
@@ -988,6 +1117,7 @@ class QuickEditPage(QWidget):
             return
         self.finish_ime(clear_focus=True)
         self.source_path = path.resolve()
+        self._palette_generation += 1
         self._source_size = (width, height)
         self._source_format = source_format
         self._source_size_bytes = self.source_path.stat().st_size
@@ -1057,6 +1187,9 @@ class QuickEditPage(QWidget):
                 TextPosition(self.position_combo.currentData()),
                 24,
             ),
+            sticker=StickerSettings(self.sticker_enabled.isChecked(), (self._sticker_outline_color.red(), self._sticker_outline_color.green(), self._sticker_outline_color.blue(), self._sticker_outline_color.alpha()), self.sticker_outline_width_spin.value(), self.sticker_shadow_enabled.isChecked()),
+            line_art=LineArtSettings(self.line_art_enabled.isChecked(), LineArtAmount(self.line_art_amount_combo.currentData()), (self._line_art_color.red(), self._line_art_color.green(), self._line_art_color.blue(), self._line_art_color.alpha()), LineArtBackground(self.line_art_background_combo.currentData()), (self._line_art_background_color.red(), self._line_art_background_color.green(), self._line_art_background_color.blue(), self._line_art_background_color.alpha())),
+            palette=PaletteSettings(self.palette_enabled.isChecked(), self.palette_quantize_enabled.isChecked(), int(self.palette_count_combo.currentData()), self._palette_values, self._palette_replacements, self._palette_mapping, self._palette_mapping_size[0], self._palette_mapping_size[1], self._palette_mapping_digest),
         )
 
     def apply_settings(self, settings: EditSettings) -> None:
@@ -1093,10 +1226,34 @@ class QuickEditPage(QWidget):
         self._outline_color = QColor(*settings.text.outline_color)
         self.outline_width_spin.setValue(settings.text.outline_width)
         self.position_combo.setCurrentIndex(self.position_combo.findData(settings.text.position.value))
+        self.sticker_enabled.setChecked(settings.sticker.enabled)
+        self._sticker_outline_color = QColor(*settings.sticker.outline_color)
+        self.sticker_outline_width_spin.setValue(settings.sticker.outline_width)
+        self.sticker_shadow_enabled.setChecked(settings.sticker.shadow_enabled)
+        self.line_art_enabled.setChecked(settings.line_art.enabled)
+        self.line_art_amount_combo.setCurrentIndex(self.line_art_amount_combo.findData(settings.line_art.amount.value))
+        self._line_art_color = QColor(*settings.line_art.line_color)
+        self.line_art_background_combo.setCurrentIndex(self.line_art_background_combo.findData(settings.line_art.background.value))
+        self._line_art_background_color = QColor(*settings.line_art.custom_background)
+        self.palette_enabled.setChecked(settings.palette.enabled)
+        self.palette_quantize_enabled.setChecked(settings.palette.quantize_enabled)
+        self.palette_count_combo.setCurrentIndex(self.palette_count_combo.findData(settings.palette.color_count))
+        self._palette_values = settings.palette.palette
+        self._palette_replacements = settings.palette.replacements or settings.palette.palette
+        self._selected_palette_index = -1
+        self._palette_mapping = settings.palette.mapping
+        self._palette_mapping_size = (settings.palette.mapping_width, settings.palette.mapping_height)
+        self._palette_mapping_digest = settings.palette.mapping_digest
+        self._palette_source_signature = self._upstream_signature(settings)
+        self._palette_needs_reextract = False
+        self._rebuild_palette_chips()
         self._update_color_button(self.text_color_button, self._text_color)
         self._update_color_button(self.outline_color_button, self._outline_color)
         self._update_color_button(self.target_color_button, self._target_color)
         self._update_color_button(self.canvas_color_button, self._canvas_color)
+        self._update_color_button(self.sticker_outline_color_button, self._sticker_outline_color)
+        self._update_color_button(self.line_art_color_button, self._line_art_color)
+        self._update_color_button(self.line_art_background_color_button, self._line_art_background_color)
         self._update_visibility()
         self._applying = was_applying
         if not self._applying:
@@ -1104,10 +1261,174 @@ class QuickEditPage(QWidget):
             self.schedule_preview()
             self._update_actions()
 
+    def _rebuild_palette_chips(self) -> None:
+        while self.palette_chips_layout.count():
+            item = self.palette_chips_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        for index, color in enumerate(self._palette_replacements):
+            chip = QToolButton()
+            chip.setText("#%02X%02X%02X" % color)
+            chip.setToolTip(f"代表色 {index + 1}: 色を変更")
+            chip.setFixedSize(64, 36)
+            chip.setCheckable(True)
+            chip.setChecked(index == self._selected_palette_index)
+            chip.setStyleSheet(f"QToolButton {{ background: rgb{color}; color: #000; border: 2px solid #65768a; border-radius: 5px; font-weight: 700; }} QToolButton:checked {{ border-color: #173a82; }} QToolButton:hover {{ border-color: #2457b2; }}")
+            chip.clicked.connect(lambda checked=False, i=index: self._replace_palette_color(i))
+            self.palette_chips_layout.addWidget(chip)
+        self.palette_chips_layout.addStretch()
+
+    @staticmethod
+    def _palette_source_identity(path: Path):
+        stat = path.stat()
+        return (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+
+    @Slot()
+    def extract_palette(self) -> None:
+        if not self.source_path or self._thread is not None or self._palette_thread is not None:
+            return
+        self._palette_generation += 1
+        self._palette_request_id += 1
+        request_id = self._palette_request_id
+        source = self.source_path
+        settings = self.settings()
+        try:
+            identity = self._palette_source_identity(source)
+        except OSError:
+            self.preview_status.setText("代表色を抽出できませんでした。画像を確認してください。")
+            return
+        signature = (settings.filter_preset.value, settings.transparency, settings.palette.color_count)
+        generation = self._palette_generation
+        self._palette_active_request = (generation, request_id, identity, signature)
+
+        self.preview_status.setText("処理中…")
+        self._set_processing(True)
+        thread = PaletteExtractionThread(source, settings, generation, request_id, identity, signature)
+        self._palette_thread = thread
+        thread.succeeded.connect(self._on_palette_extracted)
+        thread.failed.connect(self._on_palette_extraction_failed)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda t=thread: self._clear_palette_thread_refs(t))
+        thread.start()
+
+    @Slot(object)
+    def _on_palette_extracted(self, payload) -> None:
+        generation, request_id, identity, signature, mapping = payload
+        if self._palette_active_request != (generation, request_id, identity, signature):
+            return
+        try:
+            current_identity = self._palette_source_identity(self.source_path) if self.source_path else None
+        except OSError:
+            return
+        if current_identity != identity:
+            return
+        current = self.settings()
+        current_signature = (current.filter_preset.value, current.transparency, current.palette.color_count)
+        if current_signature != signature:
+            return
+        self._palette_values = mapping.palette
+        self._palette_replacements = mapping.palette
+        self._palette_mapping = mapping.indices
+        self._palette_mapping_size = (mapping.width, mapping.height)
+        self._palette_mapping_digest = mapping.digest
+        self._palette_needs_reextract = False
+        self.palette_enabled.setChecked(True)
+        self._rebuild_palette_chips()
+        self._control_changed()
+
+    @Slot(str, object)
+    def _on_palette_extraction_failed(self, message: str, token) -> None:
+        if self._palette_active_request == token:
+            self.preview_status.setStyleSheet("color: #c62828; font-weight: 700;")
+            self.preview_status.setText(message)
+
+    def _clear_palette_thread_refs(self, thread: PaletteExtractionThread) -> None:
+        if thread is not self._palette_thread:
+            return
+        self._palette_thread = None
+        self._palette_active_request = None
+        self._set_processing(False)
+
+    def cancel_palette_extraction(self) -> None:
+        self._palette_generation += 1
+        self._palette_request_id += 1
+        self._palette_active_request = None
+        if self._palette_thread is not None:
+            self._palette_thread.requestInterruption()
+
+    @Slot()
+    def reset_palette(self) -> None:
+        if self._palette_values:
+            self._palette_replacements = self._palette_values
+            self._palette_needs_reextract = False
+            self._rebuild_palette_chips()
+            self._control_changed()
+
+    def _replace_palette_color(self, index: int) -> None:
+        self._selected_palette_index = index
+        if not 0 <= index < len(self._palette_replacements):
+            return
+        current = QColor(*self._palette_replacements[index])
+        color = QColorDialog.getColor(current, self, "代表色を変更", QColorDialog.ColorDialogOption.ShowAlphaChannel)
+        if not color.isValid():
+            return
+        values = list(self._palette_replacements)
+        values[index] = (color.red(), color.green(), color.blue())
+        self._palette_replacements = tuple(values)
+        self._rebuild_palette_chips()
+        self._control_changed()
+
+    def _choose_material_color(self, title: str, attribute: str, button: QPushButton) -> None:
+        current = getattr(self, attribute)
+        color = QColorDialog.getColor(current, self, title, QColorDialog.ColorDialogOption.ShowAlphaChannel)
+        if color.isValid():
+            setattr(self, attribute, color)
+            self._update_color_button(button, color)
+            self._control_changed()
+
+    @Slot()
+    def choose_sticker_color(self) -> None:
+        self._choose_material_color("フチ色を選ぶ", "_sticker_outline_color", self.sticker_outline_color_button)
+
+    @Slot()
+    def choose_line_art_color(self) -> None:
+        self._choose_material_color("線色を選ぶ", "_line_art_color", self.line_art_color_button)
+
+    @Slot()
+    def choose_line_art_background_color(self) -> None:
+        self._choose_material_color("線画背景色を選ぶ", "_line_art_background_color", self.line_art_background_color_button)
+
+    def _upstream_signature(self, settings: EditSettings):
+        return settings.filter_preset, settings.transparency
+
+    def _invalidate_palette_for_upstream_change(self, settings: EditSettings) -> None:
+        signature = self._upstream_signature(settings)
+        if self._palette_source_signature is None:
+            self._palette_source_signature = signature
+            return
+        if signature == self._palette_source_signature or self._invalidating_palette:
+            return
+        self._invalidating_palette = True
+        try:
+            self._palette_values = ()
+            self._palette_replacements = ()
+            self._palette_mapping = ()
+            self._palette_mapping_size = (0, 0)
+            self._palette_mapping_digest = ""
+            self._selected_palette_index = -1
+            self.palette_quantize_enabled.setChecked(False)
+            self._palette_needs_reextract = True
+            self._rebuild_palette_chips()
+            self.preview_status.setText("元画像の変更後は、代表色をもう一度抽出してください。")
+        finally:
+            self._palette_source_signature = signature
+            self._invalidating_palette = False
+
     @Slot()
     def _control_changed(self, *_args) -> None:
         if self._applying:
             return
+        self._invalidate_palette_for_upstream_change(self.settings())
         self._update_visibility()
         current = self.settings()
         if self._history_index < 0 or current != self._history[self._history_index]:
@@ -1137,6 +1458,9 @@ class QuickEditPage(QWidget):
         self.canvas_color_button.setVisible(
             self.canvas_background_combo.currentData() == CanvasBackground.CUSTOM.value
         )
+        self.line_art_background_color_button.setVisible(
+            self.line_art_background_combo.currentData() == LineArtBackground.CUSTOM.value
+        )
         self._update_save_options()
 
     def schedule_preview(self) -> None:
@@ -1156,11 +1480,10 @@ class QuickEditPage(QWidget):
                 image = render_path_preview(self.source_path, self.settings(), 1400)
             self.drop_zone.preview.set_image(pil_to_qimage(image))
             self.preview_status.setStyleSheet("color: #667085;")
-            self.preview_status.setText(
-                ("元画像" if self._show_original else "加工後")
-                + f" · Preview {image.width} × {image.height}"
-            )
-            self._update_output_info()
+            status = ("元画像" if self._show_original else "加工後") + f" · Preview {image.width} × {image.height}"
+            if self._palette_needs_reextract:
+                status += " · 代表色を再抽出してください"
+            self.preview_status.setText(status)
         except Exception as exc:
             LOGGER.exception("Quick edit preview failed: %s", self.source_path)
             self.preview_status.setStyleSheet("color: #c62828; font-weight: 700;")
@@ -1192,6 +1515,7 @@ class QuickEditPage(QWidget):
 
     @Slot()
     def reset_edits(self) -> None:
+        self.cancel_palette_extraction()
         self.finish_ime(clear_focus=True)
         if not self.source_path:
             return
@@ -1362,6 +1686,21 @@ class QuickEditPage(QWidget):
             self.padding_combo,
             self.canvas_background_combo,
             self.canvas_color_button,
+            self.sticker_enabled,
+            self.sticker_outline_width_spin,
+            self.sticker_outline_color_button,
+            self.sticker_shadow_enabled,
+            self.line_art_enabled,
+            self.line_art_amount_combo,
+            self.line_art_color_button,
+            self.line_art_background_combo,
+            self.line_art_background_color_button,
+            self.palette_enabled,
+            self.palette_quantize_enabled,
+            self.palette_count_combo,
+            self.palette_extract_button,
+            self.palette_reset_button,
+            self.palette_chips_widget,
             self.undo_button,
             self.redo_button,
             self.reset_button,
@@ -1381,7 +1720,7 @@ class QuickEditPage(QWidget):
 
     def _update_actions(self) -> None:
         loaded = self.source_path is not None
-        idle = self._thread is None
+        idle = self._thread is None and self._palette_thread is None
         self.undo_button.setEnabled(loaded and idle and self._history_index > 0)
         self.redo_button.setEnabled(loaded and idle and self._history_index + 1 < len(self._history))
         self.reset_button.setEnabled(loaded and idle and self.settings() != EditSettings())
@@ -1397,10 +1736,10 @@ class QuickEditPage(QWidget):
             QMessageBox.warning(self, "保存先を開けません", "Windows Explorerで保存先を開けませんでした。")
 
     def can_close(self) -> bool:
-        return self._thread is None
+        return self._thread is None and self._palette_thread is None
 
     def cleanup(self) -> None:
-        pass
+        self.cancel_palette_extraction()
 
     @staticmethod
     def _human_bytes(size: int) -> str:

@@ -1049,6 +1049,7 @@ class MainWindow(QMainWindow):
         previous = self._last_navigation_index
         if previous == getattr(self, "image_edit_tab", -1) and index != previous:
             self.edit_page.finish_ime(clear_focus=True)
+            self.edit_page.cancel_palette_extraction()
         self._last_navigation_index = index
         self._update_quick_actions()
 
