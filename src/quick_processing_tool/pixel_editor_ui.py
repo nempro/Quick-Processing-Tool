@@ -3,11 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QEvent, QPoint, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractScrollArea, QCheckBox, QColorDialog, QComboBox, QDialog, QFileDialog,
-    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
     QPushButton, QScrollArea, QSlider, QSpinBox, QSplitter, QToolButton,
     QButtonGroup, QSizePolicy,
     QVBoxLayout, QWidget,
@@ -15,8 +15,10 @@ from PySide6.QtWidgets import (
 
 from .pixel_editor.canvas import MAX_SIZE, MIN_SIZE, PixelCanvas, pixel_from_display
 from .pixel_editor.importers import import_as_pixels, load_reference
-from .pixel_editor.models import PixelTool, ReferenceImage
+from .pixel_editor.models import PixelExportResult, PixelTool, ReferenceImage
 from .pixel_editor.service import PixelExportError, save_png
+from .naming import normalize_filename_stem
+from .ui_styles import INPUT_CONTROL_STYLE
 
 
 def _qimage(image: Image.Image) -> QImage:
@@ -37,6 +39,36 @@ def local_image_paths(mime_data) -> list[Path]:
         and Path(url.toLocalFile()).is_file()
         and Path(url.toLocalFile()).suffix.lower() in SUPPORTED_DROP_SUFFIXES
     ]
+
+
+class ElidedValueLabel(QLabel):
+    def __init__(self) -> None:
+        super().__init__()
+        self._value = ""
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setWordWrap(False)
+
+    def set_value(self, value: str, tooltip: str | None = None) -> None:
+        self._value = value
+        self.setToolTip(tooltip if tooltip is not None else value)
+        self._update_text()
+
+    def set_path(self, path: Path | None) -> None:
+        self.set_value(str(path or ""))
+
+    def _update_text(self) -> None:
+        self.setText(
+            self.fontMetrics().elidedText(
+                self._value,
+                Qt.TextElideMode.ElideMiddle,
+                max(80, self.width() - 4),
+            )
+        )
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._update_text()
 
 
 class PixelImportChoiceDialog(QDialog):
@@ -255,6 +287,8 @@ class PixelEditorPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.source_path: Path | None = None
+        self.output_folder: Path | None = None
+        self._last_saved_result: PixelExportResult | None = None
         self.reference: ReferenceImage | None = None
         self.import_choice_provider = lambda path: PixelImportChoiceDialog.choose(path, self)
         self.canvas = PixelCanvas()
@@ -326,10 +360,50 @@ class PixelEditorPage(QWidget):
         rl.addWidget(self.preview_scroll, 1)
         self.reference_check = QCheckBox("下絵を表示"); self.reference_check.setChecked(True); self.reference_check.toggled.connect(self._reference_visibility); rl.addWidget(self.reference_check)
         self.opacity_slider = QSlider(Qt.Horizontal); self.opacity_slider.setRange(10, 100); self.opacity_slider.setValue(50); self.opacity_slider.valueChanged.connect(self._reference_opacity); rl.addWidget(QLabel("下絵の不透明度")); rl.addWidget(self.opacity_slider)
-        self.save_button = QPushButton("PNGで保存"); self.save_button.clicked.connect(self.save); rl.addWidget(self.save_button); self.saved_label = QLabel(); self.saved_label.setWordWrap(True); rl.addWidget(self.saved_label)
+        rl.addWidget(QLabel("ファイル名"))
+        name_row = QHBoxLayout()
+        self.filename_edit = QLineEdit("pixel_art")
+        self.filename_edit.setStyleSheet(INPUT_CONTROL_STYLE)
+        self.filename_edit.setPlaceholderText("保存する名前")
+        self.filename_edit.textChanged.connect(self._update_save_ui)
+        self.filename_edit.editingFinished.connect(self._normalize_filename_input)
+        name_row.addWidget(self.filename_edit, 1)
+        self.filename_suffix_label = QLabel(".png")
+        self.filename_suffix_label.setStyleSheet("color: #475467;")
+        name_row.addWidget(self.filename_suffix_label)
+        rl.addLayout(name_row)
+        self.filename_hint_label = QLabel("使えない記号は _ に置き換わります")
+        self.filename_hint_label.setWordWrap(True)
+        self.filename_hint_label.setStyleSheet("color: #667085;")
+        rl.addWidget(self.filename_hint_label)
+        rl.addWidget(QLabel("保存先"))
+        self.output_folder_value = ElidedValueLabel()
+        self.output_folder_value.set_value("未選択")
+        rl.addWidget(self.output_folder_value)
+        self.choose_folder_button = QPushButton("保存先を選ぶ")
+        self.choose_folder_button.clicked.connect(self.choose_output_folder)
+        rl.addWidget(self.choose_folder_button)
+        rl.addWidget(QLabel("保存予定"))
+        self.planned_output_value = ElidedValueLabel()
+        self.planned_output_value.set_value("保存先とファイル名を指定してください")
+        rl.addWidget(self.planned_output_value)
+        self.save_hint_label = QLabel()
+        self.save_hint_label.setWordWrap(True)
+        self.save_hint_label.setStyleSheet("color: #667085;")
+        rl.addWidget(self.save_hint_label)
+        self.save_button = QPushButton("PNGで保存")
+        self.save_button.clicked.connect(self.save)
+        rl.addWidget(self.save_button)
+        self.saved_label = QLabel()
+        self.saved_label.setWordWrap(True)
+        rl.addWidget(self.saved_label)
+        self.open_folder_button = QPushButton("保存先を開く")
+        self.open_folder_button.clicked.connect(self.open_saved_folder)
+        rl.addWidget(self.open_folder_button)
         splitter.addWidget(left); splitter.addWidget(center); splitter.addWidget(right); splitter.setStretchFactor(1, 1); splitter.setSizes([250, 650, 250])
         layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.addWidget(splitter)
         self.canvas_view.changed.connect(self._refresh); self.canvas_view.coordinates_changed.connect(self.coord_label.setText); self.canvas_view.drop_requested.connect(self._handle_dropped_path); self.size_combo.currentTextChanged.connect(lambda x: setattr(self.canvas_view, "pencil_size", int(x)))
+        self._update_save_ui()
         self._refresh()
 
     def _set_tool(self, tool):
@@ -374,7 +448,7 @@ class PixelEditorPage(QWidget):
         if index == 0: self.canvas_view.set_zoom(max(1, min(self.canvas_view.viewport().width() // self.canvas.width, self.canvas_view.viewport().height() // self.canvas.height)))
         else: self.canvas_view.set_zoom((2, 4, 8, 16)[index - 1])
     def new_canvas(self):
-        self.canvas = PixelCanvas(self.width_spin.value(), self.height_spin.value()); self.canvas_view.set_canvas(self.canvas); self.reference = None; self.canvas_view.reference = None; self.source_path = None; self._refresh()
+        self.canvas = PixelCanvas(self.width_spin.value(), self.height_spin.value()); self.canvas_view.set_canvas(self.canvas); self.reference = None; self.canvas_view.reference = None; self.source_path = None; self._set_filename_default(None); self._refresh()
     def clear(self): self.canvas.clear(); self._refresh()
     def undo(self): self.canvas.undo(); self._refresh()
     def redo(self): self.canvas.redo(); self._refresh()
@@ -382,6 +456,7 @@ class PixelEditorPage(QWidget):
         self.reference = load_reference(path, (self.canvas.width, self.canvas.height), self.opacity_slider.value())
         self.canvas_view.reference = self.reference
         self.source_path = path
+        self._set_filename_default(path)
         self._refresh()
 
     def load_reference(self):
@@ -393,6 +468,7 @@ class PixelEditorPage(QWidget):
         self.source_path = path
         self.reference = None
         self.canvas_view.reference = None
+        self._set_filename_default(path)
         self._refresh()
 
     def load_pixels(self):
@@ -402,11 +478,69 @@ class PixelEditorPage(QWidget):
     def _reference_visibility(self, value): self.canvas_view.reference_visible = value; self.canvas_view.viewport().update(); self._refresh()
     def _reference_opacity(self, value):
         if self.reference is not None: self.reference = ReferenceImage(self.reference.image, value); self.canvas_view.reference = self.reference; self.canvas_view.viewport().update(); self._refresh()
+    def _default_filename_stem(self, source_path: Path | None) -> str:
+        raw = f"{source_path.stem}_pixel" if source_path else "pixel_art"
+        return normalize_filename_stem(raw, default="pixel_art")
+    def _set_filename_default(self, source_path: Path | None) -> None:
+        self.filename_edit.setText(self._default_filename_stem(source_path))
+        self.saved_label.clear()
+        self._last_saved_result = None
+        self._update_save_ui()
+    def _normalized_filename_stem(self) -> str:
+        return normalize_filename_stem(self.filename_edit.text(), default="")
+    def _normalize_filename_input(self) -> None:
+        normalized = self._normalized_filename_stem()
+        if self.filename_edit.text() != normalized:
+            self.filename_edit.setText(normalized)
+    def _planned_output_path(self) -> Path | None:
+        normalized = self._normalized_filename_stem()
+        if self.output_folder is None or not normalized:
+            return None
+        return self.output_folder / f"{normalized}.png"
+    def _update_save_ui(self) -> None:
+        normalized = self._normalized_filename_stem()
+        if self.output_folder is None:
+            self.output_folder_value.set_value("未選択")
+            self.planned_output_value.set_value("保存先を選ぶと表示されます")
+            self.save_hint_label.setText("保存先を選ぶとPNG保存できます。")
+            self.save_button.setEnabled(False)
+        elif not normalized:
+            self.output_folder_value.set_path(self.output_folder)
+            self.planned_output_value.set_value(str(self.output_folder / ".png"))
+            self.save_hint_label.setText("保存するファイル名を入力してください。")
+            self.save_button.setEnabled(False)
+        else:
+            planned = self._planned_output_path()
+            self.output_folder_value.set_path(self.output_folder)
+            self.planned_output_value.set_path(planned)
+            self.save_hint_label.setText("同名ファイルがある場合は自動で連番を付けます。")
+            self.save_button.setEnabled(True)
+        self.open_folder_button.setEnabled(self._last_saved_result is not None and self._last_saved_result.output_path.parent.is_dir())
+    def choose_output_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "保存先を選ぶ", str(self.output_folder or ""))
+        if not folder:
+            return
+        self.output_folder = Path(folder)
+        self._update_save_ui()
     def save(self):
-        folder = QFileDialog.getExistingDirectory(self, "保存先を選ぶ")
-        if not folder: return
-        try: result = save_png(self.canvas, folder, self.source_path); self.saved_label.setText(str(result.output_path))
+        if self.output_folder is None:
+            QMessageBox.warning(self, "保存先を選んでください", "保存先を選ぶを押して、保存先フォルダーを指定してください。")
+            return
+        normalized = self._normalized_filename_stem()
+        if not normalized:
+            QMessageBox.warning(self, "ファイル名を入力してください", "保存するファイル名を入力してください。")
+            return
+        try:
+            result = save_png(self.canvas, self.output_folder, self.source_path, custom_stem=normalized)
+            self._last_saved_result = result
+            self.saved_label.setStyleSheet("color: #137333; font-weight: 700;")
+            self.saved_label.setText(f"✓ PNGを保存しました\n{result.output_path.name}\n{result.width} × {result.height} / {result.size_bytes:,} bytes")
+            self._update_save_ui()
         except PixelExportError as exc: QMessageBox.warning(self, "保存エラー", str(exc))
+    def open_saved_folder(self):
+        folder = self._last_saved_result.output_path.parent if self._last_saved_result is not None else None
+        if not folder or not folder.is_dir() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+            QMessageBox.warning(self, "保存先を開けません", "PNGを保存してから、もう一度お試しください。")
     def _refresh(self):
         self.preview_size_label.setText(f"{self.canvas.width} × {self.canvas.height}")
         image = _qimage(self.canvas.image)

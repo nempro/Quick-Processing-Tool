@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from ..naming import write_unique_bytes
+from ..naming import normalize_filename_stem, write_unique_bytes
 from .models import PixelExportResult
 
 
@@ -13,10 +13,21 @@ class PixelExportError(RuntimeError):
     pass
 
 
-def save_png(canvas, folder: str | Path, source_path: str | Path | None = None) -> PixelExportResult:
+def save_png(
+    canvas,
+    folder: str | Path,
+    source_path: str | Path | None = None,
+    custom_stem: str | None = None,
+) -> PixelExportResult:
     directory = Path(folder)
     directory.mkdir(parents=True, exist_ok=True)
-    stem = Path(source_path).stem + "_pixel" if source_path else "pixel_art"
+    if custom_stem is None:
+        default_stem = f"{Path(source_path).stem}_pixel" if source_path else "pixel_art"
+        stem = normalize_filename_stem(default_stem, default="pixel_art")
+    else:
+        stem = normalize_filename_stem(custom_stem, default="")
+        if not stem:
+            raise PixelExportError("保存するファイル名を入力してください")
     buf = BytesIO()
     canvas.image.save(buf, format="PNG")
     payload = buf.getvalue()

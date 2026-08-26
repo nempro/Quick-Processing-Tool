@@ -3,12 +3,13 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PIL import Image
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
 from quick_processing_tool.models import OutputFormat, ProcessingOptions
-from quick_processing_tool.naming import unique_output_path
+from quick_processing_tool.naming import normalize_filename_stem, unique_output_path
 from quick_processing_tool.pipeline import read_image_info
 from quick_processing_tool.ui import MainWindow, ProcessingWorker
 
@@ -19,6 +20,29 @@ def test_duplicate_safe_naming_never_overwrites_source(tmp_path: Path) -> None:
     assert unique_output_path(tmp_path, source, "JPEG") == tmp_path / "image_2.jpg"
     (tmp_path / "image_2.jpg").write_bytes(b"existing")
     assert unique_output_path(tmp_path, source, "JPEG") == tmp_path / "image_3.jpg"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("  ねこ  ", "ねこ"),
+        ("  ねこ.png.PNG  ", "ねこ"),
+        ('bad<>:"/\\|?*\x00name', "bad__________name"),
+        ("CON", "CON_"),
+        ("cOn", "cOn_"),
+        ("CON.txt", "CON_.txt"),
+        ("LPT1.log", "LPT1_.log"),
+        ("aux.webp", "aux_.webp"),
+        ("CONSOLE", "CONSOLE"),
+        ("こんにちは", "こんにちは"),
+        ("name. ", "name"),
+        (" .png ", "pixel_art"),
+        ("", "pixel_art"),
+        ("x" * 260, "x" * 200),
+    ],
+)
+def test_filename_stem_normalization_preserves_unicode_and_handles_windows_rules(raw: str, expected: str) -> None:
+    assert normalize_filename_stem(raw, default="pixel_art") == expected
 
 
 def test_batch_continues_after_partial_failure(tmp_path: Path) -> None:

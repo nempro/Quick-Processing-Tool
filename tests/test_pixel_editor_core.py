@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from quick_processing_tool.naming import normalize_filename_stem
+
 from quick_processing_tool.pixel_editor.canvas import (
     MAX_SIZE,
     MIN_SIZE,
@@ -15,7 +17,7 @@ from quick_processing_tool.pixel_editor.canvas import (
 from quick_processing_tool.pixel_editor.importers import import_as_pixels, load_reference
 from quick_processing_tool.pixel_editor.models import ReferenceImage
 from quick_processing_tool.pixel_editor.renderer import composite_reference, scale_nearest
-from quick_processing_tool.pixel_editor.service import save_png
+from quick_processing_tool.pixel_editor.service import PixelExportError, save_png
 
 
 def test_canvas_presets_bounds_and_transparent_default() -> None:
@@ -132,3 +134,24 @@ def test_source_stem_is_used_without_overwrite(tmp_path: Path) -> None:
     result = save_png(PixelCanvas(32, 32), tmp_path, source)
     assert result.output_path.name == "character_pixel.png"
     assert source.read_bytes() == original
+
+
+def test_custom_stem_normalizes_png_suffix_japanese_and_collision_without_double_extension(tmp_path: Path) -> None:
+    canvas = PixelCanvas(32, 32)
+    first = save_png(canvas, tmp_path, custom_stem="  キャラ.png.PNG  ")
+    second = save_png(canvas, tmp_path, custom_stem="キャラ")
+    assert first.output_path.name == "キャラ.png"
+    assert second.output_path.name == "キャラ_2.png"
+    with Image.open(first.output_path) as reopened:
+        assert reopened.size == (32, 32)
+        assert reopened.mode == "RGBA"
+
+
+def test_custom_stem_rejects_blank_after_normalization(tmp_path: Path) -> None:
+    with pytest.raises(PixelExportError, match="ファイル名"):
+        save_png(PixelCanvas(32, 32), tmp_path, custom_stem="  .png  ")
+
+
+def test_default_source_stem_normalization_helper_is_windows_safe() -> None:
+    assert normalize_filename_stem("pixel_art", default="pixel_art") == "pixel_art"
+    assert normalize_filename_stem("AUX", default="pixel_art") == "AUX_"
