@@ -518,12 +518,12 @@ def test_palette_rows_and_reset_and_handoff(qt_app, tmp_path: Path) -> None:
     page.load_image(source)
     mapping = extract_palette(Image.open(source), 6)
     page._on_palette_extracted((page._palette_generation, 1, page._palette_source_identity(source), (page.settings().filter_preset.value, page.settings().transparency, page.settings().palette.color_count), mapping))
-    # Re-send with the actual active token so the payload is accepted.
     token = page._palette_active_request = (page._palette_generation, 99, page._palette_source_identity(source), (page.settings().filter_preset.value, page.settings().transparency, page.settings().palette.color_count))
     page._on_palette_extracted((*token, mapping))
     qt_app.processEvents()
     assert page.palette_chips_layout.count() >= len(mapping.palette) * 3
     assert page.palette_send_button.isEnabled()
+    assert page.palette_send_button.text() == "現在の配色をドット絵パレットへ送る"
 
     page._palette_replacements = tuple(reversed(mapping.palette))
     page._rebuild_palette_chips()
@@ -531,6 +531,7 @@ def test_palette_rows_and_reset_and_handoff(qt_app, tmp_path: Path) -> None:
     page.palette_handoff_requested.connect(emitted.append)
     page.send_palette_to_pixel()
     assert emitted == [tuple(reversed(mapping.palette))]
+    assert page.palette_feedback_label.text() == f"✓ {len(mapping.palette)}色のパレットをドット絵へ送りました"
 
     page.reset_palette()
     assert page._palette_replacements == mapping.palette
@@ -544,13 +545,33 @@ def test_main_window_palette_handoff_switches_tab_and_preserves_pixel_source(qt_
     source = tmp_path / "source.png"
     Image.new("RGB", (8, 8), "blue").save(source)
     window.pixel_page._load_reference_path(source)
-    original_name = window.pixel_page.filename_edit.text()
-    window._handoff_palette_to_pixel(((1, 2, 3), (4, 5, 6)))
+    window.pixel_page.output_folder = tmp_path
+    window.pixel_page._update_save_ui()
+    window.pixel_page.filename_edit.setText("keep_name")
+    window.pixel_page.zoom_combo.setCurrentIndex(3)
+    window.pixel_page.grid_check.setChecked(False)
+    window.pixel_page.canvas.stroke((0, 0), (2, 0), (123, 45, 67, 255))
+    snapshot = window.pixel_page.canvas.snapshot()
+    history_index = window.pixel_page.canvas.history._index
+    history_len = len(window.pixel_page.canvas.history._entries)
+    reference = window.pixel_page.reference
+
+    window._handoff_palette_to_pixel(((1, 2, 3), (4, 5, 6), (7, 8, 9), (10, 11, 12), (13, 14, 15), (16, 17, 18)))
     qt_app.processEvents()
     assert window.navigation.currentIndex() == window.pixel_tab
-    assert window.pixel_page._received_palette == ((1, 2, 3), (4, 5, 6))
+    assert window.pixel_page._received_palette == ((1, 2, 3), (4, 5, 6), (7, 8, 9), (10, 11, 12), (13, 14, 15), (16, 17, 18))
     assert window.pixel_page.source_path == source
-    assert window.pixel_page.filename_edit.text() == original_name
+    assert window.pixel_page.reference == reference
+    assert window.pixel_page.filename_edit.text() == "keep_name"
+    assert window.pixel_page.output_folder == tmp_path
+    assert window.pixel_page.zoom_combo.currentIndex() == 3
+    assert window.pixel_page.canvas_view.zoom_factor == 8
+    assert not window.pixel_page.grid_check.isChecked()
+    assert not window.pixel_page.canvas_view.grid_enabled
+    assert window.pixel_page.canvas.snapshot() == snapshot
+    assert window.pixel_page.canvas.history._index == history_index
+    assert len(window.pixel_page.canvas.history._entries) == history_len
+    assert window.pixel_page._palette_selected_index == -1
     window.close()
 
 

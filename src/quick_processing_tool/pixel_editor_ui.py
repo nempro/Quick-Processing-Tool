@@ -290,16 +290,21 @@ class PixelEditorPage(QWidget):
         self.output_folder: Path | None = None
         self._last_saved_result: PixelExportResult | None = None
         self._received_palette: tuple[tuple[int, int, int], ...] = ()
+        self._palette_selected_index = -1
+        self._palette_chip_buttons: list[QToolButton] = []
         self.reference: ReferenceImage | None = None
         self.import_choice_provider = lambda path: PixelImportChoiceDialog.choose(path, self)
         self.canvas = PixelCanvas()
         self.canvas_view = PixelCanvasView(self.canvas)
+        self._palette_button_group = QButtonGroup(self)
+        self._palette_button_group.setExclusive(True)
         self._build_ui()
 
     def _build_ui(self):
         self.setAcceptDrops(True)
         splitter = QSplitter(Qt.Horizontal, self)
         splitter.setChildrenCollapsible(False)
+
         left = QScrollArea()
         left.setObjectName("pixelSettingsScroll")
         left.setWidgetResizable(True)
@@ -307,6 +312,7 @@ class PixelEditorPage(QWidget):
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(8, 8, 8, 8)
+
         tools = QGroupBox("ツール")
         tl = QVBoxLayout(tools)
         self.pencil_button = QPushButton("鉛筆")
@@ -314,48 +320,120 @@ class PixelEditorPage(QWidget):
         self.eyedropper_button = QPushButton("スポイト")
         self.tool_group = QButtonGroup(self)
         self.tool_group.setExclusive(True)
-        self._tool_buttons = {PixelTool.PENCIL: self.pencil_button, PixelTool.ERASER: self.eraser_button, PixelTool.EYEDROPPER: self.eyedropper_button}
+        self._tool_buttons = {
+            PixelTool.PENCIL: self.pencil_button,
+            PixelTool.ERASER: self.eraser_button,
+            PixelTool.EYEDROPPER: self.eyedropper_button,
+        }
         for tool, button in self._tool_buttons.items():
             button.setCheckable(True)
             self.tool_group.addButton(button)
             button.clicked.connect(lambda checked=False, t=tool: self._set_tool(t))
             tl.addWidget(button)
         self.pencil_button.setChecked(True)
-        size_row = QHBoxLayout(); size_row.addWidget(QLabel("太さ")); self.size_combo = QComboBox(); self.size_combo.addItems(["1", "2", "3"]); size_row.addWidget(self.size_combo); tl.addLayout(size_row)
+        size_row = QHBoxLayout()
+        size_row.addWidget(QLabel("太さ"))
+        self.size_combo = QComboBox()
+        self.size_combo.addItems(["1", "2", "3"])
+        size_row.addWidget(self.size_combo)
+        tl.addLayout(size_row)
+        color_row = QHBoxLayout()
+        color_row.addWidget(QLabel("現在色"))
+        self.current_color_button = QPushButton()
+        self.current_color_button.clicked.connect(self.choose_current_color)
+        color_row.addWidget(self.current_color_button, 1)
+        tl.addLayout(color_row)
         left_layout.addWidget(tools)
+
         canvas_group = QGroupBox("キャンバス")
         cl = QFormLayout(canvas_group)
-        self.preset_combo = QComboBox(); self.preset_combo.addItems(["32 × 32", "64 × 64", "128 × 128", "カスタム"]); self.preset_combo.setCurrentIndex(2); self.preset_combo.currentIndexChanged.connect(self._preset_changed)
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItems(["32 × 32", "64 × 64", "128 × 128", "カスタム"])
+        self.preset_combo.setCurrentIndex(2)
+        self.preset_combo.currentIndexChanged.connect(self._preset_changed)
         cl.addRow("サイズ", self.preset_combo)
-        self.width_spin = QSpinBox(); self.width_spin.setRange(MIN_SIZE, MAX_SIZE); self.width_spin.setValue(128)
-        self.height_spin = QSpinBox(); self.height_spin.setRange(MIN_SIZE, MAX_SIZE); self.height_spin.setValue(128)
-        cl.addRow("幅", self.width_spin); cl.addRow("高さ", self.height_spin)
-        self.new_button = QPushButton("新規キャンバス"); self.new_button.clicked.connect(self.new_canvas); cl.addRow(self.new_button)
+        self.width_spin = QSpinBox()
+        self.width_spin.setRange(MIN_SIZE, MAX_SIZE)
+        self.width_spin.setValue(128)
+        self.height_spin = QSpinBox()
+        self.height_spin.setRange(MIN_SIZE, MAX_SIZE)
+        self.height_spin.setValue(128)
+        cl.addRow("幅", self.width_spin)
+        cl.addRow("高さ", self.height_spin)
+        self.new_button = QPushButton("新規キャンバス")
+        self.new_button.clicked.connect(self.new_canvas)
+        cl.addRow(self.new_button)
         left_layout.addWidget(canvas_group)
+
         io_group = QGroupBox("画像")
         il = QVBoxLayout(io_group)
-        self.reference_button = QPushButton("下絵を読み込む"); self.reference_button.clicked.connect(self.load_reference)
-        self.pixelize_button = QPushButton("ドット化して編集"); self.pixelize_button.clicked.connect(self.load_pixels)
-        il.addWidget(self.reference_button); il.addWidget(self.pixelize_button); left_layout.addWidget(io_group)
-        palette_group = QGroupBox("受け取った配色")
+        self.reference_button = QPushButton("下絵を読み込む")
+        self.reference_button.clicked.connect(self.load_reference)
+        self.pixelize_button = QPushButton("ドット化して編集")
+        self.pixelize_button.clicked.connect(self.load_pixels)
+        il.addWidget(self.reference_button)
+        il.addWidget(self.pixelize_button)
+        left_layout.addWidget(io_group)
+
+        palette_group = QGroupBox("パレット")
         pl = QVBoxLayout(palette_group)
-        self.palette_status_label = QLabel("画像加工から配色を受け取ると、ここに並びます。")
+        self.palette_status_label = QLabel("画像加工からパレットを受け取ると、ここに並びます。")
         self.palette_status_label.setWordWrap(True)
         pl.addWidget(self.palette_status_label)
+        self.palette_contract_label = QLabel("パレットの色だけを受け取ります。元画像は移動しません。")
+        self.palette_contract_label.setWordWrap(True)
+        self.palette_contract_label.setStyleSheet("color: #667085;")
+        pl.addWidget(self.palette_contract_label)
+        self.palette_guidance_label = QLabel("")
+        self.palette_guidance_label.setWordWrap(True)
+        self.palette_guidance_label.setStyleSheet("color: #667085;")
+        pl.addWidget(self.palette_guidance_label)
         self.palette_chips_widget = QWidget()
         self.palette_chips_layout = QGridLayout(self.palette_chips_widget)
         self.palette_chips_layout.setContentsMargins(0, 0, 0, 0)
         self.palette_chips_layout.setHorizontalSpacing(6)
         self.palette_chips_layout.setVerticalSpacing(6)
         pl.addWidget(self.palette_chips_widget)
+        palette_footer = QHBoxLayout()
+        self.palette_count_label = QLabel("0色")
+        palette_footer.addWidget(self.palette_count_label)
+        palette_footer.addStretch(1)
+        self.palette_clear_button = QPushButton("パレットをクリア")
+        self.palette_clear_button.clicked.connect(self.clear_palette)
+        palette_footer.addWidget(self.palette_clear_button)
+        pl.addLayout(palette_footer)
         left_layout.addWidget(palette_group)
+
         view_group = QGroupBox("表示")
         vl = QVBoxLayout(view_group)
-        self.zoom_combo = QComboBox(); self.zoom_combo.addItems(["Fit", "2x", "4x", "8x", "16x"]); self.zoom_combo.setCurrentIndex(2); self.zoom_combo.currentIndexChanged.connect(self._zoom_changed); vl.addWidget(self.zoom_combo)
-        self.grid_check = QCheckBox("グリッド"); self.grid_check.setChecked(True); self.grid_check.toggled.connect(lambda x: setattr(self.canvas_view, "grid_enabled", x) or self.canvas_view.viewport().update()); vl.addWidget(self.grid_check)
-        self.undo_button = QPushButton("元に戻す"); self.undo_button.clicked.connect(self.undo); self.redo_button = QPushButton("やり直す"); self.redo_button.clicked.connect(self.redo); self.clear_button = QPushButton("全消去"); self.clear_button.clicked.connect(self.clear)
-        vl.addWidget(self.undo_button); vl.addWidget(self.redo_button); vl.addWidget(self.clear_button); left_layout.addWidget(view_group); left_layout.addStretch(1); left.setWidget(left_widget)
-        center = QWidget(); center_layout = QVBoxLayout(center); self.coord_label = QLabel("- "); center_layout.addWidget(self.coord_label); center_layout.addWidget(self.canvas_view, 1)
+        self.zoom_combo = QComboBox()
+        self.zoom_combo.addItems(["Fit", "2x", "4x", "8x", "16x"])
+        self.zoom_combo.setCurrentIndex(2)
+        self.zoom_combo.currentIndexChanged.connect(self._zoom_changed)
+        vl.addWidget(self.zoom_combo)
+        self.grid_check = QCheckBox("グリッド")
+        self.grid_check.setChecked(True)
+        self.grid_check.toggled.connect(lambda value: setattr(self.canvas_view, "grid_enabled", value) or self.canvas_view.viewport().update())
+        vl.addWidget(self.grid_check)
+        self.undo_button = QPushButton("元に戻す")
+        self.undo_button.clicked.connect(self.undo)
+        self.redo_button = QPushButton("やり直す")
+        self.redo_button.clicked.connect(self.redo)
+        self.clear_button = QPushButton("全消去")
+        self.clear_button.clicked.connect(self.clear)
+        vl.addWidget(self.undo_button)
+        vl.addWidget(self.redo_button)
+        vl.addWidget(self.clear_button)
+        left_layout.addWidget(view_group)
+        left_layout.addStretch(1)
+        left.setWidget(left_widget)
+
+        center = QWidget()
+        center_layout = QVBoxLayout(center)
+        self.coord_label = QLabel("- ")
+        center_layout.addWidget(self.coord_label)
+        center_layout.addWidget(self.canvas_view, 1)
+
         self.preview_label = QLabel()
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setObjectName("pixelPreview")
@@ -366,13 +444,26 @@ class PixelEditorPage(QWidget):
         self.preview_scroll.setAlignment(Qt.AlignCenter)
         self.preview_scroll.setMinimumSize(190, 210)
         self.preview_scroll.setWidget(self.preview_label)
-        right = QWidget(); rl = QVBoxLayout(right); rl.addWidget(QLabel("実寸プレビュー")); self.preview_size_label = QLabel(); rl.addWidget(self.preview_size_label)
-        self.preview_hint_label = QLabel("透明なキャンバスです。左のツールで描けます。")
+
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.addWidget(QLabel("実寸プレビュー"))
+        self.preview_size_label = QLabel()
+        rl.addWidget(self.preview_size_label)
+        self.preview_hint_label = QLabel("現在色: #000000")
         self.preview_hint_label.setWordWrap(True)
         rl.addWidget(self.preview_hint_label)
         rl.addWidget(self.preview_scroll, 1)
-        self.reference_check = QCheckBox("下絵を表示"); self.reference_check.setChecked(True); self.reference_check.toggled.connect(self._reference_visibility); rl.addWidget(self.reference_check)
-        self.opacity_slider = QSlider(Qt.Horizontal); self.opacity_slider.setRange(10, 100); self.opacity_slider.setValue(50); self.opacity_slider.valueChanged.connect(self._reference_opacity); rl.addWidget(QLabel("下絵の不透明度")); rl.addWidget(self.opacity_slider)
+        self.reference_check = QCheckBox("下絵を表示")
+        self.reference_check.setChecked(True)
+        self.reference_check.toggled.connect(self._reference_visibility)
+        rl.addWidget(self.reference_check)
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setRange(10, 100)
+        self.opacity_slider.setValue(50)
+        self.opacity_slider.valueChanged.connect(self._reference_opacity)
+        rl.addWidget(QLabel("下絵の不透明度"))
+        rl.addWidget(self.opacity_slider)
         rl.addWidget(QLabel("ファイル名"))
         name_row = QHBoxLayout()
         self.filename_edit = QLineEdit("pixel_art")
@@ -413,10 +504,24 @@ class PixelEditorPage(QWidget):
         self.open_folder_button = QPushButton("保存先を開く")
         self.open_folder_button.clicked.connect(self.open_saved_folder)
         rl.addWidget(self.open_folder_button)
-        splitter.addWidget(left); splitter.addWidget(center); splitter.addWidget(right); splitter.setStretchFactor(1, 1); splitter.setSizes([250, 650, 250])
-        layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.addWidget(splitter)
-        self.canvas_view.changed.connect(self._refresh); self.canvas_view.coordinates_changed.connect(self.coord_label.setText); self.canvas_view.drop_requested.connect(self._handle_dropped_path); self.size_combo.currentTextChanged.connect(lambda x: setattr(self.canvas_view, "pencil_size", int(x)))
+
+        splitter.addWidget(left)
+        splitter.addWidget(center)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([250, 650, 250])
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(splitter)
+
+        self.canvas_view.changed.connect(self._refresh)
+        self.canvas_view.coordinates_changed.connect(self.coord_label.setText)
+        self.canvas_view.drop_requested.connect(self._handle_dropped_path)
+        self.canvas_view.color_picked.connect(self._on_canvas_color_picked)
+        self.size_combo.currentTextChanged.connect(lambda value: setattr(self.canvas_view, "pencil_size", int(value)))
+        self._set_current_color(QColor(*self.canvas_view.color))
         self._update_save_ui()
+        self._update_palette_guidance()
         self._refresh()
 
     def _set_tool(self, tool):
@@ -425,6 +530,7 @@ class PixelEditorPage(QWidget):
         button = self._tool_buttons.get(tool)
         if button is not None and not button.isChecked():
             button.setChecked(True)
+
     def dragEnterEvent(self, event):
         if local_image_paths(event.mimeData()):
             self.setProperty("dragActive", True)
@@ -456,86 +562,212 @@ class PixelEditorPage(QWidget):
             self._load_pixels_path(path)
 
     def _preset_changed(self, index):
-        if index < 3: self.width_spin.setValue((32, 64, 128)[index]); self.height_spin.setValue((32, 64, 128)[index])
+        if index < 3:
+            self.width_spin.setValue((32, 64, 128)[index])
+            self.height_spin.setValue((32, 64, 128)[index])
+
     def _zoom_changed(self, index):
-        if index == 0: self.canvas_view.set_zoom(max(1, min(self.canvas_view.viewport().width() // self.canvas.width, self.canvas_view.viewport().height() // self.canvas.height)))
-        else: self.canvas_view.set_zoom((2, 4, 8, 16)[index - 1])
+        if index == 0:
+            self.canvas_view.set_zoom(max(1, min(self.canvas_view.viewport().width() // self.canvas.width, self.canvas_view.viewport().height() // self.canvas.height)))
+        else:
+            self.canvas_view.set_zoom((2, 4, 8, 16)[index - 1])
+
+    def _current_color_hex(self, color: QColor) -> str:
+        return color.name(QColor.NameFormat.HexArgb).upper() if color.alpha() < 255 else color.name().upper()
+
+    def _update_current_color_button(self, color: QColor) -> None:
+        contrast = "#000000" if color.lightness() > 150 and color.alpha() > 127 else "#FFFFFF"
+        text = self._current_color_hex(color)
+        self.current_color_button.setText(text)
+        self.current_color_button.setToolTip(text)
+        self.current_color_button.setStyleSheet(
+            f"QPushButton {{ background: rgba({color.red()}, {color.green()}, {color.blue()}, {color.alpha()}); color: {contrast}; border: 1px solid #65768a;"
+            " border-radius: 6px; min-height: 30px; font-weight: 700; padding: 4px 8px; }}"
+            "QPushButton:hover { border: 2px solid #2457b2; padding: 3px 7px; }"
+        )
+
+    def _set_palette_selection(self, index: int) -> None:
+        self._palette_selected_index = index
+        previous = self._palette_button_group.exclusive()
+        self._palette_button_group.setExclusive(False)
+        for button_index, button in enumerate(self._palette_chip_buttons):
+            button.setChecked(button_index == index)
+            button.setText("✓" if button_index == index else "")
+        self._palette_button_group.setExclusive(previous)
+
+    def _set_current_color(self, color: QColor, *, palette_index: int = -1, message: str | None = None) -> None:
+        self.canvas_view.color = (color.red(), color.green(), color.blue(), color.alpha())
+        self._set_palette_selection(palette_index)
+        self._update_current_color_button(color)
+        self.preview_hint_label.setText(message or f"現在色: {self._current_color_hex(color)}")
+
+    def _canvas_is_blank(self) -> bool:
+        return self.canvas.image.getchannel("A").getbbox() is None
+
+    def _update_palette_guidance(self) -> None:
+        if not self._received_palette:
+            self.palette_guidance_label.setText("")
+            self.palette_clear_button.setEnabled(False)
+            return
+        self.palette_clear_button.setEnabled(True)
+        if self.source_path is None and self.reference is None and self._canvas_is_blank():
+            self.palette_guidance_label.setText(
+                "パレットだけを受け取りました。\n"
+                "画像は読み込まれていません。\n\n"
+                "「下絵を読み込む」または\n"
+                "「ドット化して編集」から画像を追加できます。"
+            )
+        else:
+            self.palette_guidance_label.setText("現在のキャンバスや下絵はそのままです。パレットだけを更新しました。")
+
     def new_canvas(self):
-        self.canvas = PixelCanvas(self.width_spin.value(), self.height_spin.value()); self.canvas_view.set_canvas(self.canvas); self.reference = None; self.canvas_view.reference = None; self.source_path = None; self._set_filename_default(None); self._refresh()
-    def clear(self): self.canvas.clear(); self._refresh()
-    def undo(self): self.canvas.undo(); self._refresh()
-    def redo(self): self.canvas.redo(); self._refresh()
+        self.canvas = PixelCanvas(self.width_spin.value(), self.height_spin.value())
+        self.canvas_view.set_canvas(self.canvas)
+        self.reference = None
+        self.canvas_view.reference = None
+        self.source_path = None
+        self._set_filename_default(None)
+        self._update_palette_guidance()
+        self._refresh()
+
+    def clear(self):
+        self.canvas.clear()
+        self._update_palette_guidance()
+        self._refresh()
+
+    def undo(self):
+        self.canvas.undo()
+        self._refresh()
+
+    def redo(self):
+        self.canvas.redo()
+        self._refresh()
+
     def _load_reference_path(self, path: Path):
         self.reference = load_reference(path, (self.canvas.width, self.canvas.height), self.opacity_slider.value())
         self.canvas_view.reference = self.reference
         self.source_path = path
         self._set_filename_default(path)
+        self._update_palette_guidance()
         self._refresh()
 
     def load_reference(self):
         path, _ = QFileDialog.getOpenFileName(self, "下絵を読み込む", "", "画像 (*.png *.jpg *.jpeg *.webp)")
         if path:
             self._load_reference_path(Path(path))
+
     def _load_pixels_path(self, path: Path):
         import_as_pixels(path, self.canvas)
         self.source_path = path
         self.reference = None
         self.canvas_view.reference = None
         self._set_filename_default(path)
+        self._update_palette_guidance()
         self._refresh()
 
     def load_pixels(self):
         path, _ = QFileDialog.getOpenFileName(self, "ドット化して編集", "", "画像 (*.png *.jpg *.jpeg *.webp)")
         if path:
             self._load_pixels_path(Path(path))
-    def _reference_visibility(self, value): self.canvas_view.reference_visible = value; self.canvas_view.viewport().update(); self._refresh()
+
+    def _reference_visibility(self, value):
+        self.canvas_view.reference_visible = value
+        self.canvas_view.viewport().update()
+        self._refresh()
+
     def _reference_opacity(self, value):
-        if self.reference is not None: self.reference = ReferenceImage(self.reference.image, value); self.canvas_view.reference = self.reference; self.canvas_view.viewport().update(); self._refresh()
+        if self.reference is not None:
+            self.reference = ReferenceImage(self.reference.image, value)
+            self.canvas_view.reference = self.reference
+            self.canvas_view.viewport().update()
+            self._refresh()
+
+    def choose_current_color(self) -> None:
+        color = QColorDialog.getColor(QColor(*self.canvas_view.color), self, "描画色を選ぶ", QColorDialog.ColorDialogOption.ShowAlphaChannel)
+        if color.isValid():
+            self._set_current_color(color)
+
+    def _on_canvas_color_picked(self, color: QColor) -> None:
+        self._set_current_color(color)
+
     def set_palette(self, colors) -> None:
         self.receive_palette(colors)
+
     def receive_palette(self, colors) -> None:
         self._received_palette = tuple(tuple(color) for color in colors or ())
+        self._set_palette_selection(-1)
         self._rebuild_palette_chips()
+        self.palette_count_label.setText(f"{len(self._received_palette)}色")
+        if self._received_palette:
+            self.palette_status_label.setText(f"✓ {len(self._received_palette)}色のパレットを受け取りました")
+        else:
+            self.palette_status_label.setText("画像加工からパレットを受け取ると、ここに並びます。")
+        self._update_palette_guidance()
+
     def _rebuild_palette_chips(self) -> None:
+        self._palette_button_group.setExclusive(False)
+        for button in self._palette_chip_buttons:
+            self._palette_button_group.removeButton(button)
+        self._palette_button_group.setExclusive(True)
+        self._palette_chip_buttons.clear()
         while self.palette_chips_layout.count():
             item = self.palette_chips_layout.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
         if not self._received_palette:
-            self.palette_status_label.setText("画像加工から配色を受け取ると、ここに並びます。")
             return
-        self.palette_status_label.setText("色を押すと、現在の描画色として使えます。")
         for index, color in enumerate(self._received_palette):
-            button = QPushButton(f"#{color[0]:02X}{color[1]:02X}{color[2]:02X}")
-            contrast = '#000000' if sum(color) >= 384 else '#FFFFFF'
+            button = QToolButton()
+            contrast = "#000000" if sum(color) >= 384 else "#FFFFFF"
+            button.setCheckable(True)
+            button.setText("")
+            button.setToolTip(f"#{color[0]:02X}{color[1]:02X}{color[2]:02X}")
+            button.setFixedSize(28, 28)
             button.setStyleSheet(
-                f"QPushButton {{ background: rgb{color}; color: {contrast}; border: 1px solid #65768a; border-radius: 6px; min-height: 28px; font-weight: 700; }}"
-                "QPushButton:hover { border: 2px solid #2457b2; }"
+                f"QToolButton {{ background: rgb{color}; color: {contrast}; border: 1px solid #65768a; border-radius: 6px; font-size: 14px; font-weight: 800; }}"
+                "QToolButton:hover { border: 2px solid #2457b2; }"
+                "QToolButton:checked { border: 3px solid #173a82; }"
             )
-            button.clicked.connect(lambda checked=False, rgb=color: self._apply_palette_color(rgb))
-            self.palette_chips_layout.addWidget(button, index // 2, index % 2)
-    def _apply_palette_color(self, color: tuple[int, int, int]) -> None:
-        self.canvas_view.color = (color[0], color[1], color[2], 255)
-        self.preview_hint_label.setText(f"現在色: #{color[0]:02X}{color[1]:02X}{color[2]:02X}")
+            button.clicked.connect(lambda checked=False, rgb=color, i=index: self._apply_palette_color(rgb, i))
+            self._palette_button_group.addButton(button, index)
+            self._palette_chip_buttons.append(button)
+            self.palette_chips_layout.addWidget(button, index // 6, index % 6)
+
+    def _apply_palette_color(self, color: tuple[int, int, int], index: int) -> None:
+        self._set_current_color(QColor(color[0], color[1], color[2], 255), palette_index=index)
+
+    def clear_palette(self) -> None:
+        self._received_palette = ()
+        self._set_palette_selection(-1)
+        self._rebuild_palette_chips()
+        self.palette_count_label.setText("0色")
+        self.palette_status_label.setText("パレットをクリアしました。")
+        self._update_palette_guidance()
+
     def _default_filename_stem(self, source_path: Path | None) -> str:
         raw = f"{source_path.stem}_pixel" if source_path else "pixel_art"
         return normalize_filename_stem(raw, default="pixel_art")
+
     def _set_filename_default(self, source_path: Path | None) -> None:
         self.filename_edit.setText(self._default_filename_stem(source_path))
         self.saved_label.clear()
         self._last_saved_result = None
         self._update_save_ui()
+
     def _normalized_filename_stem(self) -> str:
         return normalize_filename_stem(self.filename_edit.text(), default="")
+
     def _normalize_filename_input(self) -> None:
         normalized = self._normalized_filename_stem()
         if self.filename_edit.text() != normalized:
             self.filename_edit.setText(normalized)
+
     def _planned_output_path(self) -> Path | None:
         normalized = self._normalized_filename_stem()
         if self.output_folder is None or not normalized:
             return None
         return self.output_folder / f"{normalized}.png"
+
     def _update_save_ui(self) -> None:
         normalized = self._normalized_filename_stem()
         if self.output_folder is None:
@@ -555,12 +787,14 @@ class PixelEditorPage(QWidget):
             self.save_hint_label.setText("同名ファイルがある場合は自動で連番を付けます。")
             self.save_button.setEnabled(True)
         self.open_folder_button.setEnabled(self._last_saved_result is not None and self._last_saved_result.output_path.parent.is_dir())
+
     def choose_output_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "保存先を選ぶ", str(self.output_folder or ""))
         if not folder:
             return
         self.output_folder = Path(folder)
         self._update_save_ui()
+
     def save(self):
         if self.output_folder is None:
             QMessageBox.warning(self, "保存先を選んでください", "保存先を選ぶを押して、保存先フォルダーを指定してください。")
@@ -575,17 +809,27 @@ class PixelEditorPage(QWidget):
             self.saved_label.setStyleSheet("color: #137333; font-weight: 700;")
             self.saved_label.setText(f"✓ PNGを保存しました\n{result.output_path.name}\n{result.width} × {result.height} / {result.size_bytes:,} bytes")
             self._update_save_ui()
-        except PixelExportError as exc: QMessageBox.warning(self, "保存エラー", str(exc))
+        except PixelExportError as exc:
+            QMessageBox.warning(self, "保存エラー", str(exc))
+
     def open_saved_folder(self):
         folder = self._last_saved_result.output_path.parent if self._last_saved_result is not None else None
         if not folder or not folder.is_dir() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
             QMessageBox.warning(self, "保存先を開けません", "PNGを保存してから、もう一度お試しください。")
+
     def _refresh(self):
         self.preview_size_label.setText(f"{self.canvas.width} × {self.canvas.height}")
         image = _qimage(self.canvas.image)
         self.preview_label.setPixmap(QPixmap.fromImage(image))
         self.preview_label.setFixedSize(image.size())
         self.canvas_view.viewport().update()
-    def resizeEvent(self, event): self._refresh(); super().resizeEvent(event)
-    def can_close(self): return True
-    def cleanup(self): return None
+
+    def resizeEvent(self, event):
+        self._refresh()
+        super().resizeEvent(event)
+
+    def can_close(self):
+        return True
+
+    def cleanup(self):
+        return None
