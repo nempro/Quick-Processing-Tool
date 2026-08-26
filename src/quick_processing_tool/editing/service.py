@@ -6,7 +6,7 @@ from pathlib import Path
 from PIL import Image, UnidentifiedImageError
 
 from ..errors import ProcessingError
-from ..naming import EXTENSIONS, write_unique_bytes
+from ..naming import EXTENSIONS, KNOWN_IMAGE_EXTENSIONS, normalize_filename_stem, write_unique_bytes
 from ..processors.encode import encode_once
 from .models import EditOutputFormat, EditResult, EditSettings
 from .renderer import render_path
@@ -29,6 +29,7 @@ class EditService:
         output_format: EditOutputFormat,
         jpeg_background: tuple[int, int, int] = (255, 255, 255),
         quality: int = 95,
+        custom_stem: str | None = None,
     ) -> EditResult:
         source_path = source_path.resolve()
         try:
@@ -39,10 +40,18 @@ class EditService:
                     raise EditProcessingError("PNG / JPEG / WebP のみ開けます。")
             rendered = render_path(source_path, settings)
             selected_format = source_format if output_format is EditOutputFormat.SAME else output_format.value
+            default_stem = f"{source_path.stem}_edited"
+            output_stem = normalize_filename_stem(
+                custom_stem if custom_stem is not None else default_stem,
+                default=default_stem,
+                strip_extensions=KNOWN_IMAGE_EXTENSIONS,
+            )
+            if not output_stem:
+                raise EditProcessingError("保存するファイル名を入力してください。")
             data = encode_once(rendered, selected_format, quality, jpeg_background)
             output = write_unique_bytes(
                 output_folder,
-                f"{source_path.stem}_edited",
+                output_stem,
                 EXTENSIONS[selected_format],
                 data,
             )
@@ -50,7 +59,6 @@ class EditService:
             LOGGER.exception("Quick edit export failed: %s", source_path)
             raise EditProcessingError("加工した画像を保存できませんでした。") from exc
 
-        expected_alpha = rendered.getchannel("A").getextrema()[0] < 255
         try:
             if output.stat().st_size <= 0:
                 raise OSError("empty output")

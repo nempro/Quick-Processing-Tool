@@ -1,12 +1,30 @@
 from __future__ import annotations
 
-from PIL import Image, ImageChops, ImageFilter, ImageOps
+from dataclasses import dataclass
+
+from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
 
 from .models import LineArtAmount, LineArtBackground, LineArtSettings
 
 
-_THRESHOLDS = {LineArtAmount.LOW: 105, LineArtAmount.NORMAL: 65, LineArtAmount.HIGH: 28}
 EDGE_METHOD = "sobel"
+
+
+@dataclass(frozen=True, slots=True)
+class _LineArtProfile:
+    blur: float
+    threshold: int
+    contrast: float
+    dilate: int = 0
+    erode: int = 0
+
+
+_PROFILES = {
+    LineArtAmount.CLEAN: _LineArtProfile(0.80, 128, 1.00, 0, 0),
+    LineArtAmount.STANDARD: _LineArtProfile(0.48, 92, 1.32, 0, 0),
+    LineArtAmount.DETAILED: _LineArtProfile(0.26, 72, 1.52, 1, 0),
+    LineArtAmount.COMIC: _LineArtProfile(0.32, 82, 1.82, 2, 0),
+}
 
 
 def _background(settings: LineArtSettings, size: tuple[int, int]) -> Image.Image:
@@ -21,13 +39,13 @@ def _background(settings: LineArtSettings, size: tuple[int, int]) -> Image.Image
     return Image.new("RGBA", size, color)
 
 
-def _find_edges_candidate(image: Image.Image) -> Image.Image:
-    gray = ImageOps.grayscale(image.convert("RGB")).filter(ImageFilter.GaussianBlur(0.45))
+def _find_edges_candidate(image: Image.Image, blur: float) -> Image.Image:
+    gray = ImageOps.grayscale(image.convert("RGB")).filter(ImageFilter.GaussianBlur(blur))
     return gray.filter(ImageFilter.FIND_EDGES)
 
 
-def _sobel_candidate(image: Image.Image) -> Image.Image:
-    gray = ImageOps.grayscale(image.convert("RGB")).filter(ImageFilter.GaussianBlur(0.45))
+def _sobel_candidate(image: Image.Image, blur: float) -> Image.Image:
+    gray = ImageOps.grayscale(image.convert("RGB")).filter(ImageFilter.GaussianBlur(blur))
     horizontal = gray.filter(
         ImageFilter.Kernel(
             (3, 3), (-1, 0, 1, -2, 0, 2, -1, 0, 1), scale=1, offset=128
@@ -45,16 +63,31 @@ def _sobel_candidate(image: Image.Image) -> Image.Image:
     )
 
 
+def _profile(amount: LineArtAmount) -> _LineArtProfile:
+    return _PROFILES[LineArtAmount(amount)]
+
+
+def _mask_from_candidate(candidate: Image.Image, amount: LineArtAmount) -> Image.Image:
+    profile = _profile(amount)
+    enhanced = ImageEnhance.Contrast(candidate).enhance(profile.contrast)
+    mask = enhanced.point(lambda value: 255 if value >= profile.threshold else 0)
+    for _ in range(profile.dilate):
+        mask = mask.filter(ImageFilter.MaxFilter(3))
+    for _ in range(profile.erode):
+        mask = mask.filter(ImageFilter.MinFilter(3))
+    return mask
+
+
 def edge_mask_candidate(image: Image.Image, amount: LineArtAmount, method: str) -> Image.Image:
     """Return one internal candidate; method is not exposed in normal UI."""
+    profile = _profile(amount)
     if method == "find_edges":
-        edges = _find_edges_candidate(image)
+        candidate = _find_edges_candidate(image, profile.blur)
     elif method == "sobel":
-        edges = _sobel_candidate(image)
+        candidate = _sobel_candidate(image, profile.blur)
     else:
         raise ValueError(f"Unknown line-art method: {method}")
-    threshold = _THRESHOLDS[amount]
-    return edges.point(lambda value: 255 if value >= threshold else 0)
+    return _mask_from_candidate(candidate, amount)
 
 
 def edge_mask(image: Image.Image, amount: LineArtAmount) -> Image.Image:
@@ -63,7 +96,7 @@ def edge_mask(image: Image.Image, amount: LineArtAmount) -> Image.Image:
 
 
 def compare_edge_candidates(
-    image: Image.Image, amount: LineArtAmount = LineArtAmount.NORMAL
+    image: Image.Image, amount: LineArtAmount = LineArtAmount.STANDARD
 ) -> dict[str, dict[str, float]]:
     """Return deterministic density metrics used by QA to choose the internal default."""
     metrics: dict[str, dict[str, float]] = {}

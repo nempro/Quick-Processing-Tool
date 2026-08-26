@@ -254,8 +254,17 @@ def test_palette_worker_stale_result_and_error_are_ignored_or_localized(qt_app) 
     page.close()
 
 
+def _wait_for_palette_thread_idle(qt_app, page, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while page._palette_thread is not None and time.monotonic() < deadline:
+        qt_app.processEvents()
+    qt_app.processEvents()
+    assert page._palette_thread is None
+
+
 def test_palette_thread_runs_off_gui_thread(qt_app, tmp_path: Path, monkeypatch) -> None:
     import threading
+    import shiboken6
     import quick_processing_tool.edit_ui as edit_ui
     from quick_processing_tool.edit_ui import PaletteExtractionThread, QuickEditPage
 
@@ -273,15 +282,19 @@ def test_palette_thread_runs_off_gui_thread(qt_app, tmp_path: Path, monkeypatch)
     page = QuickEditPage()
     page.load_image(source)
     page.extract_palette()
-    deadline = time.monotonic() + 3
-    while page._palette_thread is not None and time.monotonic() < deadline:
-        qt_app.processEvents()
+    thread = page._palette_thread
+    assert thread is not None
+    _wait_for_palette_thread_idle(qt_app, page)
     assert thread_checks == [True]
-    assert page._palette_thread is None
+    assert page.can_close()
+    assert page.palette_extract_button.isEnabled()
+    qt_app.processEvents()
+    assert not shiboken6.isValid(thread)
     page.close()
 
 
 def test_palette_worker_runtime_failure_localizes_and_cleans_up(qt_app, tmp_path: Path, monkeypatch) -> None:
+    import shiboken6
     import quick_processing_tool.edit_ui as edit_ui
     from quick_processing_tool.edit_ui import QuickEditPage
 
@@ -294,16 +307,57 @@ def test_palette_worker_runtime_failure_localizes_and_cleans_up(qt_app, tmp_path
     monkeypatch.setattr(edit_ui, "extract_palette", boom)
     page = QuickEditPage()
     page.load_image(source)
+    finished_threads = []
+    for _ in range(20):
+        page.extract_palette()
+        thread = page._palette_thread
+        assert thread is not None
+        _wait_for_palette_thread_idle(qt_app, page)
+        assert page._palette_active_request is None
+        assert page.can_close()
+        assert page.palette_extract_button.isEnabled()
+        assert "代表色を抽出できませんでした。" in page.preview_status.text()
+        assert "c62828" in page.preview_status.styleSheet()
+        finished_threads.append(thread)
+    qt_app.processEvents()
+    assert all(not shiboken6.isValid(thread) for thread in finished_threads)
+    page.close()
+
+
+def test_palette_worker_cancel_cleans_up_and_deletes_thread(qt_app, tmp_path: Path, monkeypatch) -> None:
+    import shiboken6
+    import quick_processing_tool.edit_ui as edit_ui
+    from quick_processing_tool.edit_ui import PaletteExtractionThread, QuickEditPage
+
+    source = tmp_path / "cancel-thread-check.png"
+    Image.new("RGB", (32, 24), "red").save(source)
+    started: list[bool] = []
+
+    class SlowCancelableThread(PaletteExtractionThread):
+        def run(self) -> None:
+            started.append(True)
+            deadline = time.monotonic() + 1.0
+            while not self.isInterruptionRequested() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if self.isInterruptionRequested():
+                return
+            super().run()
+
+    monkeypatch.setattr(edit_ui, "PaletteExtractionThread", SlowCancelableThread)
+    page = QuickEditPage()
+    page.load_image(source)
     page.extract_palette()
-    deadline = time.monotonic() + 3
-    while page._palette_thread is not None and time.monotonic() < deadline:
-        qt_app.processEvents()
-    assert page._palette_thread is None
+    thread = page._palette_thread
+    assert thread is not None
+    assert not page.can_close()
+    page.cancel_palette_extraction()
+    _wait_for_palette_thread_idle(qt_app, page)
+    assert started == [True]
     assert page._palette_active_request is None
     assert page.can_close()
     assert page.palette_extract_button.isEnabled()
-    assert "代表色を抽出できませんでした。" in page.preview_status.text()
-    assert "c62828" in page.preview_status.styleSheet()
+    qt_app.processEvents()
+    assert not shiboken6.isValid(thread)
     page.close()
 
 
@@ -330,3 +384,277 @@ def test_export_worker_edit_processing_error_emits_message() -> None:
     worker.failed.connect(messages.append)
     worker.run()
     assert messages == ["boom"]
+
+
+
+def test_text_auto_activation_and_clear_keep_section_visible(qt_app) -> None:
+    from quick_processing_tool.edit_ui import QuickEditPage
+
+    page = QuickEditPage()
+    page.text_section.toggle.setChecked(True)
+    page.show()
+    qt_app.processEvents()
+    assert not page.text_enabled.isVisible()
+    assert page.text_details.isVisible()
+
+    page.text_edit.setPlainText("なかよしこよし")
+    qt_app.processEvents()
+    page._commit_text_history()
+    assert page.text_enabled.isChecked()
+    assert page.settings().text.enabled
+
+    page.clear_text()
+    qt_app.processEvents()
+    assert not page.text_enabled.isChecked()
+    assert page.text_details.isVisible()
+    assert not page.settings().text.enabled
+    page.close()
+
+
+def test_transparency_slider_spin_sync_and_sticker_navigation_does_not_auto_enable(qt_app, tmp_path: Path) -> None:
+    from quick_processing_tool.edit_ui import QuickEditPage
+
+    source = tmp_path / "opaque.png"
+    Image.new("RGB", (12, 12), "white").save(source)
+    page = QuickEditPage()
+    page.load_image(source)
+    page.material_section.toggle.setChecked(True)
+    page.show()
+    page.transparency_section.toggle.setChecked(False)
+    page.transparency_enabled.setChecked(False)
+    qt_app.processEvents()
+
+    page.tolerance_slider.setValue(42)
+    qt_app.processEvents()
+    assert page.tolerance_spin.value() == 42
+    page.softness_spin.setValue(17)
+    qt_app.processEvents()
+    assert page.softness_slider.value() == 17
+
+    page.open_transparency_settings()
+    qt_app.processEvents()
+    assert page.transparency_section.toggle.isChecked()
+    assert not page.transparency_enabled.isChecked()
+    assert page.sticker_prereq_button.isVisible()
+    page.close()
+
+
+def test_line_art_presets_have_visible_distinct_outputs_and_background_contract() -> None:
+    image = Image.new("RGB", (72, 72), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((8, 8, 60, 60), outline="black", width=3)
+    draw.ellipse((18, 18, 50, 44), outline="black", width=2)
+    draw.line((0, 71, 71, 0), fill="black", width=2)
+
+    densities = []
+    render_bytes = {}
+    for amount in LineArtAmount:
+        result = apply_line_art(
+            image.convert("RGBA"),
+            LineArtSettings(enabled=True, amount=amount, background=LineArtBackground.WHITE),
+        )
+        densities.append(sum(1 for x in range(result.width) for y in range(result.height) if result.getpixel((x, y))[:3] != (255, 255, 255)))
+        render_bytes[amount] = result.tobytes()
+
+        transparent = apply_line_art(
+            image.convert("RGBA"),
+            LineArtSettings(enabled=True, amount=amount, background=LineArtBackground.TRANSPARENT),
+        )
+        assert transparent.size == image.size and transparent.mode == "RGBA"
+        assert any(transparent.getpixel((x, y))[3] > 0 for x in range(transparent.width) for y in range(transparent.height))
+
+        black = apply_line_art(
+            image.convert("RGBA"),
+            LineArtSettings(enabled=True, amount=amount, background=LineArtBackground.BLACK),
+        )
+        assert black.getpixel((0, 0))[3] == 255
+
+        custom = apply_line_art(
+            image.convert("RGBA"),
+            LineArtSettings(
+                enabled=True,
+                amount=amount,
+                background=LineArtBackground.CUSTOM,
+                custom_background=(12, 34, 56, 255),
+            ),
+        )
+        assert custom.getpixel((4, 4)) == (12, 34, 56, 255)
+
+    assert densities[0] > 0
+    assert densities[0] < densities[1] < densities[2] <= densities[3]
+    assert len(set(render_bytes.values())) == len(LineArtAmount)
+
+
+def test_palette_extract_only_keeps_preview_unquantized_until_toggle() -> None:
+    from quick_processing_tool.editing import EditSettings
+
+    image = Image.new("RGBA", (6, 1))
+    image.putdata([
+        (255, 0, 0, 255),
+        (230, 10, 10, 255),
+        (0, 255, 0, 255),
+        (0, 230, 20, 255),
+        (0, 0, 255, 255),
+        (20, 20, 230, 255),
+    ])
+    mapping = extract_palette(image, 5)
+    settings = EditSettings(palette=PaletteSettings(True, False, 5, mapping.palette, mapping.palette, mapping.indices, mapping.width, mapping.height, mapping.digest))
+    untouched = render_edit(image, settings)
+    assert untouched.tobytes() == image.tobytes()
+
+    quantized = render_edit(image, __import__("quick_processing_tool.editing", fromlist=["EditSettings"]).EditSettings(palette=PaletteSettings(True, True, 5, mapping.palette, mapping.palette, mapping.indices, mapping.width, mapping.height, mapping.digest)))
+    assert quantized.tobytes() != image.tobytes()
+
+
+def test_palette_rows_and_reset_and_handoff(qt_app, tmp_path: Path) -> None:
+    from quick_processing_tool.edit_ui import QuickEditPage
+
+    source = tmp_path / "palette-ui.png"
+    image = Image.new("RGB", (2, 1))
+    image.putdata([(255, 0, 0), (0, 255, 0)])
+    image.save(source)
+
+    page = QuickEditPage()
+    page.load_image(source)
+    mapping = extract_palette(Image.open(source), 6)
+    page._on_palette_extracted((page._palette_generation, 1, page._palette_source_identity(source), (page.settings().filter_preset.value, page.settings().transparency, page.settings().palette.color_count), mapping))
+    # Re-send with the actual active token so the payload is accepted.
+    token = page._palette_active_request = (page._palette_generation, 99, page._palette_source_identity(source), (page.settings().filter_preset.value, page.settings().transparency, page.settings().palette.color_count))
+    page._on_palette_extracted((*token, mapping))
+    qt_app.processEvents()
+    assert page.palette_chips_layout.count() >= len(mapping.palette) * 3
+    assert page.palette_send_button.isEnabled()
+
+    page._palette_replacements = tuple(reversed(mapping.palette))
+    page._rebuild_palette_chips()
+    emitted = []
+    page.palette_handoff_requested.connect(emitted.append)
+    page.send_palette_to_pixel()
+    assert emitted == [tuple(reversed(mapping.palette))]
+
+    page.reset_palette()
+    assert page._palette_replacements == mapping.palette
+    page.close()
+
+
+def test_main_window_palette_handoff_switches_tab_and_preserves_pixel_source(qt_app, tmp_path: Path) -> None:
+    from quick_processing_tool.ui import MainWindow
+
+    window = MainWindow()
+    source = tmp_path / "source.png"
+    Image.new("RGB", (8, 8), "blue").save(source)
+    window.pixel_page._load_reference_path(source)
+    original_name = window.pixel_page.filename_edit.text()
+    window._handoff_palette_to_pixel(((1, 2, 3), (4, 5, 6)))
+    qt_app.processEvents()
+    assert window.navigation.currentIndex() == window.pixel_tab
+    assert window.pixel_page._received_palette == ((1, 2, 3), (4, 5, 6))
+    assert window.pixel_page.source_path == source
+    assert window.pixel_page.filename_edit.text() == original_name
+    window.close()
+
+
+
+def test_edit_filename_defaults_suffix_and_custom_retention(qt_app, tmp_path: Path) -> None:
+    from quick_processing_tool.edit_ui import QuickEditPage
+
+    first = tmp_path / "cat_a1b2c3.png"
+    second = tmp_path / "dog.webp"
+    Image.new("RGB", (12, 12), "red").save(first)
+    Image.new("RGB", (10, 10), "blue").save(second)
+
+    page = QuickEditPage()
+    page.load_image(first)
+    qt_app.processEvents()
+    assert page.filename_edit.text() == "cat_a1b2c3_edited"
+    assert page.filename_suffix_label.text() == ".png"
+    assert page.save_button.isEnabled()
+
+    page.filename_edit.setText("こんにちは.jpeg.PNG")
+    page._normalize_output_filename_input()
+    assert page.filename_edit.text() == "こんにちは"
+
+    page.format_combo.setCurrentIndex(page.format_combo.findData("JPEG"))
+    qt_app.processEvents()
+    assert page.filename_suffix_label.text() == ".jpg"
+    assert page.filename_edit.text() == "こんにちは"
+
+    page.filter_combo.setCurrentIndex(page.filter_combo.findData("grayscale"))
+    qt_app.processEvents()
+    page.reset_edits()
+    qt_app.processEvents()
+    assert page.filename_edit.text() == "こんにちは"
+
+    page.load_image(second)
+    qt_app.processEvents()
+    assert page.filename_edit.text() == "dog_edited"
+    assert page.filename_suffix_label.text() == ".jpg"
+    page.close()
+
+
+def test_edit_filename_blank_invalid_reserved_and_planned_path(qt_app, tmp_path: Path) -> None:
+    from quick_processing_tool.edit_ui import QuickEditPage
+
+    source = tmp_path / "source.png"
+    Image.new("RGB", (8, 8), "green").save(source)
+    page = QuickEditPage()
+    page.load_image(source)
+    qt_app.processEvents()
+
+    page.filename_edit.setText("bad<>:\"/\\|?*" + chr(0) + "name.png.PNG")
+    page._normalize_output_filename_input()
+    assert page.filename_edit.text() == "bad__________name"
+    assert page.save_button.isEnabled()
+    assert page.planned_path_label.toolTip().endswith("bad__________name.png")
+
+    page.filename_edit.setText("CON.webp")
+    page._normalize_output_filename_input()
+    assert page.filename_edit.text() == "CON_"
+
+    page.filename_edit.setText("")
+    page._normalize_output_filename_input()
+    qt_app.processEvents()
+    assert page.filename_edit.text() == ""
+    assert not page.save_button.isEnabled()
+    assert "ファイル名" in page.save_hint_label.text()
+
+    invalid_target = tmp_path / "not-a-folder.txt"
+    invalid_target.write_text("x", encoding="utf-8")
+    page.output_folder = invalid_target
+    page._update_save_panel()
+    page._update_actions()
+    assert not page.save_button.isEnabled()
+    assert "選び直してください" in page.save_hint_label.text()
+    page.close()
+
+
+def test_edit_service_custom_stem_duplicate_and_actual_result_filename(tmp_path: Path) -> None:
+    from quick_processing_tool.editing import EditService, EditSettings
+    from quick_processing_tool.editing.models import EditOutputFormat
+
+    source = tmp_path / "source_hash_ab12cd.png"
+    Image.new("RGBA", (6, 6), (255, 0, 0, 180)).save(source)
+    service = EditService()
+
+    result1 = service.export(
+        source,
+        tmp_path,
+        EditSettings(),
+        EditOutputFormat.SAME,
+        (255, 255, 255),
+        95,
+        "  こんにちは.png.PNG  ",
+    )
+    result2 = service.export(
+        source,
+        tmp_path,
+        EditSettings(),
+        EditOutputFormat.SAME,
+        (255, 255, 255),
+        95,
+        "  こんにちは.png.PNG  ",
+    )
+
+    assert result1.output_path.name == "こんにちは.png"
+    assert result2.output_path.name == "こんにちは_2.png"
+    assert result1.output_path.is_file() and result2.output_path.is_file()

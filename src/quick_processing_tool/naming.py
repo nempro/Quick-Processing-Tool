@@ -1,9 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
 
 EXTENSIONS = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp"}
+KNOWN_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 WINDOWS_RESERVED_NAMES = {
     "con",
     "prn",
@@ -25,6 +26,25 @@ def _sanitize_component(value: str) -> str:
     return "".join(cleaned).strip().rstrip(" .")
 
 
+def _strip_selected_extensions(value: str, strip_extensions: tuple[str, ...]) -> str:
+    selected = tuple(
+        sorted(
+            {extension.casefold() for extension in strip_extensions if extension},
+            key=len,
+            reverse=True,
+        )
+    )
+    if not selected:
+        return value
+    while value:
+        lowered = value.casefold()
+        matched = next((extension for extension in selected if lowered.endswith(extension)), None)
+        if matched is None:
+            break
+        value = value[: -len(matched)].rstrip()
+    return value
+
+
 def _protect_reserved_windows_name(value: str) -> str:
     if not value:
         return value
@@ -38,18 +58,21 @@ def _protect_reserved_windows_name(value: str) -> str:
     return safe_base
 
 
-
-def normalize_filename_stem(raw: str, *, default: str | None = None, max_length: int = MAX_COMPONENT_LENGTH) -> str:
+def normalize_filename_stem(
+    raw: str,
+    *,
+    default: str | None = None,
+    max_length: int = MAX_COMPONENT_LENGTH,
+    strip_extensions: tuple[str, ...] = (".png",),
+) -> str:
     """Normalize a user-provided filename stem for Windows-safe output."""
-    value = (raw or "").strip()
-    while value.lower().endswith(".png"):
-        value = value[:-4].rstrip()
+    value = _strip_selected_extensions((raw or "").strip(), strip_extensions)
     value = _sanitize_component(value)
     if value in {".", ".."}:
         value = ""
 
     if not value and default is not None:
-        value = _sanitize_component(default)
+        value = _sanitize_component(_strip_selected_extensions(default, strip_extensions))
 
     if not value:
         return ""

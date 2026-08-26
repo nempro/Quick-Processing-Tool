@@ -46,9 +46,9 @@ def _apply_palette_stage(image: Image.Image, settings: EditSettings) -> Image.Im
         mapping = mapping_for_palette(image, palette_settings.palette)
     else:
         mapping = extract_palette(image, palette_settings.color_count)
-    if not palette_settings.quantize_enabled and not palette_settings.replacements:
-        return image.convert("RGBA").copy()
     replacements = palette_settings.replacements or mapping.palette
+    if not palette_settings.quantize_enabled and replacements == mapping.palette:
+        return image.convert("RGBA").copy()
     return apply_palette_mapping(image, mapping, replacements)
 
 def render_edit(source: Image.Image, settings: EditSettings) -> Image.Image:

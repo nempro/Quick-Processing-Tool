@@ -478,6 +478,7 @@ class MainWindow(QMainWindow):
         self.thumbnail_tab = self.navigation.addTab(self.thumbnail_page, "文字サムネ")
         self.edit_page = QuickEditPage()
         self.edit_page.processing_changed.connect(self._edit_processing_changed)
+        self.edit_page.palette_handoff_requested.connect(self._handoff_palette_to_pixel)
         self.image_edit_tab = self.navigation.addTab(self.edit_page, "画像加工")
         self.upscale_page = UpscalePage()
         self.upscale_page.processing_changed.connect(self._upscale_processing_changed)
@@ -1076,6 +1077,11 @@ class MainWindow(QMainWindow):
         self.navigation.setTabEnabled(self.thumbnail_tab, not processing)
         self.navigation.setTabEnabled(self.image_edit_tab, not processing)
         self.navigation.setTabEnabled(self.pixel_tab, not processing)
+
+    @Slot(object)
+    def _handoff_palette_to_pixel(self, colors) -> None:
+        self.pixel_page.receive_palette(colors)
+        self.navigation.setCurrentIndex(self.pixel_tab)
 
     @Slot(bool)
     def _edit_processing_changed(self, processing: bool) -> None:

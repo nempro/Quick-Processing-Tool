@@ -48,10 +48,15 @@ class EditOutputFormat(str, Enum):
     JPEG = "JPEG"
     WEBP = "WEBP"
 
+
 class LineArtAmount(str, Enum):
-    LOW = "low"
-    NORMAL = "normal"
-    HIGH = "high"
+    CLEAN = "clean"
+    STANDARD = "standard"
+    DETAILED = "detailed"
+    COMIC = "comic"
+    LOW = "clean"
+    NORMAL = "standard"
+    HIGH = "detailed"
 
 
 class LineArtBackground(str, Enum):
@@ -71,8 +76,8 @@ class TransparencySettings:
     def __post_init__(self) -> None:
         if not 0 <= self.tolerance <= 255:
             raise ValueError("Tolerance must be between 0 and 255")
-        if not 0 <= self.edge_softness <= 255:
-            raise ValueError("Edge softness must be between 0 and 255")
+        if not 0 <= self.edge_softness <= 100:
+            raise ValueError("Edge softness must be between 0 and 100")
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +111,7 @@ class TextSettings:
     safe_margin: int = 24
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "enabled", bool(self.text.strip()))
         if not 8 <= self.font_size <= 500:
             raise ValueError("Font size must be between 8 and 500")
         if not 0 <= self.outline_width <= 40:
@@ -129,7 +135,7 @@ class StickerSettings:
 @dataclass(frozen=True, slots=True)
 class LineArtSettings:
     enabled: bool = False
-    amount: LineArtAmount = LineArtAmount.NORMAL
+    amount: LineArtAmount = LineArtAmount.STANDARD
     line_color: tuple[int, int, int, int] = (0, 0, 0, 255)
     background: LineArtBackground = LineArtBackground.TRANSPARENT
     custom_background: tuple[int, int, int, int] = (255, 255, 255, 255)

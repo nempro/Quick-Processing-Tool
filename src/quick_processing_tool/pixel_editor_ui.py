@@ -7,7 +7,7 @@ from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractScrollArea, QCheckBox, QColorDialog, QComboBox, QDialog, QFileDialog,
-    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
+    QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
     QPushButton, QScrollArea, QSlider, QSpinBox, QSplitter, QToolButton,
     QButtonGroup, QSizePolicy,
     QVBoxLayout, QWidget,
@@ -289,6 +289,7 @@ class PixelEditorPage(QWidget):
         self.source_path: Path | None = None
         self.output_folder: Path | None = None
         self._last_saved_result: PixelExportResult | None = None
+        self._received_palette: tuple[tuple[int, int, int], ...] = ()
         self.reference: ReferenceImage | None = None
         self.import_choice_provider = lambda path: PixelImportChoiceDialog.choose(path, self)
         self.canvas = PixelCanvas()
@@ -336,6 +337,18 @@ class PixelEditorPage(QWidget):
         self.reference_button = QPushButton("下絵を読み込む"); self.reference_button.clicked.connect(self.load_reference)
         self.pixelize_button = QPushButton("ドット化して編集"); self.pixelize_button.clicked.connect(self.load_pixels)
         il.addWidget(self.reference_button); il.addWidget(self.pixelize_button); left_layout.addWidget(io_group)
+        palette_group = QGroupBox("受け取った配色")
+        pl = QVBoxLayout(palette_group)
+        self.palette_status_label = QLabel("画像加工から配色を受け取ると、ここに並びます。")
+        self.palette_status_label.setWordWrap(True)
+        pl.addWidget(self.palette_status_label)
+        self.palette_chips_widget = QWidget()
+        self.palette_chips_layout = QGridLayout(self.palette_chips_widget)
+        self.palette_chips_layout.setContentsMargins(0, 0, 0, 0)
+        self.palette_chips_layout.setHorizontalSpacing(6)
+        self.palette_chips_layout.setVerticalSpacing(6)
+        pl.addWidget(self.palette_chips_widget)
+        left_layout.addWidget(palette_group)
         view_group = QGroupBox("表示")
         vl = QVBoxLayout(view_group)
         self.zoom_combo = QComboBox(); self.zoom_combo.addItems(["Fit", "2x", "4x", "8x", "16x"]); self.zoom_combo.setCurrentIndex(2); self.zoom_combo.currentIndexChanged.connect(self._zoom_changed); vl.addWidget(self.zoom_combo)
@@ -478,6 +491,32 @@ class PixelEditorPage(QWidget):
     def _reference_visibility(self, value): self.canvas_view.reference_visible = value; self.canvas_view.viewport().update(); self._refresh()
     def _reference_opacity(self, value):
         if self.reference is not None: self.reference = ReferenceImage(self.reference.image, value); self.canvas_view.reference = self.reference; self.canvas_view.viewport().update(); self._refresh()
+    def set_palette(self, colors) -> None:
+        self.receive_palette(colors)
+    def receive_palette(self, colors) -> None:
+        self._received_palette = tuple(tuple(color) for color in colors or ())
+        self._rebuild_palette_chips()
+    def _rebuild_palette_chips(self) -> None:
+        while self.palette_chips_layout.count():
+            item = self.palette_chips_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        if not self._received_palette:
+            self.palette_status_label.setText("画像加工から配色を受け取ると、ここに並びます。")
+            return
+        self.palette_status_label.setText("色を押すと、現在の描画色として使えます。")
+        for index, color in enumerate(self._received_palette):
+            button = QPushButton(f"#{color[0]:02X}{color[1]:02X}{color[2]:02X}")
+            contrast = '#000000' if sum(color) >= 384 else '#FFFFFF'
+            button.setStyleSheet(
+                f"QPushButton {{ background: rgb{color}; color: {contrast}; border: 1px solid #65768a; border-radius: 6px; min-height: 28px; font-weight: 700; }}"
+                "QPushButton:hover { border: 2px solid #2457b2; }"
+            )
+            button.clicked.connect(lambda checked=False, rgb=color: self._apply_palette_color(rgb))
+            self.palette_chips_layout.addWidget(button, index // 2, index % 2)
+    def _apply_palette_color(self, color: tuple[int, int, int]) -> None:
+        self.canvas_view.color = (color[0], color[1], color[2], 255)
+        self.preview_hint_label.setText(f"現在色: #{color[0]:02X}{color[1]:02X}{color[2]:02X}")
     def _default_filename_stem(self, source_path: Path | None) -> str:
         raw = f"{source_path.stem}_pixel" if source_path else "pixel_art"
         return normalize_filename_stem(raw, default="pixel_art")
