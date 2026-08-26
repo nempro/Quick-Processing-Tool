@@ -1,7 +1,8 @@
 from PIL import Image
+import inspect
 import time
 from pathlib import Path
-from quick_processing_tool.editing.renderer import render_edit
+from quick_processing_tool.editing.renderer import render_edit, render_preview
 from quick_processing_tool.editing.palette import rgba_digest
 from PIL import ImageDraw
 import pytest
@@ -12,6 +13,27 @@ from PySide6.QtWidgets import QApplication
 def qt_app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
+def _alpha_bytes(image: Image.Image) -> bytes:
+    return image.convert("RGBA").getchannel("A").tobytes()
+
+
+def _rgba_pixels(image: Image.Image):
+    rgba = image.convert("RGBA")
+    get_flattened = getattr(rgba, "get_flattened_data", None)
+    if callable(get_flattened):
+        return get_flattened()
+    return rgba.getdata()
+
+
+def _luminance_values(image: Image.Image) -> list[int]:
+    values = []
+    for red, green, blue, alpha in _rgba_pixels(image):
+        if alpha == 0:
+            continue
+        values.append(round(0.2126 * red + 0.7152 * green + 0.0722 * blue))
+    return values
+
+
 from quick_processing_tool.editing.line_art import EDGE_METHOD, apply_line_art, compare_edge_candidates, edge_mask_candidate
 from quick_processing_tool.editing.models import (
     FilterPreset,
@@ -19,9 +41,16 @@ from quick_processing_tool.editing.models import (
     LineArtBackground,
     LineArtSettings,
     PaletteSettings,
+    RecolorBlendMode,
     StickerSettings,
 )
-from quick_processing_tool.editing.palette import apply_palette_mapping, extract_palette, mapping_for_palette
+from quick_processing_tool.editing.palette import (
+    apply_palette_mapping,
+    apply_palette_mapping_preserve_shading,
+    apply_palette_mapping_smooth,
+    extract_palette,
+    mapping_for_palette,
+)
 from quick_processing_tool.editing.sticker import apply_sticker
 
 
@@ -68,6 +97,7 @@ def test_line_art_presets_keep_dimensions_and_background_contract() -> None:
 def test_phase4b_settings_defaults_are_non_destructive() -> None:
     settings = PaletteSettings()
     assert settings.color_count == 6
+    assert settings.blend_mode is RecolorBlendMode.SHARP
     assert not settings.enabled and not settings.quantize_enabled
     assert not StickerSettings().enabled
     assert not LineArtSettings().enabled
@@ -84,6 +114,68 @@ def test_cached_palette_mapping_recolor_changes_values_only() -> None:
     assert result.getpixel((2, 0))[3] == 160
     assert result.getpixel((0, 0))[:3] == (1, 2, 3)
 
+
+def test_sharp_blend_mode_matches_existing_recolor_bytes() -> None:
+    from quick_processing_tool.editing import EditSettings
+
+    image = Image.new("RGBA", (4, 1))
+    image.putdata([(255, 0, 0, 255), (220, 10, 10, 255), (0, 255, 0, 255), (0, 210, 20, 255)])
+    mapping = extract_palette(image, 6)
+    replacements = tuple((30, 120, 240) if i == 0 else (250, 200, 20) for i in range(len(mapping.palette)))
+    legacy = apply_palette_mapping(image, mapping, replacements)
+    settings = EditSettings(palette=PaletteSettings(True, False, 6, mapping.palette, replacements, mapping.indices, mapping.width, mapping.height, mapping.digest, RecolorBlendMode.SHARP))
+    assert render_edit(image, settings).tobytes() == legacy.tobytes()
+
+
+def test_smooth_blend_changes_only_boundary_band_and_preserves_alpha() -> None:
+    image = Image.new("RGBA", (8, 6), (0, 0, 0, 0))
+    for y in range(1, 5):
+        for x in range(1, 4):
+            image.putpixel((x, y), (255, 0, 0, 255))
+        for x in range(4, 7):
+            image.putpixel((x, y), (0, 255, 0, 255))
+    mapping = extract_palette(image, 6)
+    replacements = tuple(reversed(mapping.palette))
+    sharp = apply_palette_mapping(image, mapping, replacements)
+    smooth = apply_palette_mapping_smooth(image, mapping, replacements)
+    assert smooth.size == sharp.size
+    assert _alpha_bytes(smooth) == _alpha_bytes(sharp)
+    assert smooth.getpixel((3, 2)) != sharp.getpixel((3, 2))
+    assert smooth.getpixel((1, 2)) == sharp.getpixel((1, 2))
+    assert smooth.getpixel((6, 3)) == sharp.getpixel((6, 3))
+    assert smooth.getpixel((0, 0)) == sharp.getpixel((0, 0)) == (0, 0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    ("replacement", "dominant"),
+    [
+        ((0, 255, 255), "cyan"),
+        ((255, 0, 255), "magenta"),
+        ((255, 255, 0), "yellow"),
+        ((0, 0, 0), "black"),
+        ((255, 255, 255), "white"),
+    ],
+)
+def test_shading_preserves_luminance_order_and_target_hue_dominance(replacement, dominant) -> None:
+    source = Image.new("RGBA", (4, 1))
+    source.putdata([(24, 24, 24, 255), (96, 96, 96, 255), (176, 176, 176, 255), (240, 240, 240, 255)])
+    mapping = mapping_for_palette(source, ((128, 128, 128),))
+    shaded = apply_palette_mapping_preserve_shading(source, mapping, (replacement,))
+    luminances = _luminance_values(shaded)
+    assert luminances == sorted(luminances)
+    probe = shaded.getpixel((2, 0))[:3]
+    if dominant == "cyan":
+        assert probe[1] > probe[0] and probe[2] > probe[0]
+    elif dominant == "magenta":
+        assert probe[0] > probe[1] and probe[2] > probe[1]
+    elif dominant == "yellow":
+        assert probe[0] > probe[2] and probe[1] > probe[2]
+    elif dominant == "black":
+        assert max(probe) < 80
+    else:
+        assert luminances[-1] - luminances[0] >= 20
+        assert max(shaded.getpixel((0, 0))[:3]) < 245
+        assert max(probe) >= 245
 
 
 def test_palette_recolor_single_and_multiple_changes_apply_expected_indices() -> None:
@@ -132,23 +224,34 @@ def test_sticker_shadow_and_line_art_transparency_preserve_dimensions() -> None:
     assert line.size == source.size and line.mode == "RGBA"
 
 
-def test_material_ui_defaults_and_vertical_scroll(qt_app) -> None:
+@pytest.mark.parametrize("width", [900, 1180, 1440])
+def test_material_ui_defaults_and_vertical_scroll(qt_app, width: int) -> None:
     from quick_processing_tool.edit_ui import QuickEditPage
     page = QuickEditPage()
-    page.resize(900, 620)
+    page.resize(width, 680)
     page.show()
     qt_app.processEvents()
     assert len(page.sections) == 5
     assert page.settings().palette.color_count == 6
+    assert page.settings().palette.blend_mode is RecolorBlendMode.SHARP
     assert not page.settings().sticker.enabled
     assert not page.settings().line_art.enabled
     assert page.palette_extract_button.text() == "色を取り出す"
     assert page.palette_quantize_enabled.text() == "6色に整理する"
+    assert page.palette_blend_mode_combo.currentText() == "くっきり"
+    assert page.palette_blend_description_label.text() == "色面をはっきり分けます"
+    assert [page.palette_blend_mode_combo.itemText(i) for i in range(page.palette_blend_mode_combo.count())] == ["くっきり", "なめらか", "陰影を残す"]
     assert not page.palette_quantize_enabled.isEnabled()
     assert page.palette_quantize_guide_label.text() == "先に色を取り出してください"
     assert not page.palette_send_button.isVisible()
     assert not page.palette_open_button.isVisible()
     assert page.settings_scroll.horizontalScrollBar().maximum() == 0
+    page.material_section.toggle.click()
+    qt_app.processEvents()
+    viewport = page.settings_scroll.viewport()
+    assert page.settings_scroll.horizontalScrollBar().maximum() == 0
+    assert page.palette_blend_mode_combo.width() <= viewport.width()
+    assert page.palette_blend_description_label.width() <= viewport.width()
     page.material_section.toggle.click()
     qt_app.processEvents()
     assert page.settings_scroll.horizontalScrollBar().maximum() == 0
@@ -165,13 +268,16 @@ def test_material_controls_round_trip_settings(qt_app) -> None:
     page.palette_enabled.setChecked(True)
     page.palette_quantize_enabled.setChecked(True)
     page.palette_count_combo.setCurrentIndex(page.palette_count_combo.findData(8))
+    page.palette_blend_mode_combo.setCurrentIndex(page.palette_blend_mode_combo.findData(RecolorBlendMode.PRESERVE_SHADING.value))
     settings = page.settings()
     assert settings.sticker.outline_width == 12
     assert settings.line_art.enabled
     assert settings.palette.quantize_enabled and settings.palette.color_count == 8
+    assert settings.palette.blend_mode is RecolorBlendMode.PRESERVE_SHADING
     page.apply_settings(EditSettings())
     assert not page.settings().sticker.enabled
     assert not page.settings().line_art.enabled
+    assert page.settings().palette.blend_mode is RecolorBlendMode.SHARP
     page.close()
 
 def test_line_art_candidates_differ_and_amounts_are_monotonic() -> None:
@@ -246,6 +352,34 @@ def test_palette_count_change_clears_and_requests_reextract(qt_app, tmp_path: Pa
     page.undo()
     assert page.settings().palette.color_count == 6
     assert page.settings().palette.palette == ((255, 0, 0),)
+    page.close()
+
+def test_palette_blend_mode_history_and_mapping_persist(qt_app, tmp_path: Path) -> None:
+    from quick_processing_tool.edit_ui import QuickEditPage
+    from quick_processing_tool.editing import EditSettings
+
+    source = tmp_path / "blend-history.png"
+    Image.new("RGB", (4, 1), "red").save(source)
+    page = QuickEditPage()
+    page.load_image(source)
+    settings = EditSettings(palette=PaletteSettings(True, True, 6, ((255, 0, 0),), ((255, 0, 0),), (0, 0, 0, 0), 4, 1, "digest", RecolorBlendMode.SHARP))
+    page.apply_settings(settings)
+    page._control_changed()
+
+    page.palette_blend_mode_combo.setCurrentIndex(page.palette_blend_mode_combo.findData(RecolorBlendMode.PRESERVE_SHADING.value))
+    qt_app.processEvents()
+    assert page.settings().palette.blend_mode is RecolorBlendMode.PRESERVE_SHADING
+    assert page.settings().palette.mapping == (0, 0, 0, 0)
+    assert page.settings().palette.mapping_digest == "digest"
+
+    page.reset_palette()
+    qt_app.processEvents()
+    assert page.settings().palette.blend_mode is RecolorBlendMode.PRESERVE_SHADING
+
+    page.undo()
+    assert page.settings().palette.blend_mode is RecolorBlendMode.SHARP
+    page.redo()
+    assert page.settings().palette.blend_mode is RecolorBlendMode.PRESERVE_SHADING
     page.close()
 
 
@@ -566,6 +700,80 @@ def test_palette_extract_only_keeps_preview_unquantized_until_toggle() -> None:
     quantized = render_edit(image, __import__("quick_processing_tool.editing", fromlist=["EditSettings"]).EditSettings(palette=PaletteSettings(True, True, 5, mapping.palette, mapping.palette, mapping.indices, mapping.width, mapping.height, mapping.digest)))
     assert quantized.tobytes() != image.tobytes()
 
+def test_palette_mode_mapping_digest_remain_stable_and_preview_matches_render() -> None:
+    from quick_processing_tool.editing import EditSettings
+
+    image = Image.new("RGBA", (6, 1))
+    image.putdata([
+        (255, 0, 0, 255),
+        (220, 10, 10, 255),
+        (0, 255, 0, 255),
+        (0, 220, 20, 255),
+        (0, 0, 255, 255),
+        (20, 20, 220, 255),
+    ])
+    mapping = extract_palette(image, 5)
+    replacements = tuple((0, 255, 255) for _ in mapping.palette)
+    for mode in (RecolorBlendMode.SHARP, RecolorBlendMode.SMOOTH, RecolorBlendMode.PRESERVE_SHADING):
+        settings = EditSettings(
+            palette=PaletteSettings(True, False, 5, mapping.palette, replacements, mapping.indices, mapping.width, mapping.height, mapping.digest, mode)
+        )
+        rendered = render_edit(image, settings)
+        preview = render_preview(image, settings, max_dimension=2000)
+        assert preview.tobytes() == rendered.tobytes()
+        assert settings.palette.mapping == mapping.indices
+        assert settings.palette.mapping_digest == mapping.digest
+
+
+def test_palette_shading_quantize_contract_is_deterministic() -> None:
+    from quick_processing_tool.editing import EditSettings
+
+    image = Image.new("RGBA", (6, 1))
+    image.putdata([
+        (40, 40, 40, 255),
+        (80, 80, 80, 255),
+        (120, 120, 120, 255),
+        (160, 160, 160, 255),
+        (200, 200, 200, 255),
+        (240, 240, 240, 255),
+    ])
+    mapping = mapping_for_palette(image, ((120, 120, 120),))
+    off_settings = EditSettings(palette=PaletteSettings(True, False, 6, mapping.palette, ((0, 255, 255),), mapping.indices, mapping.width, mapping.height, mapping.digest, RecolorBlendMode.PRESERVE_SHADING))
+    on_settings = EditSettings(palette=PaletteSettings(True, True, 6, mapping.palette, ((0, 255, 255),), mapping.indices, mapping.width, mapping.height, mapping.digest, RecolorBlendMode.PRESERVE_SHADING))
+    off_render = render_edit(image, off_settings)
+    on_render_a = render_edit(image, on_settings)
+    on_render_b = render_edit(image, on_settings)
+    assert on_render_a.tobytes() == on_render_b.tobytes()
+    assert off_render.size == on_render_a.size
+    assert _alpha_bytes(off_render) == _alpha_bytes(on_render_a)
+    assert off_render.tobytes() != on_render_a.tobytes()
+
+
+def test_smooth_blend_uses_mask_based_pillow_operations() -> None:
+    source = inspect.getsource(apply_palette_mapping_smooth)
+    assert "Image.composite" in source
+    assert "ImageFilter.BoxBlur" in source
+    assert "for y in range(1, height - 1)" not in source
+    assert "average_neighbor" not in source
+
+
+def test_nonsharp_preview_caps_large_dimension_for_ui_responsiveness() -> None:
+    from quick_processing_tool.editing import EditSettings
+
+    width, height = 1600, 800
+    row = [(tone, min(255, tone + 40), 255 - tone, 255) for tone in (x % 255 for x in range(width))]
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    image.putdata(row * height)
+    mapping = extract_palette(image, 6)
+    replacements = tuple(reversed(mapping.palette))
+    settings = EditSettings(
+        palette=PaletteSettings(True, False, 6, mapping.palette, replacements, mapping.indices, mapping.width, mapping.height, mapping.digest, RecolorBlendMode.SMOOTH)
+    )
+    preview = render_preview(image, settings, max_dimension=1400)
+    smaller_preview = render_preview(image, settings, max_dimension=600)
+    assert max(preview.size) <= 768
+    assert max(smaller_preview.size) <= 600
+
 
 def test_palette_rows_reset_and_handoff_use_recolored_values(qt_app, tmp_path: Path) -> None:
     from quick_processing_tool.edit_ui import QuickEditPage
@@ -583,8 +791,11 @@ def test_palette_rows_reset_and_handoff_use_recolored_values(qt_app, tmp_path: P
     page._palette_active_request = token
     page._on_palette_extracted((*token, mapping))
     qt_app.processEvents()
+    page.palette_blend_mode_combo.setCurrentIndex(page.palette_blend_mode_combo.findData(RecolorBlendMode.PRESERVE_SHADING.value))
+    qt_app.processEvents()
     assert page.palette_current_label.text() == "現在の配色"
     assert page.palette_instruction_label.text() == "抽出した色をクリックして、好きな配色へ変更できます。"
+    assert page.palette_blend_description_label.text() == "元画像の明るさを残して色を変えます"
     assert page.palette_chips_layout.count() >= len(mapping.palette) * 3
     assert page.palette_quantize_enabled.text() == "6色に整理する"
     assert page.palette_send_button.isEnabled()
@@ -601,6 +812,7 @@ def test_palette_rows_reset_and_handoff_use_recolored_values(qt_app, tmp_path: P
 
     page.reset_palette()
     assert page._palette_replacements == mapping.palette
+    assert page.settings().palette.blend_mode is RecolorBlendMode.PRESERVE_SHADING
     page.close()
 
 

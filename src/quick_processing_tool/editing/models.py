@@ -66,6 +66,12 @@ class LineArtBackground(str, Enum):
     CUSTOM = "custom"
 
 
+class RecolorBlendMode(str, Enum):
+    SHARP = "sharp"
+    SMOOTH = "smooth"
+    PRESERVE_SHADING = "preserve_shading"
+
+
 @dataclass(frozen=True, slots=True)
 class TransparencySettings:
     enabled: bool = False
@@ -152,6 +158,7 @@ class PaletteSettings:
     mapping_width: int = 0
     mapping_height: int = 0
     mapping_digest: str = ""
+    blend_mode: RecolorBlendMode = RecolorBlendMode.SHARP
 
     def __post_init__(self) -> None:
         if self.color_count not in (5, 6, 8):

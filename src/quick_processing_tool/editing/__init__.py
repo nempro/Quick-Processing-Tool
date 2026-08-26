@@ -12,6 +12,7 @@ from .models import (
     LineArtSettings,
     PaletteSettings,
     PlacementMode,
+    RecolorBlendMode,
     StickerSettings,
     TextPosition,
     TextSettings,
@@ -20,7 +21,16 @@ from .models import (
 from .renderer import render_edit, render_preview
 from .service import EditService
 from .line_art import apply_line_art
-from .palette import PaletteMapping, apply_palette_mapping, extract_palette, mapping_for_palette, quantize_image, rgba_digest
+from .palette import (
+    PaletteMapping,
+    apply_palette_mapping,
+    apply_palette_mapping_preserve_shading,
+    apply_palette_mapping_smooth,
+    extract_palette,
+    mapping_for_palette,
+    quantize_image,
+    rgba_digest,
+)
 from .sticker import apply_sticker
 
 __all__ = [
@@ -36,6 +46,7 @@ __all__ = [
     "LineArtSettings",
     "PaletteSettings",
     "PlacementMode",
+    "RecolorBlendMode",
     "StickerSettings",
     "TextPosition",
     "TextSettings",
@@ -45,6 +56,8 @@ __all__ = [
     "apply_line_art",
     "PaletteMapping",
     "apply_palette_mapping",
+    "apply_palette_mapping_preserve_shading",
+    "apply_palette_mapping_smooth",
     "extract_palette",
     "mapping_for_palette",
     "rgba_digest",

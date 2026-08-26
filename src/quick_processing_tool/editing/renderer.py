@@ -7,10 +7,21 @@ from PIL import Image, ImageOps
 
 from .canvas import output_dimensions, place_on_canvas
 from .line_art import apply_line_art
-from .palette import PaletteMapping, apply_palette_mapping, extract_palette, mapping_for_palette, rgba_digest
+from .palette import (
+    PaletteMapping,
+    apply_palette_mapping,
+    apply_palette_mapping_preserve_shading,
+    apply_palette_mapping_smooth,
+    extract_palette,
+    mapping_for_palette,
+    rgba_digest,
+)
 from .sticker import apply_sticker
 from .filters import apply_filter
-from .models import EditSettings
+from .models import EditSettings, RecolorBlendMode
+
+
+NONSHARP_PREVIEW_MAX_DIMENSION = 768
 from .text import draw_text
 from .transparency import apply_color_transparency
 
@@ -25,14 +36,13 @@ def prepare_palette_source(source: Image.Image, settings: EditSettings) -> Image
     filtered = apply_filter(source, settings.filter_preset)
     return apply_color_transparency(filtered, settings.transparency)
 
+
 def extract_palette_for_settings(source: Image.Image, settings: EditSettings):
-    from .palette import extract_palette
     return extract_palette(prepare_palette_source(source, settings), settings.palette.color_count)
 
-def _apply_palette_stage(image: Image.Image, settings: EditSettings) -> Image.Image:
+
+def _palette_mapping_for(image: Image.Image, settings: EditSettings) -> PaletteMapping:
     palette_settings = settings.palette
-    if not palette_settings.enabled:
-        return image.convert("RGBA").copy()
     current_digest = rgba_digest(image)
     if (
         palette_settings.mapping
@@ -41,15 +51,35 @@ def _apply_palette_stage(image: Image.Image, settings: EditSettings) -> Image.Im
         and len(palette_settings.mapping) == image.width * image.height
         and palette_settings.mapping_digest == current_digest
     ):
-        mapping = PaletteMapping(palette_settings.palette, palette_settings.mapping, image.width, image.height, current_digest)
-    elif palette_settings.palette:
-        mapping = mapping_for_palette(image, palette_settings.palette)
-    else:
-        mapping = extract_palette(image, palette_settings.color_count)
+        return PaletteMapping(
+            palette_settings.palette,
+            palette_settings.mapping,
+            image.width,
+            image.height,
+            current_digest,
+        )
+    if palette_settings.palette:
+        return mapping_for_palette(image, palette_settings.palette)
+    return extract_palette(image, palette_settings.color_count)
+
+
+def _apply_palette_stage(image: Image.Image, settings: EditSettings) -> Image.Image:
+    palette_settings = settings.palette
+    if not palette_settings.enabled:
+        return image.convert("RGBA").copy()
+    mapping = _palette_mapping_for(image, settings)
     replacements = palette_settings.replacements or mapping.palette
     if not palette_settings.quantize_enabled and replacements == mapping.palette:
         return image.convert("RGBA").copy()
-    return apply_palette_mapping(image, mapping, replacements)
+    if palette_settings.blend_mode is RecolorBlendMode.SHARP:
+        return apply_palette_mapping(image, mapping, replacements)
+    if palette_settings.blend_mode is RecolorBlendMode.SMOOTH:
+        return apply_palette_mapping_smooth(image, mapping, replacements)
+    shading_source = image
+    if palette_settings.quantize_enabled:
+        shading_source = apply_palette_mapping(image, mapping, replacements)
+    return apply_palette_mapping_preserve_shading(shading_source, mapping, replacements)
+
 
 def render_edit(source: Image.Image, settings: EditSettings) -> Image.Image:
     filtered = apply_filter(source, settings.filter_preset)
@@ -67,9 +97,12 @@ def render_preview(
     max_dimension: int = 1400,
 ) -> Image.Image:
     source = source.convert("RGBA")
+    effective_max_dimension = max_dimension
+    if settings.palette.enabled and settings.palette.blend_mode is not RecolorBlendMode.SHARP:
+        effective_max_dimension = min(effective_max_dimension, NONSHARP_PREVIEW_MAX_DIMENSION)
     target_width, target_height = output_dimensions(source.size, settings.canvas)
-    scale = min(1.0, max_dimension / max(target_width, target_height))
-    source_scale = min(1.0, max_dimension / max(source.size))
+    scale = min(1.0, effective_max_dimension / max(target_width, target_height))
+    source_scale = min(1.0, effective_max_dimension / max(source.size))
     working_source = source
     if source_scale < 1.0:
         working_source = source.resize(
@@ -92,7 +125,13 @@ def render_preview(
             outline_width=max(0, round(settings.text.outline_width * scale)),
             safe_margin=max(0, round(settings.text.safe_margin * scale)),
         )
-        preview_settings = replace(settings, canvas=canvas, text=text, sticker=replace(settings.sticker, outline_width=max(1, round(settings.sticker.outline_width * scale))), palette=replace(settings.palette, mapping=(), mapping_width=0, mapping_height=0))
+        preview_settings = replace(
+            settings,
+            canvas=canvas,
+            text=text,
+            sticker=replace(settings.sticker, outline_width=max(1, round(settings.sticker.outline_width * scale))),
+            palette=replace(settings.palette, mapping=(), mapping_width=0, mapping_height=0),
+        )
     elif source_scale < 1.0 and settings.canvas.width == 0 and settings.canvas.height == 0:
         text = replace(
             settings.text,
@@ -100,7 +139,11 @@ def render_preview(
             outline_width=max(0, round(settings.text.outline_width * source_scale)),
             safe_margin=max(0, round(settings.text.safe_margin * source_scale)),
         )
-        preview_settings = replace(settings, text=text, palette=replace(settings.palette, mapping=(), mapping_width=0, mapping_height=0))
+        preview_settings = replace(
+            settings,
+            text=text,
+            palette=replace(settings.palette, mapping=(), mapping_width=0, mapping_height=0),
+        )
     return render_edit(working_source, preview_settings)
 
 

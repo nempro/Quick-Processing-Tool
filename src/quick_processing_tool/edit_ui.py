@@ -64,6 +64,7 @@ from .editing import (
     LineArtSettings,
     PaletteSettings,
     PlacementMode,
+    RecolorBlendMode,
     StickerSettings,
     TextPosition,
     TextSettings,
@@ -90,6 +91,16 @@ FILTER_LABELS = {
     FilterPreset.SHARP: "くっきり",
     FilterPreset.SOFT: "やわらか",
     FilterPreset.FADED: "色あせ",
+}
+RECOLOR_BLEND_LABELS = {
+    RecolorBlendMode.SHARP: "くっきり",
+    RecolorBlendMode.SMOOTH: "なめらか",
+    RecolorBlendMode.PRESERVE_SHADING: "陰影を残す",
+}
+RECOLOR_BLEND_DESCRIPTIONS = {
+    RecolorBlendMode.SHARP: "色面をはっきり分けます",
+    RecolorBlendMode.SMOOTH: "色の境目を自然につなぎます",
+    RecolorBlendMode.PRESERVE_SHADING: "元画像の明るさを残して色を変えます",
 }
 POSITION_LABELS = {
     TextPosition.TOP_LEFT: "左上",
@@ -949,6 +960,18 @@ class QuickEditPage(QWidget):
         self.palette_quantize_guide_label.setWordWrap(True)
         self.palette_quantize_guide_label.setStyleSheet("color: #9a6700;")
         palette_layout.addWidget(self.palette_quantize_guide_label)
+        blend_row = QHBoxLayout()
+        blend_row.addWidget(QLabel("色のなじみ"))
+        self.palette_blend_mode_combo = QComboBox()
+        for mode in (RecolorBlendMode.SHARP, RecolorBlendMode.SMOOTH, RecolorBlendMode.PRESERVE_SHADING):
+            self.palette_blend_mode_combo.addItem(RECOLOR_BLEND_LABELS[mode], mode.value)
+        self.palette_blend_mode_combo.setToolTip("くっきり\n色面をはっきり分けます\n\nなめらか\n色の境目を自然につなぎます\n\n陰影を残す\n元画像の明るさを残して色を変えます")
+        blend_row.addWidget(self.palette_blend_mode_combo, 1)
+        palette_layout.addLayout(blend_row)
+        self.palette_blend_description_label = QLabel()
+        self.palette_blend_description_label.setWordWrap(True)
+        self.palette_blend_description_label.setStyleSheet("color: #667085;")
+        palette_layout.addWidget(self.palette_blend_description_label)
         self.palette_current_label = QLabel("現在の配色")
         self.palette_current_label.setStyleSheet("font-size: 15px; font-weight: 700; color: #182230;")
         palette_layout.addWidget(self.palette_current_label)
@@ -1163,6 +1186,7 @@ class QuickEditPage(QWidget):
             self.canvas_background_combo,
             self.line_art_amount_combo,
             self.line_art_background_combo,
+            self.palette_blend_mode_combo,
         ):
             combo.currentIndexChanged.connect(self._control_changed)
         self.palette_count_combo.currentIndexChanged.connect(self._palette_count_changed)
@@ -1350,7 +1374,18 @@ class QuickEditPage(QWidget):
             ),
             sticker=StickerSettings(self.sticker_enabled.isChecked(), (self._sticker_outline_color.red(), self._sticker_outline_color.green(), self._sticker_outline_color.blue(), self._sticker_outline_color.alpha()), self.sticker_outline_width_spin.value(), self.sticker_shadow_enabled.isChecked()),
             line_art=LineArtSettings(self.line_art_enabled.isChecked(), LineArtAmount(self.line_art_amount_combo.currentData()), (self._line_art_color.red(), self._line_art_color.green(), self._line_art_color.blue(), self._line_art_color.alpha()), LineArtBackground(self.line_art_background_combo.currentData()), (self._line_art_background_color.red(), self._line_art_background_color.green(), self._line_art_background_color.blue(), self._line_art_background_color.alpha())),
-            palette=PaletteSettings(self.palette_enabled.isChecked(), self.palette_quantize_enabled.isChecked(), int(self.palette_count_combo.currentData()), self._palette_values, self._palette_replacements, self._palette_mapping, self._palette_mapping_size[0], self._palette_mapping_size[1], self._palette_mapping_digest),
+            palette=PaletteSettings(
+                enabled=self.palette_enabled.isChecked(),
+                quantize_enabled=self.palette_quantize_enabled.isChecked(),
+                color_count=int(self.palette_count_combo.currentData()),
+                palette=self._palette_values,
+                replacements=self._palette_replacements,
+                mapping=self._palette_mapping,
+                mapping_width=self._palette_mapping_size[0],
+                mapping_height=self._palette_mapping_size[1],
+                mapping_digest=self._palette_mapping_digest,
+                blend_mode=RecolorBlendMode(self.palette_blend_mode_combo.currentData()),
+            ),
         )
 
     def apply_settings(self, settings: EditSettings) -> None:
@@ -1401,6 +1436,7 @@ class QuickEditPage(QWidget):
         self.palette_enabled.setChecked(settings.palette.enabled)
         self.palette_quantize_enabled.setChecked(settings.palette.quantize_enabled)
         self.palette_count_combo.setCurrentIndex(self.palette_count_combo.findData(settings.palette.color_count))
+        self.palette_blend_mode_combo.setCurrentIndex(self.palette_blend_mode_combo.findData(settings.palette.blend_mode.value))
         self._palette_values = settings.palette.palette
         self._palette_replacements = settings.palette.replacements or settings.palette.palette
         self._selected_palette_index = -1
@@ -1445,6 +1481,10 @@ class QuickEditPage(QWidget):
         count = int(self.palette_count_combo.currentData())
         self.palette_quantize_enabled.setText(f"{count}色に整理する")
 
+    def _update_palette_blend_description(self) -> None:
+        mode = RecolorBlendMode(self.palette_blend_mode_combo.currentData())
+        self.palette_blend_description_label.setText(RECOLOR_BLEND_DESCRIPTIONS[mode])
+
     def _clear_palette_state(self, message: str = "", *, needs_reextract: bool, preview_message: str | None = None) -> None:
         self._palette_values = ()
         self._palette_replacements = ()
@@ -1468,6 +1508,7 @@ class QuickEditPage(QWidget):
 
     def _update_palette_controls(self) -> None:
         self._update_palette_quantize_text()
+        self._update_palette_blend_description()
         has_palette = bool(self._palette_values)
         self.palette_intro_label.setVisible(not has_palette)
         self.palette_current_label.setVisible(has_palette)
@@ -2141,6 +2182,7 @@ class QuickEditPage(QWidget):
             self.line_art_background_color_button,
             self.palette_enabled,
             self.palette_quantize_enabled,
+            self.palette_blend_mode_combo,
             self.palette_count_combo,
             self.palette_extract_button,
             self.palette_reset_button,
