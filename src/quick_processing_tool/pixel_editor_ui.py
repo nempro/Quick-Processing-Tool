@@ -534,7 +534,7 @@ class PixelEditorPage(QWidget):
         self.palette_chips_widget = QWidget()
         self.palette_chips_layout = QGridLayout(self.palette_chips_widget)
         self.palette_chips_layout.setContentsMargins(0, 0, 0, 0)
-        self.palette_chips_layout.setHorizontalSpacing(6)
+        self.palette_chips_layout.setHorizontalSpacing(4)
         self.palette_chips_layout.setVerticalSpacing(6)
         pl.addWidget(self.palette_chips_widget)
         palette_footer = QHBoxLayout()

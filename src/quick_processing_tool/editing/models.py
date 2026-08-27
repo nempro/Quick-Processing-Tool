@@ -161,8 +161,8 @@ class PaletteSettings:
     blend_mode: RecolorBlendMode = RecolorBlendMode.SHARP
 
     def __post_init__(self) -> None:
-        if self.color_count not in (5, 6, 8):
-            raise ValueError("Palette color count must be 5, 6, or 8")
+        if self.color_count not in (5, 6, 8, 12):
+            raise ValueError("Palette color count must be 5, 6, 8, or 12")
         if self.replacements and len(self.replacements) != len(self.palette):
             raise ValueError("Palette replacements must match palette length")
 

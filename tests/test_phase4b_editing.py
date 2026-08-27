@@ -499,7 +499,7 @@ def test_palette_recolor_single_and_multiple_changes_apply_expected_indices() ->
 def test_palette_counts_and_transparent_only_contract() -> None:
     image = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
     assert extract_palette(image, 5).palette == ()
-    for count in (5, 6, 8):
+    for count in (5, 6, 8, 12):
         source = Image.new("RGBA", (count, 1))
         for x in range(count):
             source.putpixel((x, 0), ((x * 37) % 256, (x * 61) % 256, (x * 89) % 256, 255))
@@ -714,7 +714,8 @@ def test_palette_worker_applies_current_result_and_digest(qt_app, tmp_path: Path
     page = QuickEditPage()
     page.load_image(source)
     page.extract_palette()
-    assert not page.palette_extract_button.isEnabled()
+    assert page.palette_extract_button.isEnabled()
+    assert page.palette_count_combo.isEnabled()
     deadline = time.monotonic() + 3
     while page._palette_thread is not None and time.monotonic() < deadline:
         qt_app.processEvents()

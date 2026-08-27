@@ -697,6 +697,14 @@ class QuickEditPage(QWidget):
         self._palette_thread: PaletteExtractionThread | None = None
         self._palette_request_id = 0
         self._palette_active_request = None
+        self._palette_pending_request = None
+        self._palette_preview_refresh_pending = False
+        self._palette_terminal_preview_status: tuple[str, str] | None = None
+        self._palette_terminal_activity_pending = False
+        self._preview_refresh_without_activity = False
+        self._palette_preview_handoff_generation: int | None = None
+        self._processing_controls_locked = False
+        self._processing_palette_requeue = False
         self._preview_thread: QThread | None = None
         self._preview_worker: EditPreviewWorker | None = None
         self._preview_request_id = 0
@@ -1042,14 +1050,16 @@ class QuickEditPage(QWidget):
         self.palette_enabled.setVisible(False)
         palette_row = QHBoxLayout()
         self.palette_count_combo = QComboBox()
-        for count in (5, 6, 8):
+        for count in (5, 6, 8, 12):
             self.palette_count_combo.addItem(f"{count}色", count)
         self.palette_count_combo.setCurrentIndex(self.palette_count_combo.findData(6))
         self.palette_extract_button = QPushButton("色を取り出す")
         self.palette_extract_button.clicked.connect(self.extract_palette)
         palette_row.addWidget(self.palette_count_combo, 1)
         palette_row.addWidget(self.palette_extract_button, 1)
-        self.palette_intro_label = QLabel("画像から5〜8色の代表色を取り出して、好きな色へ置き換えられます。")
+        self.palette_intro_label = QLabel(
+            "5 / 6 / 8 / 12色から選べます。色数を増やすと、近い色を細かく分けられます。"
+        )
         self.palette_intro_label.setWordWrap(True)
         self.palette_intro_label.setStyleSheet("color: #667085;")
         palette_layout.addWidget(self.palette_intro_label)
@@ -1438,6 +1448,8 @@ class QuickEditPage(QWidget):
                 QMessageBox.warning(self, "画像を開けません", "PNG / JPEG / WebP画像を選んでください。")
             return False
         self.finish_ime(clear_focus=True)
+        self._clear_palette_preview_handoff(clear_refresh=True)
+        self._preview_timer.stop()
         self._preview_generation += 1
         self._preview_pending_request = None
         self._preview_active_result = None
@@ -1784,14 +1796,24 @@ class QuickEditPage(QWidget):
 
     @Slot()
     def extract_palette(self) -> None:
-        if not self.source_path or self._thread is not None or self._palette_thread is not None:
+        if not self.source_path or self._thread is not None:
             return
-        # Palette feedback owns the shared preview status while extraction runs;
-        # any older render completion must not overwrite its accepted outcome.
-        self._preview_generation += 1
-        self._preview_pending_request = None
-        self.preview_activity.invalidate()
-        self._preview_activity_token = None
+        if self._preview_timer.isActive():
+            self._palette_preview_refresh_pending = True
+            self._palette_preview_handoff_generation = self._preview_generation
+        self._preview_timer.stop()
+        self._palette_terminal_preview_status = None
+        self._palette_terminal_activity_pending = False
+        self._palette_preview_handoff_generation = (
+            self._preview_generation if self._palette_preview_refresh_pending else None
+        )
+        if self._palette_thread is None:
+            # Palette feedback owns the shared preview status while extraction runs;
+            # any older render completion must not overwrite its accepted outcome.
+            self._preview_generation += 1
+            self._preview_pending_request = None
+            self.preview_activity.invalidate()
+            self._preview_activity_token = None
         self._palette_generation += 1
         self._palette_request_id += 1
         request_id = self._palette_request_id
@@ -1800,16 +1822,44 @@ class QuickEditPage(QWidget):
         try:
             identity = self._palette_source_identity(source)
         except OSError:
+            had_active_thread = self._palette_thread is not None
+            self._palette_pending_request = None
+            self._palette_active_request = None
+            if self._palette_activity_token is not None:
+                self.preview_activity.fail(self._palette_activity_token)
+                self._palette_activity_token = None
+            if self._palette_thread is not None:
+                self._palette_thread.requestInterruption()
+            self.preview_status.setStyleSheet("color: #c62828; font-weight: 700;")
             self.preview_status.setText(MISSING_SOURCE_MESSAGE)
+            if self._palette_preview_refresh_pending:
+                self._palette_terminal_preview_status = (
+                    MISSING_SOURCE_MESSAGE,
+                    "color: #c62828; font-weight: 700;",
+                )
+                self._palette_preview_handoff_generation = self._preview_generation
             QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
+            if not had_active_thread and self._palette_preview_refresh_pending:
+                self._palette_preview_refresh_pending = False
+                self._preview_refresh_without_activity = True
+                self.schedule_preview()
             return
         signature = (settings.filter_preset.value, settings.transparency, settings.palette.color_count)
         generation = self._palette_generation
+        request = (source, settings, generation, request_id, identity, signature)
+        if self._palette_thread is not None:
+            self._palette_pending_request = request
+            return
+        self._start_palette_request(request)
+
+    def _start_palette_request(self, request, *, continuing: bool = False) -> None:
+        source, settings, generation, request_id, identity, signature = request
         self._palette_active_request = (generation, request_id, identity, signature)
 
         self.preview_status.setText("処理中…")
         self._palette_activity_token = self.preview_activity.begin("代表色を抽出しています")
-        self._set_processing(True)
+        if not continuing:
+            self._set_processing(True, palette_requeue=True)
         thread = PaletteExtractionThread(source, settings, generation, request_id, identity, signature)
         self._palette_thread = thread
         thread.succeeded.connect(self._on_palette_extracted)
@@ -1820,7 +1870,10 @@ class QuickEditPage(QWidget):
     @Slot(object)
     def _on_palette_extracted(self, payload) -> None:
         generation, request_id, identity, signature, mapping = payload
-        if self._palette_active_request != (generation, request_id, identity, signature):
+        if (
+            self._palette_active_request != (generation, request_id, identity, signature)
+            or self._palette_pending_request is not None
+        ):
             return
         try:
             current_identity = self._palette_source_identity(self.source_path) if self.source_path else None
@@ -1845,6 +1898,8 @@ class QuickEditPage(QWidget):
             if self._palette_activity_token is not None:
                 self.preview_activity.cancel(self._palette_activity_token)
                 self._palette_activity_token = None
+                self._palette_terminal_activity_pending = self._palette_preview_refresh_pending
+                self._palette_preview_handoff_generation = self._preview_generation
             return
         self._palette_values = mapping.palette
         self._palette_replacements = mapping.palette
@@ -1860,34 +1915,60 @@ class QuickEditPage(QWidget):
         if self._palette_activity_token is not None:
             self.preview_activity.complete(self._palette_activity_token)
             self._palette_activity_token = None
+        self._palette_preview_refresh_pending = True
+        self._palette_preview_handoff_generation = self._preview_generation
         self._control_changed()
 
     @Slot(str, object)
     def _on_palette_extraction_failed(self, message: str, token) -> None:
-        if self._palette_active_request == token:
-            self.preview_status.setStyleSheet("color: #c62828; font-weight: 700;")
+        if self._palette_active_request == token and self._palette_pending_request is None:
+            error_style = "color: #c62828; font-weight: 700;"
+            self.preview_status.setStyleSheet(error_style)
             self.preview_status.setText(message)
+            if self._palette_preview_refresh_pending:
+                self._palette_terminal_preview_status = (message, error_style)
+                self._palette_preview_handoff_generation = self._preview_generation
             if self._palette_activity_token is not None:
                 self.preview_activity.fail(self._palette_activity_token)
                 self._palette_activity_token = None
+                self._palette_terminal_activity_pending = self._palette_preview_refresh_pending
+                self._palette_preview_handoff_generation = self._preview_generation
 
     def _finalize_palette_thread(self, thread: PaletteExtractionThread) -> None:
         if thread is self._palette_thread:
             if self._palette_activity_token is not None:
                 self.preview_activity.cancel(self._palette_activity_token)
                 self._palette_activity_token = None
+                self._palette_terminal_activity_pending = self._palette_preview_refresh_pending
+                self._palette_preview_handoff_generation = self._preview_generation
             self._palette_thread = None
             self._palette_active_request = None
-            self._set_processing(False)
+            pending = self._palette_pending_request
+            self._palette_pending_request = None
+            if pending is None:
+                self._set_processing(False)
+                if self._palette_preview_refresh_pending:
+                    self._palette_preview_refresh_pending = False
+                    self._preview_refresh_without_activity = (
+                        self._palette_terminal_preview_status is not None
+                        or self._palette_terminal_activity_pending
+                    )
+                    self._palette_terminal_activity_pending = False
+                    self.schedule_preview()
+            else:
+                self._start_palette_request(pending, continuing=True)
         thread.deleteLater()
 
     def cancel_palette_extraction(self) -> None:
         self._palette_generation += 1
         self._palette_request_id += 1
         self._palette_active_request = None
+        self._palette_pending_request = None
         if self._palette_activity_token is not None:
             self.preview_activity.cancel(self._palette_activity_token)
             self._palette_activity_token = None
+            self._palette_terminal_activity_pending = self._palette_preview_refresh_pending
+            self._palette_preview_handoff_generation = self._preview_generation
         if self._palette_thread is not None:
             self._palette_thread.requestInterruption()
 
@@ -2109,21 +2190,53 @@ class QuickEditPage(QWidget):
         self._update_sticker_prerequisite_ui()
         self._update_palette_controls()
         self._update_save_options()
+        if self._processing_controls_locked:
+            self._apply_processing_control_state(
+                True,
+                palette_requeue=self._processing_palette_requeue,
+            )
 
     def schedule_preview(self) -> None:
-        if self.source_path:
+        if self.source_path and self._palette_thread is None:
             self._preview_timer.start()
+        else:
+            self._preview_timer.stop()
+            if self.source_path and self._palette_thread is not None:
+                self._palette_preview_refresh_pending = True
+                self._palette_preview_handoff_generation = self._preview_generation
+
+    def _clear_palette_preview_handoff(
+        self,
+        *,
+        clear_refresh: bool = False,
+        generation: int | None = None,
+    ) -> None:
+        if (
+            generation is not None
+            and self._palette_preview_handoff_generation is not None
+            and generation != self._palette_preview_handoff_generation
+        ):
+            return
+        self._palette_terminal_preview_status = None
+        self._palette_terminal_activity_pending = False
+        self._preview_refresh_without_activity = False
+        if clear_refresh:
+            self._palette_preview_refresh_pending = False
+        self._palette_preview_handoff_generation = None
 
     @Slot()
     def update_preview(self) -> None:
         if not self.source_path:
             self.drop_zone.preview.clear_image()
+            self._clear_palette_preview_handoff(clear_refresh=True)
             return
         try:
             identity = self._palette_source_identity(self.source_path)
         except OSError:
+            self.drop_zone.preview.clear_image()
             self.preview_status.setStyleSheet("color: #c62828; font-weight: 700;")
             self.preview_status.setText(MISSING_SOURCE_MESSAGE)
+            self._clear_palette_preview_handoff(clear_refresh=True)
             return
         self._preview_request_id += 1
         request = (
@@ -2134,7 +2247,9 @@ class QuickEditPage(QWidget):
             self._effective_settings(),
             self._show_original,
         )
-        if self._preview_activity_token is None:
+        suppress_activity = self._preview_refresh_without_activity
+        self._preview_refresh_without_activity = False
+        if self._preview_activity_token is None and not suppress_activity:
             self._preview_activity_token = self.preview_activity.begin("プレビューを更新しています")
         if self._preview_thread is not None:
             self._preview_pending_request = request
@@ -2194,8 +2309,10 @@ class QuickEditPage(QWidget):
         if request is None:
             self.preview_activity.invalidate()
             self._preview_activity_token = None
+            self._clear_palette_preview_handoff()
             return
         if not self._preview_request_owns_ui(request):
+            self._clear_palette_preview_handoff(generation=request[0])
             return
         if result is None:
             result = ("failed", (*request, "プレビュー処理を完了できませんでした。"))
@@ -2220,6 +2337,11 @@ class QuickEditPage(QWidget):
             self.preview_status.setText(message)
             if self._preview_activity_token is not None:
                 self.preview_activity.fail(self._preview_activity_token)
+        if self._palette_terminal_preview_status is not None:
+            message, style = self._palette_terminal_preview_status
+            self.preview_status.setStyleSheet(style)
+            self.preview_status.setText(message)
+        self._clear_palette_preview_handoff(generation=request[0])
         self._preview_activity_token = None
 
     def _update_output_info(self) -> None:
@@ -2551,7 +2673,7 @@ class QuickEditPage(QWidget):
         self._thread = None
         self._set_processing(False)
 
-    def _set_processing(self, processing: bool) -> None:
+    def _apply_processing_control_state(self, processing: bool, *, palette_requeue: bool = False) -> None:
         for widget in (
             self.drop_zone,
             self.current_source_card.change_button,
@@ -2567,6 +2689,7 @@ class QuickEditPage(QWidget):
             self.canvas_background_combo,
             self.canvas_color_button,
             self.sticker_enabled,
+            self.sticker_prereq_button,
             self.sticker_outline_width_spin,
             self.sticker_outline_color_button,
             self.sticker_shadow_enabled,
@@ -2583,6 +2706,8 @@ class QuickEditPage(QWidget):
             self.palette_send_button,
             self.palette_open_button,
             self.palette_chips_widget,
+            self.original_button,
+            self.edited_button,
             self.undo_button,
             self.redo_button,
             self.reset_button,
@@ -2595,8 +2720,16 @@ class QuickEditPage(QWidget):
             self.open_folder_button,
         ):
             widget.setEnabled(not processing)
+        if processing and palette_requeue:
+            self.palette_count_combo.setEnabled(True)
+            self.palette_extract_button.setEnabled(True)
         for section in self.sections:
             section.toggle.setEnabled(not processing)
+
+    def _set_processing(self, processing: bool, *, palette_requeue: bool = False) -> None:
+        self._processing_controls_locked = processing
+        self._processing_palette_requeue = processing and palette_requeue
+        self._apply_processing_control_state(processing, palette_requeue=palette_requeue)
         self.processing_changed.emit(processing)
         if not processing:
             self._update_visibility()
@@ -2612,8 +2745,8 @@ class QuickEditPage(QWidget):
         self.save_button.setEnabled(save_ready)
         self.folder_button.setEnabled(loaded and idle)
         self.open_folder_button.setEnabled(idle and self._last_output is not None and self._last_output.parent.is_dir())
-        self.original_button.setEnabled(loaded and not self._show_original)
-        self.edited_button.setEnabled(loaded and self._show_original)
+        self.original_button.setEnabled(loaded and idle and not self._show_original)
+        self.edited_button.setEnabled(loaded and idle and self._show_original)
         self.current_source_card.change_button.setEnabled(idle)
 
     @Slot()
@@ -2633,6 +2766,7 @@ class QuickEditPage(QWidget):
         self._preview_pending_request = None
         self.preview_activity.invalidate()
         self._preview_activity_token = None
+        self._clear_palette_preview_handoff(clear_refresh=True)
         self.cancel_palette_extraction()
 
     @staticmethod
