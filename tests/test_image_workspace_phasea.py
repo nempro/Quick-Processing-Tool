@@ -221,7 +221,7 @@ def test_quick_and_upscale_nonempty_batches_are_preserved_and_use_explicit_add(
             for item in window.upscale_page.items
         ) == upscale_before
         assert window.upscale_page.items[0].detail == "既存結果を保持"
-        assert window.quick_source_card.name_label.toolTip() == str(third.resolve())
+        assert str(third.resolve()) in window.quick_source_card.name_label.toolTip()
 
         window.add_current_source_to_quick()
         window.upscale_page.add_current_source()
@@ -396,7 +396,7 @@ def test_pixel_standalone_source_choice_updates_only_passive_card(
     try:
         page.choose_current_source()
         assert page._current_source is not None and page._current_source.path == source.resolve()
-        assert page.current_source_card.name_label.toolTip() == str(source.resolve())
+        assert str(source.resolve()) in page.current_source_card.name_label.toolTip()
         assert page.canvas.snapshot() == before
         assert page.reference is None
         assert page.source_path is None

@@ -326,8 +326,8 @@ class PixelEditorPage(QWidget):
         self.current_source_usage = QFrame()
         self.current_source_usage.setObjectName("pixelCurrentSourceUsage")
         current_source_actions = QVBoxLayout(self.current_source_usage)
-        current_source_actions.setContentsMargins(9, 8, 9, 9)
-        current_source_actions.setSpacing(6)
+        current_source_actions.setContentsMargins(7, 6, 7, 7)
+        current_source_actions.setSpacing(4)
         self.current_source_usage_heading = QLabel("この画像をどう使いますか？")
         self.current_source_usage_heading.setStyleSheet("font-weight: 700; color: #182230;")
         self.current_source_usage_guidance = QLabel()
@@ -337,7 +337,7 @@ class PixelEditorPage(QWidget):
         for button in (self.current_reference_button, self.current_pixels_button):
             button.setMinimumWidth(0)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            button.setMinimumHeight(32)
+            button.setMinimumHeight(30)
         self.current_reference_button.clicked.connect(self.use_current_as_reference)
         self.current_pixels_button.clicked.connect(self.use_current_as_pixels)
         self.current_reference_button.setAccessibleName("現在の画像を下絵として使う")
@@ -352,6 +352,7 @@ class PixelEditorPage(QWidget):
         left_layout.addWidget(self.current_source_usage)
 
         tools = QGroupBox("ツール")
+        self.tools_group = tools
         tl = QVBoxLayout(tools)
         self.pencil_button = QPushButton("鉛筆")
         self.eraser_button = QPushButton("消しゴム")
@@ -384,6 +385,7 @@ class PixelEditorPage(QWidget):
         left_layout.addWidget(tools)
 
         canvas_group = QGroupBox("キャンバス")
+        self.canvas_group = canvas_group
         cl = QFormLayout(canvas_group)
         self.preset_combo = QComboBox()
         self.preset_combo.addItems(["32 × 32", "64 × 64", "128 × 128", "カスタム"])
@@ -443,6 +445,7 @@ class PixelEditorPage(QWidget):
         left_layout.addWidget(palette_group)
 
         view_group = QGroupBox("表示")
+        self.view_group = view_group
         vl = QVBoxLayout(view_group)
         self.zoom_combo = QComboBox()
         self.zoom_combo.addItems(["Fit", "2x", "4x", "8x", "16x"])
@@ -461,8 +464,26 @@ class PixelEditorPage(QWidget):
         self.clear_button.clicked.connect(self.clear)
         vl.addWidget(self.undo_button)
         vl.addWidget(self.redo_button)
-        vl.addWidget(self.clear_button)
         left_layout.addWidget(view_group)
+
+        # Keep the high-frequency controls in the first viewport and destructive
+        # canvas clearing separate at the bottom.
+        left_layout.removeWidget(self.current_source_usage)
+        left_layout.removeWidget(view_group)
+        left_layout.insertWidget(2, view_group)
+        left_layout.insertWidget(4, self.current_source_usage)
+        clear_frame = QFrame()
+        clear_frame.setObjectName("pixelClearActions")
+        clear_layout = QVBoxLayout(clear_frame)
+        clear_layout.setContentsMargins(5, 7, 5, 5)
+        clear_layout.addWidget(self.clear_button)
+        clear_frame.setStyleSheet(
+            "QFrame#pixelClearActions { border-top: 1px solid #d7dde5; background: transparent; }"
+            "QPushButton { min-height: 26px; padding: 4px 8px; color: #8a2930; "
+            "background: #faf6f6; border: 1px solid #c9a8ab; }"
+            "QPushButton:hover { background: #f6e8e9; border-color: #a85d63; }"
+        )
+        left_layout.addWidget(clear_frame)
         left_layout.addStretch(1)
         left.setWidget(left_widget)
 

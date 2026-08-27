@@ -45,7 +45,7 @@ def test_usage_frame_hidden_without_source_and_explicit_when_loaded(
         assert page.current_pixels_button.text() == "ドット化して編集"
         assert page.current_reference_button.isEnabled()
         assert page.current_pixels_button.isEnabled()
-        assert page.current_source_card.name_label.toolTip() == str(source_path.resolve())
+        assert str(source_path.resolve()) in page.current_source_card.name_label.toolTip()
         assert "83 × 61 / PNG" in page.current_source_card.meta_label.text()
         assert page.current_source_usage_guidance.text() == (
             "現在の画像は読み込まれています。\n"

@@ -350,8 +350,8 @@ class CollapsibleSection(QWidget):
     def __init__(self, title: str, description: str, content: QWidget, open_by_default: bool = False) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 3, 0, 0)
-        layout.setSpacing(5)
+        layout.setContentsMargins(0, 2, 0, 0)
+        layout.setSpacing(3)
         self.toggle = QToolButton()
         self.toggle.setText(title)
         self.toggle.setCheckable(True)
@@ -679,6 +679,7 @@ class QuickEditPage(QWidget):
         self._palette_needs_reextract = False
         self._palette_extracted_color_count: int | None = None
         self._palette_status_message = ""
+        self._palette_reset_buttons: list[QToolButton] = []
         self._invalidating_palette = False
         self._text_history_dirty = False
         self._build_ui()
@@ -711,7 +712,8 @@ class QuickEditPage(QWidget):
         left.setMinimumWidth(0)
         left.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         ll = QVBoxLayout(left)
-        ll.setContentsMargins(4, 12, 4, 12)
+        ll.setContentsMargins(4, 8, 4, 8)
+        ll.setSpacing(4)
         heading = QLabel("何をしますか？")
         heading.setStyleSheet("font-size: 18px; font-weight: 700; color: #182230;")
         ll.addWidget(heading)
@@ -751,7 +753,8 @@ class QuickEditPage(QWidget):
 
         text_content = QWidget()
         text_layout = QVBoxLayout(text_content)
-        text_layout.setContentsMargins(8, 2, 4, 6)
+        text_layout.setContentsMargins(6, 1, 3, 4)
+        text_layout.setSpacing(4)
         self.text_enabled = QCheckBox()
         self.text_enabled.setVisible(False)
         self.text_details = QWidget()
@@ -808,7 +811,8 @@ class QuickEditPage(QWidget):
 
         transparency_content = QWidget()
         transparency_layout = QVBoxLayout(transparency_content)
-        transparency_layout.setContentsMargins(8, 2, 4, 6)
+        transparency_layout.setContentsMargins(6, 1, 3, 4)
+        transparency_layout.setSpacing(4)
         self.transparency_enabled = QCheckBox("背景を透明にする")
         transparency_layout.addWidget(self.transparency_enabled)
         self.transparency_details = QWidget()
@@ -900,7 +904,8 @@ class QuickEditPage(QWidget):
 
         material_content = QWidget()
         material_layout = QVBoxLayout(material_content)
-        material_layout.setContentsMargins(8, 2, 4, 6)
+        material_layout.setContentsMargins(6, 1, 3, 4)
+        material_layout.setSpacing(5)
         sticker_group = QGroupBox("ステッカー")
         sticker_layout = QVBoxLayout(sticker_group)
         self.sticker_explanation_label = QLabel("切り抜き画像をふち付きにします。\n背景を透明にしてから使うときれいです。")
@@ -1006,8 +1011,8 @@ class QuickEditPage(QWidget):
         self.palette_chips_widget = QWidget()
         self.palette_chips_layout = QGridLayout(self.palette_chips_widget)
         self.palette_chips_layout.setContentsMargins(0, 2, 0, 2)
-        self.palette_chips_layout.setHorizontalSpacing(6)
-        self.palette_chips_layout.setVerticalSpacing(6)
+        self.palette_chips_layout.setHorizontalSpacing(2)
+        self.palette_chips_layout.setVerticalSpacing(3)
         palette_layout.addWidget(self.palette_chips_widget)
         self.palette_reset_button = QPushButton("元の配色に戻す")
         self.palette_reset_button.setMinimumWidth(0)
@@ -1018,16 +1023,22 @@ class QuickEditPage(QWidget):
         self.palette_other_uses_label.setStyleSheet("color: #667085; font-size: 12px; font-weight: 700;")
         palette_layout.addWidget(self.palette_other_uses_label)
         palette_actions_row = QHBoxLayout()
-        self.palette_send_button = QPushButton("現在の配色をドット絵パレットへ送る")
+        self.palette_send_button = QPushButton("ドット絵へ送る")
+        self.palette_send_button.setToolTip("現在の配色をドット絵パレットへ送る")
         self.palette_send_button.setMinimumWidth(0)
-        self.palette_send_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.palette_send_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.palette_send_button.clicked.connect(self.send_palette_to_pixel)
         palette_actions_row.addWidget(self.palette_send_button, 1)
         self.palette_open_button = QPushButton("ドット絵を開く")
         self.palette_open_button.setMinimumWidth(0)
-        self.palette_open_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.palette_open_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.palette_open_button.clicked.connect(self.open_pixel_tab)
-        palette_actions_row.addWidget(self.palette_open_button)
+        palette_actions_row.addWidget(self.palette_open_button, 1)
+        for button in (self.palette_send_button, self.palette_open_button):
+            button.setStyleSheet(
+                "QPushButton { font-size: 11px; padding: 3px 2px; min-height: 28px; }"
+                "QPushButton:focus { padding: 2px 1px; }"
+            )
         palette_layout.addLayout(palette_actions_row)
         self.palette_feedback_label = QLabel()
         self.palette_feedback_label.setWordWrap(True)
@@ -1508,7 +1519,7 @@ class QuickEditPage(QWidget):
         hover = "QPushButton:hover { border: 2px solid #2457b2; }" if clickable else ""
         return (
             f"background: rgb{color}; color: {contrast}; border: {border}; border-radius: 6px; "
-            "min-height: 30px; font-weight: 700; padding: 4px 8px;"
+            "min-height: 28px; font-size: 11px; font-weight: 700; padding: 2px;"
             + hover
         )
 
@@ -1526,6 +1537,8 @@ class QuickEditPage(QWidget):
         self.palette_blend_description_label.setText(RECOLOR_BLEND_DESCRIPTIONS[mode])
 
     def _clear_palette_state(self, message: str = "", *, needs_reextract: bool, preview_message: str | None = None) -> None:
+        if needs_reextract:
+            self._scrub_palette_history()
         self._palette_values = ()
         self._palette_replacements = ()
         self._palette_mapping = ()
@@ -1546,6 +1559,31 @@ class QuickEditPage(QWidget):
         if preview_message:
             self.preview_status.setText(preview_message)
 
+    @staticmethod
+    def _palette_scrubbed_settings(settings: EditSettings) -> EditSettings:
+        palette = settings.palette
+        return replace(
+            settings,
+            palette=PaletteSettings(
+                enabled=False,
+                quantize_enabled=False,
+                color_count=palette.color_count,
+                blend_mode=palette.blend_mode,
+            ),
+        )
+
+    def _scrub_palette_history(self) -> None:
+        """Remove stale palette mappings from the reachable history branch."""
+        if self._history_index < 0:
+            return
+        scrubbed: list[EditSettings] = []
+        for settings in self._history[: self._history_index + 1]:
+            candidate = self._palette_scrubbed_settings(settings)
+            if not scrubbed or candidate != scrubbed[-1]:
+                scrubbed.append(candidate)
+        self._history = scrubbed
+        self._history_index = len(scrubbed) - 1
+
     def _update_palette_controls(self) -> None:
         self._update_palette_quantize_text()
         self._update_palette_blend_description()
@@ -1553,7 +1591,7 @@ class QuickEditPage(QWidget):
         self.palette_intro_label.setVisible(not has_palette)
         self.palette_current_label.setVisible(has_palette)
         self.palette_instruction_label.setVisible(has_palette)
-        self.palette_columns_widget.setVisible(has_palette)
+        self.palette_columns_widget.setVisible(False)
         self.palette_reset_button.setVisible(has_palette)
         self.palette_reset_button.setEnabled(has_palette and self._palette_replacements != self._palette_values)
         self.palette_other_uses_label.setVisible(has_palette)
@@ -1573,6 +1611,7 @@ class QuickEditPage(QWidget):
             item = self.palette_chips_layout.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
+        self._palette_reset_buttons = []
         if not self._palette_values:
             self._update_palette_controls()
             return
@@ -1581,22 +1620,41 @@ class QuickEditPage(QWidget):
             original_chip = QLabel()
             original_chip.setText(f"#{source_color[0]:02X}{source_color[1]:02X}{source_color[2]:02X}")
             original_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            original_chip.setMinimumHeight(30)
+            original_chip.setMinimumWidth(0)
+            original_chip.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            original_chip.setMinimumHeight(28)
+            original_hex = f"#{source_color[0]:02X}{source_color[1]:02X}{source_color[2]:02X}"
+            original_chip.setAccessibleName(f"代表色 {index + 1} の元の色 {original_hex}")
             original_chip.setStyleSheet(self._palette_chip_style(source_color, clickable=False))
             arrow = QLabel("→")
             arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            arrow.setMaximumWidth(12)
             arrow.setStyleSheet("color: #667085; font-weight: 700;")
             replacement_button = QPushButton(f"#{replacement[0]:02X}{replacement[1]:02X}{replacement[2]:02X}")
+            replacement_hex = f"#{replacement[0]:02X}{replacement[1]:02X}{replacement[2]:02X}"
             replacement_button.setToolTip(f"代表色 {index + 1} の置き換え先を選ぶ")
+            replacement_button.setMinimumWidth(0)
+            replacement_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            replacement_button.setAccessibleName(f"代表色 {index + 1} の変更後の色 {replacement_hex}")
+            replacement_button.setMinimumHeight(28)
             replacement_button.setStyleSheet(self._palette_chip_style(replacement, clickable=True))
             replacement_button.clicked.connect(lambda checked=False, i=index: self._replace_palette_color(i))
+            reset_button = QToolButton()
+            reset_button.setText("↶")
+            reset_button.setToolTip("この色だけ元に戻す")
+            reset_button.setAccessibleName(f"代表色 {index + 1} を元の色 {original_hex} に戻す")
+            reset_button.setEnabled(replacement != source_color)
+            reset_button.setMinimumSize(26, 28)
+            reset_button.setMaximumWidth(28)
+            reset_button.clicked.connect(lambda checked=False, i=index: self._reset_palette_color(i))
+            self._palette_reset_buttons.append(reset_button)
             row = index
             self.palette_chips_layout.addWidget(original_chip, row, 0)
             self.palette_chips_layout.addWidget(arrow, row, 1)
             self.palette_chips_layout.addWidget(replacement_button, row, 2)
+            self.palette_chips_layout.addWidget(reset_button, row, 3)
         self.palette_chips_layout.setColumnStretch(0, 1)
         self.palette_chips_layout.setColumnStretch(2, 1)
-        self.palette_chips_layout.setRowStretch(len(self._palette_values), 1)
         self._update_palette_controls()
 
     @staticmethod
@@ -1682,14 +1740,43 @@ class QuickEditPage(QWidget):
 
     @Slot()
     def reset_palette(self) -> None:
-        if self._palette_values:
-            self._palette_replacements = self._palette_values
-            self._selected_palette_index = -1
-            self._palette_needs_reextract = False
-            self._palette_status_message = ""
-            self._set_palette_feedback("元の配色に戻しました。", "info")
-            self._rebuild_palette_chips()
-            self._control_changed()
+        self._commit_palette_replacements(
+            self._palette_values,
+            selected_index=-1,
+            feedback="元の配色に戻しました。",
+        )
+
+    def _reset_palette_color(self, index: int) -> None:
+        if not 0 <= index < len(self._palette_values):
+            return
+        values = list(self._palette_replacements)
+        values[index] = self._palette_values[index]
+        self._commit_palette_replacements(
+            tuple(values),
+            selected_index=index,
+            feedback=f"代表色 {index + 1} を元の色に戻しました。",
+        )
+
+    def _commit_palette_replacements(
+        self,
+        replacements: tuple[tuple[int, int, int], ...],
+        *,
+        selected_index: int,
+        feedback: str,
+    ) -> bool:
+        replacements = tuple(replacements)
+        if len(replacements) != len(self._palette_values):
+            raise ValueError("Palette replacements must match palette length")
+        if replacements == self._palette_replacements:
+            return False
+        self._palette_replacements = replacements
+        self._selected_palette_index = selected_index
+        self._palette_needs_reextract = False
+        self._palette_status_message = ""
+        self._set_palette_feedback(feedback, "info")
+        self._rebuild_palette_chips()
+        self._control_changed()
+        return True
 
     def _replace_palette_color(self, index: int) -> None:
         if not 0 <= index < len(self._palette_replacements):
@@ -1698,14 +1785,13 @@ class QuickEditPage(QWidget):
         color = choose_color(current, self, "代表色を変更", show_alpha=False)
         if not color.isValid():
             return
-        self._selected_palette_index = index
         values = list(self._palette_replacements)
         values[index] = (color.red(), color.green(), color.blue())
-        self._palette_replacements = tuple(values)
-        self._palette_status_message = ""
-        self._set_palette_feedback(f"代表色 {index + 1} の置き換え先を更新しました。", "info")
-        self._rebuild_palette_chips()
-        self._control_changed()
+        self._commit_palette_replacements(
+            tuple(values),
+            selected_index=index,
+            feedback=f"代表色 {index + 1} の置き換え先を更新しました。",
+        )
 
     def _choose_material_color(self, title: str, attribute: str, button: QPushButton) -> None:
         current = getattr(self, attribute)

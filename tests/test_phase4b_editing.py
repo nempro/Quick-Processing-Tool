@@ -291,7 +291,7 @@ def test_line_art_candidates_differ_and_amounts_are_monotonic() -> None:
     assert EDGE_METHOD == "sobel"
 
 
-def test_palette_upstream_change_clears_and_undo_restores(qt_app, tmp_path: Path) -> None:
+def test_palette_upstream_change_clears_and_scrubs_undo_history(qt_app, tmp_path: Path) -> None:
     from quick_processing_tool.edit_ui import QuickEditPage
     from quick_processing_tool.editing import EditSettings
     source = tmp_path / "red-green.png"
@@ -314,8 +314,8 @@ def test_palette_upstream_change_clears_and_undo_restores(qt_app, tmp_path: Path
     assert page.palette_quantize_guide_label.text() == "画像が変更されました。もう一度色を取り出してください。"
     page.undo()
     assert page.settings().filter_preset.value == "none"
-    assert page.settings().palette.mapping == (0, 1)
-    assert page.settings().palette.quantize_enabled
+    assert page.settings().palette.mapping == ()
+    assert not page.settings().palette.quantize_enabled
     page.redo()
     assert page.settings().filter_preset.value == "grayscale"
     assert page.settings().palette.mapping == ()
@@ -323,7 +323,8 @@ def test_palette_upstream_change_clears_and_undo_restores(qt_app, tmp_path: Path
     page.undo()
     page.line_art_enabled.setChecked(True)
     qt_app.processEvents()
-    assert page.settings().palette.mapping == (0, 1)
+    assert page.settings().palette.mapping == ()
+    assert all(not item.palette.mapping for item in page._history)
     page.close()
 
 
@@ -351,7 +352,8 @@ def test_palette_count_change_clears_and_requests_reextract(qt_app, tmp_path: Pa
 
     page.undo()
     assert page.settings().palette.color_count == 6
-    assert page.settings().palette.palette == ((255, 0, 0),)
+    assert page.settings().palette.palette == ()
+    assert all(not item.palette.mapping for item in page._history)
     page.close()
 
 def test_palette_blend_mode_history_and_mapping_persist(qt_app, tmp_path: Path) -> None:
@@ -799,7 +801,8 @@ def test_palette_rows_reset_and_handoff_use_recolored_values(qt_app, tmp_path: P
     assert page.palette_chips_layout.count() >= len(mapping.palette) * 3
     assert page.palette_quantize_enabled.text() == "6色に整理する"
     assert page.palette_send_button.isEnabled()
-    assert page.palette_send_button.text() == "現在の配色をドット絵パレットへ送る"
+    assert page.palette_send_button.text() == "ドット絵へ送る"
+    assert page.palette_send_button.toolTip() == "現在の配色をドット絵パレットへ送る"
     assert page.palette_open_button.isEnabled()
 
     page._palette_replacements = tuple(reversed(mapping.palette))
