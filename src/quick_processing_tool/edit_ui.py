@@ -19,7 +19,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
-    QColorDialog,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -51,6 +50,7 @@ from PySide6.QtWidgets import (
 )
 
 from .font_catalog import FontCatalog
+from .color_picker import choose_color
 from .editing import (
     CanvasBackground,
     CanvasSettings,
@@ -766,10 +766,12 @@ class QuickEditPage(QWidget):
         self.bold_check = QCheckBox("太字")
         self.bold_check.setChecked(True)
         self.text_color_button = QPushButton()
+        self.text_color_button.setProperty("showAlphaValue", True)
         self.text_color_button.clicked.connect(self.choose_text_color)
         self.outline_enabled = QCheckBox("文字の縁取りを付ける")
         self.outline_enabled.setChecked(True)
         self.outline_color_button = QPushButton()
+        self.outline_color_button.setProperty("showAlphaValue", True)
         self.outline_color_button.clicked.connect(self.choose_outline_color)
         self.outline_width_spin = self._spin(0, 40, 4, " px")
         self.position_combo = QComboBox()
@@ -881,6 +883,7 @@ class QuickEditPage(QWidget):
         self.canvas_background_combo.addItem("黒", CanvasBackground.BLACK.value)
         self.canvas_background_combo.addItem("指定色", CanvasBackground.CUSTOM.value)
         self.canvas_color_button = QPushButton()
+        self.canvas_color_button.setProperty("showAlphaValue", True)
         self.canvas_color_button.clicked.connect(self.choose_canvas_color)
         canvas_form.addRow("キャンバス", self.canvas_preset_combo)
         canvas_form.addRow("任意サイズ", self.custom_canvas)
@@ -918,6 +921,7 @@ class QuickEditPage(QWidget):
         self.sticker_enabled = QCheckBox("ステッカーにする")
         self.sticker_outline_width_spin = self._spin(1, 50, 8, " px")
         self.sticker_outline_color_button = QPushButton()
+        self.sticker_outline_color_button.setProperty("showAlphaValue", True)
         self.sticker_outline_color_button.clicked.connect(self.choose_sticker_color)
         self.sticker_shadow_enabled = QCheckBox("影を付ける")
         sticker_form.addRow("", self.sticker_enabled)
@@ -934,11 +938,13 @@ class QuickEditPage(QWidget):
         for amount in (LineArtAmount.CLEAN, LineArtAmount.STANDARD, LineArtAmount.DETAILED, LineArtAmount.COMIC):
             self.line_art_amount_combo.addItem(LINE_ART_LABELS[amount], amount.value)
         self.line_art_color_button = QPushButton()
+        self.line_art_color_button.setProperty("showAlphaValue", True)
         self.line_art_color_button.clicked.connect(self.choose_line_art_color)
         self.line_art_background_combo = QComboBox()
         for label, value in (("透明", LineArtBackground.TRANSPARENT.value), ("白", LineArtBackground.WHITE.value), ("黒", LineArtBackground.BLACK.value), ("指定色", LineArtBackground.CUSTOM.value)):
             self.line_art_background_combo.addItem(label, value)
         self.line_art_background_color_button = QPushButton()
+        self.line_art_background_color_button.setProperty("showAlphaValue", True)
         self.line_art_background_color_button.clicked.connect(self.choose_line_art_background_color)
         line_form.addRow("", self.line_art_enabled)
         line_form.addRow("仕上がり", self.line_art_amount_combo)
@@ -1686,13 +1692,13 @@ class QuickEditPage(QWidget):
             self._control_changed()
 
     def _replace_palette_color(self, index: int) -> None:
-        self._selected_palette_index = index
         if not 0 <= index < len(self._palette_replacements):
             return
         current = QColor(*self._palette_replacements[index])
-        color = QColorDialog.getColor(current, self, "代表色を変更", QColorDialog.ColorDialogOption.ShowAlphaChannel)
+        color = choose_color(current, self, "代表色を変更", show_alpha=False)
         if not color.isValid():
             return
+        self._selected_palette_index = index
         values = list(self._palette_replacements)
         values[index] = (color.red(), color.green(), color.blue())
         self._palette_replacements = tuple(values)
@@ -1703,7 +1709,7 @@ class QuickEditPage(QWidget):
 
     def _choose_material_color(self, title: str, attribute: str, button: QPushButton) -> None:
         current = getattr(self, attribute)
-        color = QColorDialog.getColor(current, self, title, QColorDialog.ColorDialogOption.ShowAlphaChannel)
+        color = choose_color(current, self, title, show_alpha=True)
         if color.isValid():
             setattr(self, attribute, color)
             self._update_color_button(button, color)
@@ -1963,23 +1969,30 @@ class QuickEditPage(QWidget):
 
     @Slot()
     def choose_text_color(self) -> None:
-        self._choose_color("文字色を選ぶ", "_text_color", self.text_color_button)
+        self._choose_color("文字色を選ぶ", "_text_color", self.text_color_button, show_alpha=True)
 
     @Slot()
     def choose_outline_color(self) -> None:
-        self._choose_color("縁取りの色を選ぶ", "_outline_color", self.outline_color_button)
+        self._choose_color("縁取りの色を選ぶ", "_outline_color", self.outline_color_button, show_alpha=True)
 
     @Slot()
     def choose_target_color(self) -> None:
-        self._choose_color("透明にする背景色を選ぶ", "_target_color", self.target_color_button)
+        self._choose_color("透明にする背景色を選ぶ", "_target_color", self.target_color_button, show_alpha=False)
 
     @Slot()
     def choose_canvas_color(self) -> None:
-        self._choose_color("キャンバスの背景色を選ぶ", "_canvas_color", self.canvas_color_button)
+        self._choose_color("キャンバスの背景色を選ぶ", "_canvas_color", self.canvas_color_button, show_alpha=True)
 
-    def _choose_color(self, title: str, attribute: str, button: QPushButton) -> None:
+    def _choose_color(
+        self,
+        title: str,
+        attribute: str,
+        button: QPushButton,
+        *,
+        show_alpha: bool,
+    ) -> None:
         current = getattr(self, attribute)
-        color = QColorDialog.getColor(current, self, title, QColorDialog.ColorDialogOption.ShowAlphaChannel)
+        color = choose_color(current, self, title, show_alpha=show_alpha)
         if color.isValid():
             setattr(self, attribute, color)
             self._update_color_button(button, color)
@@ -1987,10 +2000,24 @@ class QuickEditPage(QWidget):
 
     @staticmethod
     def _update_color_button(button: QPushButton, color: QColor) -> None:
-        contrast = "#000000" if color.lightness() > 150 else "#FFFFFF"
-        button.setText(color.name().upper())
+        show_alpha = bool(button.property("showAlphaValue"))
+        if show_alpha:
+            alpha = color.alpha() / 255.0
+            composite_lightness = (
+                ((color.red() + color.green() + color.blue()) / 3.0) * alpha
+                + 255 * (1.0 - alpha)
+            )
+            contrast = "#000000" if composite_lightness > 150 else "#FFFFFF"
+            display = color.name(QColor.NameFormat.HexArgb).upper()
+            background = f"rgba({color.red()}, {color.green()}, {color.blue()}, {color.alpha()})"
+        else:
+            contrast = "#000000" if color.lightness() > 150 else "#FFFFFF"
+            display = color.name().upper()
+            background = color.name()
+        button.setText(display)
+        button.setToolTip(display)
         button.setStyleSheet(
-            f"QPushButton {{ background: {color.name()}; color: {contrast}; border: 1px solid #65768a;"
+            f"QPushButton {{ background: {background}; color: {contrast}; border: 1px solid #65768a;"
             "border-radius: 6px; min-height: 30px; font-weight: 700; }"
             "QPushButton:hover { border: 2px solid #2457b2; }"
             "QPushButton:focus { border: 2px solid #173a82; }"

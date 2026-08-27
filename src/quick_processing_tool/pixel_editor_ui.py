@@ -6,7 +6,7 @@ from PIL import Image
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractScrollArea, QCheckBox, QColorDialog, QComboBox, QDialog, QFileDialog,
+    QAbstractScrollArea, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
     QPushButton, QScrollArea, QSlider, QSpinBox, QSplitter, QToolButton,
     QButtonGroup, QSizePolicy,
@@ -19,6 +19,7 @@ from .pixel_editor.models import PixelExportResult, PixelTool, ReferenceImage
 from .pixel_editor.service import PixelExportError, save_png
 from .naming import normalize_filename_stem
 from .ui_styles import INPUT_CONTROL_STYLE
+from .color_picker import choose_color
 from .errors import ProcessingError
 from .image_workspace import MISSING_SOURCE_MESSAGE, MissingSourceError, SourceImage, read_source_image
 from .source_ui import CurrentSourceCard
@@ -322,19 +323,33 @@ class PixelEditorPage(QWidget):
         self.current_source_card = CurrentSourceCard()
         self.current_source_card.change_requested.connect(self.choose_current_source)
         left_layout.addWidget(self.current_source_card)
-        current_source_actions = QVBoxLayout()
-        self.current_reference_button = QPushButton("現在の画像から下絵を作る")
-        self.current_pixels_button = QPushButton("現在の画像をドット化して編集")
+        self.current_source_usage = QFrame()
+        self.current_source_usage.setObjectName("pixelCurrentSourceUsage")
+        current_source_actions = QVBoxLayout(self.current_source_usage)
+        current_source_actions.setContentsMargins(9, 8, 9, 9)
+        current_source_actions.setSpacing(6)
+        self.current_source_usage_heading = QLabel("この画像をどう使いますか？")
+        self.current_source_usage_heading.setStyleSheet("font-weight: 700; color: #182230;")
+        self.current_source_usage_guidance = QLabel()
+        self.current_source_usage_guidance.setWordWrap(True)
+        self.current_reference_button = QPushButton("下絵として使う")
+        self.current_pixels_button = QPushButton("ドット化して編集")
         for button in (self.current_reference_button, self.current_pixels_button):
             button.setMinimumWidth(0)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.setMinimumHeight(32)
         self.current_reference_button.clicked.connect(self.use_current_as_reference)
         self.current_pixels_button.clicked.connect(self.use_current_as_pixels)
+        self.current_reference_button.setAccessibleName("現在の画像を下絵として使う")
+        self.current_pixels_button.setAccessibleName("現在の画像をドット化して編集")
         self.current_reference_button.setEnabled(False)
         self.current_pixels_button.setEnabled(False)
+        current_source_actions.addWidget(self.current_source_usage_heading)
+        current_source_actions.addWidget(self.current_source_usage_guidance)
         current_source_actions.addWidget(self.current_reference_button)
         current_source_actions.addWidget(self.current_pixels_button)
-        left_layout.addLayout(current_source_actions)
+        self.current_source_usage.hide()
+        left_layout.addWidget(self.current_source_usage)
 
         tools = QGroupBox("ツール")
         tl = QVBoxLayout(tools)
@@ -731,8 +746,39 @@ class PixelEditorPage(QWidget):
         """Update only passive source UI; never mutate canvas/reference/history."""
         self._current_source = source
         self.current_source_card.set_source(source)
-        self.current_reference_button.setEnabled(True)
-        self.current_pixels_button.setEnabled(True)
+        self._update_current_source_usage()
+
+    def _update_current_source_usage(self) -> None:
+        has_source = self._current_source is not None
+        self.current_source_usage.setVisible(has_source)
+        self.current_reference_button.setEnabled(has_source)
+        self.current_pixels_button.setEnabled(has_source)
+        if not has_source:
+            return
+        if self._canvas_is_blank():
+            self.current_source_usage_guidance.setText(
+                "現在の画像は読み込まれています。\n"
+                "下絵にするか、ドット化して編集できます。"
+            )
+            self.current_source_usage_guidance.setStyleSheet(
+                "color: #174a9c; font-weight: 650;"
+            )
+            self.current_source_usage.setStyleSheet(
+                "QFrame#pixelCurrentSourceUsage { background: #eef5ff; "
+                "border: 2px solid #6b94d6; border-radius: 8px; }"
+            )
+        else:
+            self.current_source_usage_guidance.setText(
+                "現在のキャンバスは自動では変更されません。\n"
+                "使う場合は、下の操作を選んでください。"
+            )
+            self.current_source_usage_guidance.setStyleSheet(
+                "color: #667085; font-weight: 400;"
+            )
+            self.current_source_usage.setStyleSheet(
+                "QFrame#pixelCurrentSourceUsage { background: #f7f8fa; "
+                "border: 1px solid #cfd6df; border-radius: 8px; }"
+            )
 
     @Slot()
     def choose_current_source(self) -> None:
@@ -789,7 +835,12 @@ class PixelEditorPage(QWidget):
             self._refresh()
 
     def choose_current_color(self) -> None:
-        color = QColorDialog.getColor(QColor(*self.canvas_view.color), self, "描画色を選ぶ", QColorDialog.ColorDialogOption.ShowAlphaChannel)
+        color = choose_color(
+            QColor(*self.canvas_view.color),
+            self,
+            "描画色を選ぶ",
+            show_alpha=True,
+        )
         if color.isValid():
             self._set_current_color(color)
 
@@ -929,6 +980,7 @@ class PixelEditorPage(QWidget):
         self.preview_label.setPixmap(QPixmap.fromImage(image))
         self.preview_label.setFixedSize(image.size())
         self.canvas_view.viewport().update()
+        self._update_current_source_usage()
 
     def resizeEvent(self, event):
         self._refresh()

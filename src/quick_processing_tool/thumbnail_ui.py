@@ -8,7 +8,6 @@ from PySide6.QtCore import QObject, QSignalBlocker, QStandardPaths, Qt, QThread,
 from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFontDatabase, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
-    QColorDialog,
     QComboBox,
     QFileDialog,
     QFontComboBox,
@@ -36,6 +35,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from .color_picker import choose_color
 
 from .errors import ProcessingError
 from .thumbnail_models import (
@@ -1149,7 +1150,7 @@ class ThumbnailPage(QWidget):
 
     @Slot()
     def _choose_label_color(self) -> None:
-        color = QColorDialog.getColor(self._label_color, self, "固定ラベルの色")
+        color = choose_color(self._label_color, self, "固定ラベルの色", show_alpha=False)
         if color.isValid():
             self._label_color = color
             self._update_color_button(self.label_color_button, color)
@@ -1157,7 +1158,7 @@ class ThumbnailPage(QWidget):
 
     @Slot()
     def _choose_number_color(self) -> None:
-        color = QColorDialog.getColor(self._number_color, self, "連番の色")
+        color = choose_color(self._number_color, self, "連番の色", show_alpha=False)
         if color.isValid():
             self._number_color = color
             self._update_color_button(self.number_color_button, color)
@@ -1178,10 +1179,11 @@ class ThumbnailPage(QWidget):
 
     @Slot()
     def _choose_background(self) -> None:
-        color = QColorDialog.getColor(
+        color = choose_color(
             self._background_color,
             self,
             "背景色を選ぶ",
+            show_alpha=False,
         )
         if color.isValid():
             self._background_color = color
@@ -1190,10 +1192,11 @@ class ThumbnailPage(QWidget):
 
     @Slot()
     def _choose_font_color(self) -> None:
-        color = QColorDialog.getColor(
+        color = choose_color(
             self._font_color,
             self,
             "文字色を選ぶ",
+            show_alpha=False,
         )
         if color.isValid():
             self._font_color = color
