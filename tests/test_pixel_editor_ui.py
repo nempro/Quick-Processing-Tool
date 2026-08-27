@@ -48,7 +48,10 @@ def test_pixel_page_japanese_controls_defaults_and_state(qt_app: QApplication) -
     assert not page.save_button.isEnabled()
     assert page.palette_contract_label.text() == "パレットの色だけを受け取ります。元画像は移動しません。"
     labels = {button.text() for button in page.findChildren(type(page.new_button))}
-    assert {"鉛筆", "消しゴム", "スポイト", "下絵を読み込む", "ドット化して編集", "PNGで保存", "保存先を選ぶ", "保存先を開く", "パレットをクリア"} <= labels
+    assert {"鉛筆", "消しゴム", "スポイト", "下絵にする", "ドット化", "PNGで保存", "保存先を選ぶ", "保存先を開く", "パレットをクリア"} <= labels
+    assert "下絵を読み込む" not in labels
+    assert "ドット化して編集" not in labels
+    assert not any(group.title() == "画像" for group in page.findChildren(QGroupBox))
     assert any(group.title() == "パレット" for group in page.findChildren(QGroupBox))
     page._set_tool(PixelTool.ERASER)
     assert page.canvas_view.tool == PixelTool.ERASER
@@ -141,11 +144,61 @@ def test_filename_entry_resets_only_for_new_document_sources_and_not_ordinary_ac
     page.filename_edit.setText("keep_me")
     page._load_reference_path(source)
     _wait_for_import(qt_app, page)
-    assert page.filename_edit.text() == "勇者_pixel"
+    assert page.filename_edit.text() == "keep_me"
+    assert page.source_path is None
     page.filename_edit.setText("keep_me_again")
     page._load_pixels_path(source)
     _wait_for_import(qt_app, page)
     assert page.filename_edit.text() == "勇者_pixel"
+
+
+def test_underlay_changes_only_reference_and_pixelize_commits_document(
+    tmp_path: Path, qt_app: QApplication
+) -> None:
+    page = PixelEditorPage()
+    source = tmp_path / "素材.png"
+    Image.new("RGBA", (16, 12), (255, 0, 0, 200)).save(source)
+    page.canvas.stroke((1, 1), (3, 1), (1, 2, 3, 255))
+    page._refresh()
+    page.filename_edit.setText("keep_document")
+    def visible_preview_pixels():
+        image = page.preview_label.pixmap().toImage()
+        return tuple(
+            (x, y, image.pixelColor(x, y).getRgb())
+            for y in range(image.height())
+            for x in range(image.width())
+            if image.pixelColor(x, y).alpha()
+        )
+
+    before = (
+        page.canvas.snapshot(),
+        page.canvas.history._index,
+        len(page.canvas.history._entries),
+        page.filename_edit.text(),
+        page.source_path,
+        visible_preview_pixels(),
+    )
+    assert page._load_reference_path(source)
+    _wait_for_import(qt_app, page)
+    after_reference = (
+        page.canvas.snapshot(),
+        page.canvas.history._index,
+        len(page.canvas.history._entries),
+        page.filename_edit.text(),
+        page.source_path,
+        visible_preview_pixels(),
+    )
+    assert after_reference == before
+    assert page.reference is not None
+
+    history_before = len(page.canvas.history._entries)
+    assert page._load_pixels_path(source)
+    _wait_for_import(qt_app, page)
+    assert page.reference is None
+    assert page.source_path == source.resolve()
+    assert page.filename_edit.text() == "素材_pixel"
+    assert len(page.canvas.history._entries) == history_before + 1
+    assert page.canvas.snapshot() != before[0]
 
 
 def test_pixel_page_geometry_keeps_compact_elided_save_labels(qt_app: QApplication) -> None:
@@ -176,8 +229,8 @@ def test_receive_palette_shows_order_count_and_blank_guidance(qt_app: QApplicati
     assert page.palette_guidance_label.text() == (
         "パレットだけを受け取りました。\n"
         "画像は読み込まれていません。\n\n"
-        "「下絵を読み込む」または\n"
-        "「ドット化して編集」から画像を追加できます。"
+        "上の「現在の画像」から画像を選び、\n"
+        "下絵またはドット化を選んでください。"
     )
     assert _palette_tooltips(page) == ["#17191B", "#E4AA23", "#F6D99C", "#8040C0", "#109050", "#FAFAFA"]
     assert _checked_palette_indices(page) == []
@@ -270,7 +323,7 @@ def test_receive_palette_preserves_existing_document_state(qt_app: QApplication,
     reference = page.reference
     page.receive_palette(((1, 2, 3), (4, 5, 6), (7, 8, 9), (10, 11, 12), (13, 14, 15), (16, 17, 18)))
     assert "そのまま" in page.palette_guidance_label.text()
-    assert page.source_path == source
+    assert page.source_path is None
     assert page.reference == reference
     assert page.filename_edit.text() == "keep_name"
     assert page.output_folder == tmp_path

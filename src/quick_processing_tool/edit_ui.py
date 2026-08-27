@@ -116,18 +116,6 @@ POSITION_LABELS = {
     TextPosition.BOTTOM_CENTER: "下中央",
     TextPosition.BOTTOM_RIGHT: "右下",
 }
-LINE_ART_LABELS = {
-    LineArtAmount.CLEAN: "細い輪郭",
-    LineArtAmount.STANDARD: "バランス",
-    LineArtAmount.DETAILED: "細部を強調",
-    LineArtAmount.COMIC: "太いインク線",
-}
-LINE_ART_TOOLTIPS = {
-    LineArtAmount.CLEAN: "大きな輪郭を細く残します。薄い線や背景は省かれることがあります",
-    LineArtAmount.STANDARD: "主要な輪郭と内側の線を残します。迷ったらこれ",
-    LineArtAmount.DETAILED: "小さな線や背景まで太めに拾います。写真の模様やノイズも出やすくなります",
-    LineArtAmount.COMIC: "輪郭を最も太くします。アイコンや強い線向け。小さい文字はつぶれることがあります",
-}
 EDIT_STYLE = INPUT_CONTROL_STYLE + """
 QPlainTextEdit {
     background: #dce5ef; color: #182230; border: 1px solid #6f8094;
@@ -1012,7 +1000,7 @@ class QuickEditPage(QWidget):
         line_layout = QVBoxLayout(line_group)
         line_layout.setContentsMargins(7, 7, 7, 7)
         line_layout.setSpacing(4)
-        self.line_art_description = QLabel("画像の輪郭や細部を拾って、線を主体にした表現へ変えます")
+        self.line_art_description = QLabel("画像を線主体の表現へ変えます")
         self.line_art_description.setWordWrap(True)
         self.line_art_description.setStyleSheet("color: #667085;")
         line_layout.addWidget(self.line_art_description)
@@ -1024,15 +1012,6 @@ class QuickEditPage(QWidget):
         self._configure_form(line_form)
         line_form.setContentsMargins(0, 1, 0, 0)
         line_form.setVerticalSpacing(3)
-        self.line_art_amount_combo = QComboBox()
-        for amount in (LineArtAmount.CLEAN, LineArtAmount.STANDARD, LineArtAmount.DETAILED, LineArtAmount.COMIC):
-            self.line_art_amount_combo.addItem(LINE_ART_LABELS[amount], amount.value)
-            index = self.line_art_amount_combo.count() - 1
-            self.line_art_amount_combo.setItemData(
-                index, LINE_ART_TOOLTIPS[amount], Qt.ItemDataRole.ToolTipRole
-            )
-        self.line_art_amount_combo.setAccessibleName("線の仕上がり")
-        self.line_art_amount_combo.setToolTip("輪郭や細部をどの程度拾うか選びます")
         self.line_art_color_button = QPushButton()
         self.line_art_color_button.setProperty("showAlphaValue", True)
         self.line_art_color_button.setProperty(
@@ -1052,7 +1031,6 @@ class QuickEditPage(QWidget):
         )
         self.line_art_background_color_button.setAccessibleName("輪郭・線表現の指定背景色")
         self.line_art_background_color_button.clicked.connect(self.choose_line_art_background_color)
-        line_form.addRow("仕上がり", self.line_art_amount_combo)
         line_form.addRow("線色", self.line_art_color_button)
         line_form.addRow("背景", self.line_art_background_combo)
         line_form.addRow("指定色", self.line_art_background_color_button)
@@ -1325,7 +1303,6 @@ class QuickEditPage(QWidget):
             self.placement_combo,
             self.padding_combo,
             self.canvas_background_combo,
-            self.line_art_amount_combo,
             self.line_art_background_combo,
             self.palette_blend_mode_combo,
         ):
@@ -1543,7 +1520,7 @@ class QuickEditPage(QWidget):
                 24,
             ),
             sticker=StickerSettings(self.sticker_enabled.isChecked(), (self._sticker_outline_color.red(), self._sticker_outline_color.green(), self._sticker_outline_color.blue(), self._sticker_outline_color.alpha()), self.sticker_outline_width_spin.value(), self.sticker_shadow_enabled.isChecked()),
-            line_art=LineArtSettings(self.line_art_enabled.isChecked(), LineArtAmount(self.line_art_amount_combo.currentData()), (self._line_art_color.red(), self._line_art_color.green(), self._line_art_color.blue(), self._line_art_color.alpha()), LineArtBackground(self.line_art_background_combo.currentData()), (self._line_art_background_color.red(), self._line_art_background_color.green(), self._line_art_background_color.blue(), self._line_art_background_color.alpha())),
+            line_art=LineArtSettings(self.line_art_enabled.isChecked(), LineArtAmount.STANDARD, (self._line_art_color.red(), self._line_art_color.green(), self._line_art_color.blue(), self._line_art_color.alpha()), LineArtBackground(self.line_art_background_combo.currentData()), (self._line_art_background_color.red(), self._line_art_background_color.green(), self._line_art_background_color.blue(), self._line_art_background_color.alpha())),
             palette=PaletteSettings(
                 enabled=self.palette_enabled.isChecked(),
                 quantize_enabled=self.palette_quantize_enabled.isChecked(),
@@ -1558,7 +1535,32 @@ class QuickEditPage(QWidget):
             ),
         )
 
+    @staticmethod
+    def _canonical_line_expression_settings(settings: EditSettings) -> EditSettings:
+        """Keep retired UI profiles out of active UI state and history."""
+        if settings.line_art.amount is LineArtAmount.STANDARD:
+            return settings
+        return replace(
+            settings,
+            line_art=replace(settings.line_art, amount=LineArtAmount.STANDARD),
+        )
+
+    def _canonicalize_line_expression_history(self) -> None:
+        if not self._history:
+            return
+        normalized: list[EditSettings] = []
+        normalized_index = -1
+        for index, settings in enumerate(self._history):
+            canonical = self._canonical_line_expression_settings(settings)
+            if not normalized or canonical != normalized[-1]:
+                normalized.append(canonical)
+            if index <= self._history_index:
+                normalized_index = len(normalized) - 1
+        self._history = normalized
+        self._history_index = normalized_index
+
     def apply_settings(self, settings: EditSettings) -> None:
+        settings = self._canonical_line_expression_settings(settings)
         was_applying = self._applying
         self._applying = True
         self.filter_combo.setCurrentIndex(self.filter_combo.findData(settings.filter_preset.value))
@@ -1599,7 +1601,6 @@ class QuickEditPage(QWidget):
         self.sticker_outline_width_spin.setValue(settings.sticker.outline_width)
         self.sticker_shadow_enabled.setChecked(settings.sticker.shadow_enabled)
         self.line_art_enabled.setChecked(settings.line_art.enabled)
-        self.line_art_amount_combo.setCurrentIndex(self.line_art_amount_combo.findData(settings.line_art.amount.value))
         self._line_art_color = QColor(*settings.line_art.line_color)
         self.line_art_background_combo.setCurrentIndex(self.line_art_background_combo.findData(settings.line_art.background.value))
         self._line_art_background_color = QColor(*settings.line_art.custom_background)
@@ -2004,6 +2005,7 @@ class QuickEditPage(QWidget):
     def _control_changed(self, *_args) -> None:
         if self._applying:
             return
+        self._canonicalize_line_expression_history()
         self._set_text_enabled_from_content()
         self._invalidate_palette_for_upstream_change(self.settings())
         self._update_visibility()
@@ -2094,7 +2096,6 @@ class QuickEditPage(QWidget):
         self.sticker_outline_color_button.setEnabled(self.sticker_enabled.isChecked() and sticker_ready)
         self.sticker_shadow_enabled.setEnabled(self.sticker_enabled.isChecked() and sticker_ready)
         self.line_art_details.setVisible(self.line_art_enabled.isChecked())
-        self.line_art_amount_combo.setEnabled(self.line_art_enabled.isChecked())
         self.line_art_color_button.setEnabled(self.line_art_enabled.isChecked())
         self.line_art_background_combo.setEnabled(self.line_art_enabled.isChecked())
         self.line_art_background_color_button.setVisible(
@@ -2236,6 +2237,7 @@ class QuickEditPage(QWidget):
     @Slot()
     def undo(self) -> None:
         self._flush_text_history()
+        self._canonicalize_line_expression_history()
         if self._history_index > 0:
             self._history_index -= 1
             self.apply_settings(self._history[self._history_index])
@@ -2243,6 +2245,7 @@ class QuickEditPage(QWidget):
     @Slot()
     def redo(self) -> None:
         self._flush_text_history()
+        self._canonicalize_line_expression_history()
         if self._history_index + 1 < len(self._history):
             self._history_index += 1
             self.apply_settings(self._history[self._history_index])
@@ -2568,7 +2571,6 @@ class QuickEditPage(QWidget):
             self.sticker_outline_color_button,
             self.sticker_shadow_enabled,
             self.line_art_enabled,
-            self.line_art_amount_combo,
             self.line_art_color_button,
             self.line_art_background_combo,
             self.line_art_background_color_button,

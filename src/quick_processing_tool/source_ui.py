@@ -18,7 +18,12 @@ def human_file_size(size: int) -> str:
 class CurrentSourceCard(QFrame):
     change_requested = Signal()
 
-    def __init__(self, *, show_change_button: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        show_change_button: bool = True,
+        title_text: str = "画像：",
+    ) -> None:
         super().__init__()
         self.setObjectName("currentSourceCard")
         self.setMinimumWidth(0)
@@ -34,9 +39,9 @@ class CurrentSourceCard(QFrame):
         first_row = QHBoxLayout()
         first_row.setContentsMargins(0, 0, 0, 0)
         first_row.setSpacing(4)
-        title = QLabel("画像：")
-        title.setStyleSheet("font-weight: 700; color: #182230; border: 0;")
-        first_row.addWidget(title)
+        self.title_label = QLabel(title_text)
+        self.title_label.setStyleSheet("font-weight: 700; color: #182230; border: 0;")
+        first_row.addWidget(self.title_label)
         self.name_label = QLabel("未選択")
         self.name_label.setMinimumWidth(0)
         self.name_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)

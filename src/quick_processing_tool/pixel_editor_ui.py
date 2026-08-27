@@ -6,7 +6,7 @@ from PIL import Image
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QThread, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractScrollArea, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
+    QAbstractScrollArea, QCheckBox, QComboBox, QFileDialog, QFrame,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
     QPushButton, QScrollArea, QSlider, QSpinBox, QSplitter, QToolButton,
     QButtonGroup, QSizePolicy,
@@ -104,34 +104,6 @@ class ElidedValueLabel(QLabel):
         super().resizeEvent(event)
         self._update_text()
 
-
-class PixelImportChoiceDialog(QDialog):
-    """Small Japanese chooser kept separate so drop behavior is testable."""
-
-    def __init__(self, path: Path, parent=None):
-        super().__init__(parent)
-        self.choice: str | None = None
-        self.setWindowTitle("画像を読み込む")
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"{path.name} をどのように読み込みますか？"))
-        reference = QPushButton("下絵として使う")
-        pixels = QPushButton("ドット化して編集")
-        cancel = QPushButton("キャンセル")
-        reference.clicked.connect(lambda: self._finish("reference"))
-        pixels.clicked.connect(lambda: self._finish("pixels"))
-        cancel.clicked.connect(self.reject)
-        layout.addWidget(reference)
-        layout.addWidget(pixels)
-        layout.addWidget(cancel)
-
-    def _finish(self, choice: str):
-        self.choice = choice
-        self.accept()
-
-    @classmethod
-    def choose(cls, path: Path, parent=None) -> str | None:
-        dialog = cls(path, parent)
-        return dialog.choice if dialog.exec() == QDialog.Accepted else None
 
 class PixelCanvasView(QAbstractScrollArea):
     changed = Signal()
@@ -268,7 +240,14 @@ class PixelCanvasView(QAbstractScrollArea):
         erase = self.tool == PixelTool.ERASER
         if self._last_pixel is None:
             self._last_pixel = px
-        self.canvas.stroke(self._last_pixel, px, self.color, self.pencil_size, erase=erase, commit=False)
+        self.canvas.stroke(
+            self._last_pixel,
+            px,
+            self.color,
+            size=self.pencil_size,
+            erase=erase,
+            commit=False,
+        )
         self._last_pixel = px
         self.changed.emit()
         self.viewport().update()
@@ -338,8 +317,6 @@ class PixelEditorPage(QWidget):
         self._import_pending_request = None
         self._import_active_result = None
         self._import_activity_token: int | None = None
-        self._committing_import = False
-        self.import_choice_provider = lambda path: PixelImportChoiceDialog.choose(path, self)
         self.canvas = PixelCanvas()
         self.canvas_view = PixelCanvasView(self.canvas)
         self._palette_button_group = QButtonGroup(self)
@@ -359,9 +336,55 @@ class PixelEditorPage(QWidget):
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(8, 8, 8, 8)
 
-        self.current_source_card = CurrentSourceCard()
+        self.current_source_card = CurrentSourceCard(title_text="現在の画像：")
+        self.current_source_card.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
+        )
         self.current_source_card.change_requested.connect(self.choose_current_source)
         left_layout.addWidget(self.current_source_card)
+
+        self.document_summary = QFrame()
+        self.document_summary.setObjectName("pixelDocumentSummary")
+        self.document_summary.setMinimumWidth(0)
+        self.document_summary.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
+        )
+        document_layout = QVBoxLayout(self.document_summary)
+        document_layout.setContentsMargins(7, 5, 7, 5)
+        document_layout.setSpacing(1)
+        document_first_row = QHBoxLayout()
+        document_first_row.setContentsMargins(0, 0, 0, 0)
+        document_first_row.setSpacing(4)
+        document_heading = QLabel("編集中のドット絵：")
+        document_heading.setMinimumWidth(0)
+        document_heading.setStyleSheet("font-weight: 700; color: #182230; border: 0;")
+        document_first_row.addWidget(document_heading)
+        self.document_name_label = ElidedValueLabel()
+        self.document_name_label.setStyleSheet("font-weight: 650; color: #273142; border: 0;")
+        document_first_row.addWidget(self.document_name_label, 1)
+        document_layout.addLayout(document_first_row)
+        self.document_meta_label = QLabel()
+        self.document_meta_label.setStyleSheet("color: #667085; border: 0;")
+        document_layout.addWidget(self.document_meta_label)
+        self.document_summary.setStyleSheet(
+            "QFrame#pixelDocumentSummary { background: #fafbfc; border: 1px solid #d7dde5; "
+            "border-radius: 8px; }"
+        )
+        left_layout.addWidget(self.document_summary)
+
+        self.source_change_notice = QLabel()
+        self.source_change_notice.setObjectName("pixelSourceChangeNotice")
+        self.source_change_notice.setMinimumWidth(0)
+        self.source_change_notice.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
+        )
+        self.source_change_notice.setWordWrap(True)
+        self.source_change_notice.setStyleSheet(
+            "QLabel#pixelSourceChangeNotice { color: #174a9c; background: #eef5ff; "
+            "border: 1px solid #6b94d6; border-radius: 6px; padding: 5px 7px; }"
+        )
+        self.source_change_notice.hide()
+        left_layout.addWidget(self.source_change_notice)
         self.current_source_usage = QFrame()
         self.current_source_usage.setObjectName("pixelCurrentSourceUsage")
         current_source_actions = QVBoxLayout(self.current_source_usage)
@@ -371,8 +394,8 @@ class PixelEditorPage(QWidget):
         self.current_source_usage_heading.setStyleSheet("font-weight: 700; color: #182230;")
         self.current_source_usage_guidance = QLabel()
         self.current_source_usage_guidance.setWordWrap(True)
-        self.current_reference_button = QPushButton("下絵として使う")
-        self.current_pixels_button = QPushButton("ドット化して編集")
+        self.current_reference_button = QPushButton("下絵にする")
+        self.current_pixels_button = QPushButton("ドット化")
         for button in (self.current_reference_button, self.current_pixels_button):
             button.setMinimumWidth(0)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -486,15 +509,6 @@ class PixelEditorPage(QWidget):
         self.custom_size_widget.hide()
         cl.addWidget(self.custom_size_widget)
 
-        io_group = QGroupBox("画像")
-        il = QVBoxLayout(io_group)
-        self.reference_button = QPushButton("下絵を読み込む")
-        self.reference_button.clicked.connect(self.load_reference)
-        self.pixelize_button = QPushButton("ドット化して編集")
-        self.pixelize_button.clicked.connect(self.load_pixels)
-        il.addWidget(self.reference_button)
-        il.addWidget(self.pixelize_button)
-
         palette_group = QGroupBox("パレット")
         self.palette_group = palette_group
         pl = QVBoxLayout(palette_group)
@@ -565,7 +579,6 @@ class PixelEditorPage(QWidget):
         left_layout.addWidget(view_group)
         left_layout.addWidget(canvas_group)
         left_layout.addWidget(self.current_source_usage)
-        left_layout.addWidget(io_group)
         left_layout.addWidget(palette_group)
         clear_frame = QFrame()
         clear_frame.setObjectName("pixelClearActions")
@@ -626,6 +639,7 @@ class PixelEditorPage(QWidget):
         self.filename_edit.setStyleSheet(INPUT_CONTROL_STYLE)
         self.filename_edit.setPlaceholderText("保存する名前")
         self.filename_edit.textChanged.connect(self._update_save_ui)
+        self.filename_edit.textChanged.connect(self._update_document_summary)
         self.filename_edit.editingFinished.connect(self._normalize_filename_input)
         name_row.addWidget(self.filename_edit, 1)
         self.filename_suffix_label = QLabel(".png")
@@ -711,13 +725,13 @@ class PixelEditorPage(QWidget):
 
     def _handle_dropped_path(self, path):
         path = Path(path)
-        if not self._preflight_import(path):
+        source = self._read_valid_import_source(path)
+        if source is None:
             return
-        choice = self.import_choice_provider(path)
-        if choice == "reference":
-            self._queue_import("reference", path, preflight=False)
-        elif choice == "pixels":
-            self._queue_import("pixels", path, preflight=False)
+        if self._workspace_managed:
+            self.source_change_requested.emit(path)
+        else:
+            self.set_current_source(source)
 
     def _preset_changed(self, index):
         self.custom_size_widget.setVisible(index == 3)
@@ -775,8 +789,8 @@ class PixelEditorPage(QWidget):
             self.palette_guidance_label.setText(
                 "パレットだけを受け取りました。\n"
                 "画像は読み込まれていません。\n\n"
-                "「下絵を読み込む」または\n"
-                "「ドット化して編集」から画像を追加できます。"
+                "上の「現在の画像」から画像を選び、\n"
+                "下絵またはドット化を選んでください。"
             )
         else:
             self.palette_guidance_label.setText("現在のキャンバスや下絵はそのままです。パレットだけを更新しました。")
@@ -793,6 +807,24 @@ class PixelEditorPage(QWidget):
         self._set_filename_default(None)
         self._update_palette_guidance()
         self._refresh()
+
+    def _document_is_edited(self) -> bool:
+        return self.canvas.history.can_undo or not self._canvas_is_blank()
+
+    @Slot()
+    def _update_document_summary(self) -> None:
+        filename = self._normalized_filename_stem()
+        display_name = f"{filename}.png" if filename else "ファイル名未設定"
+        self.document_name_label.set_value(display_name, display_name)
+        state = "編集中" if self._document_is_edited() else "新規キャンバス"
+        self.document_meta_label.setText(f"{self.canvas.width} × {self.canvas.height} / {state}")
+        self.document_meta_label.setToolTip(
+            f"{display_name}\n{self.canvas.width} × {self.canvas.height} / {state}"
+        )
+
+    def _hide_source_change_notice(self) -> None:
+        self.source_change_notice.clear()
+        self.source_change_notice.hide()
 
     def clear(self):
         if self._import_thread is not None:
@@ -835,12 +867,18 @@ class PixelEditorPage(QWidget):
     @Slot(object)
     def set_current_source(self, source: SourceImage) -> None:
         """Update only passive source UI; never mutate canvas/reference/history."""
-        if not self._committing_import and (
-            self._current_source is None or self._current_source.document_id != source.document_id
-        ):
+        previous = self._current_source
+        changed = previous is None or previous.document_id != source.document_id
+        if changed:
             self._invalidate_import_requests()
         self._current_source = source
         self.current_source_card.set_source(source)
+        if changed and (previous is not None or self._document_is_edited()):
+            self.source_change_notice.setText(
+                "現在の画像を変更しました。編集中のドット絵はそのままです。"
+                "この画像を使う場合は下から選んでください。"
+            )
+            self.source_change_notice.show()
         self._update_current_source_usage()
 
     def _update_current_source_usage(self) -> None:
@@ -901,6 +939,7 @@ class PixelEditorPage(QWidget):
 
     @Slot()
     def use_current_as_reference(self) -> None:
+        self._hide_source_change_notice()
         if self._current_source is None:
             return
         if not self._current_source.path.is_file():
@@ -910,6 +949,7 @@ class PixelEditorPage(QWidget):
 
     @Slot()
     def use_current_as_pixels(self) -> None:
+        self._hide_source_change_notice()
         if self._current_source is None:
             return
         if not self._current_source.path.is_file():
@@ -944,6 +984,7 @@ class PixelEditorPage(QWidget):
             return False
 
     def _queue_import(self, mode: str, path: Path, *, preflight: bool = True) -> bool:
+        self._hide_source_change_notice()
         if preflight and not self._preflight_import(path):
             return False
         try:
@@ -1028,12 +1069,6 @@ class PixelEditorPage(QWidget):
             kind, payload = result
             if kind == "success" and self._import_request_is_current(request):
                 _generation, _request_id, mode, path, _identity, canvas_size, opacity, _token, pixels = payload
-                if self._workspace_managed:
-                    self._committing_import = True
-                    try:
-                        self.source_change_requested.emit(path)
-                    finally:
-                        self._committing_import = False
                 image = Image.frombytes("RGBA", canvas_size, pixels)
                 if mode == "reference":
                     self.reference = ReferenceImage(image, opacity)
@@ -1043,8 +1078,8 @@ class PixelEditorPage(QWidget):
                     self.canvas.history.commit(pixels)
                     self.reference = None
                     self.canvas_view.reference = None
-                self.source_path = path
-                self._set_filename_default(path)
+                    self.source_path = path
+                    self._set_filename_default(path)
                 self._update_palette_guidance()
                 self._refresh()
                 self.preview_hint_label.setStyleSheet("color: #667085;")
@@ -1264,6 +1299,7 @@ class PixelEditorPage(QWidget):
         self.preview_label.setPixmap(QPixmap.fromImage(image))
         self.preview_label.setFixedSize(image.size())
         self.canvas_view.viewport().update()
+        self._update_document_summary()
         self._update_current_source_usage()
 
     def resizeEvent(self, event):

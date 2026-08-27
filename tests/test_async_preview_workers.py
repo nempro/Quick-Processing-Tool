@@ -7,6 +7,7 @@ from threading import Event
 
 import pytest
 from PIL import Image
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -154,7 +155,7 @@ def test_edit_palette_activity_takes_over_active_preview_then_starts_fresh_previ
     page.close()
 
 
-def test_edit_line_expression_rapid_styles_apply_latest_only(qt_app, tmp_path: Path, monkeypatch) -> None:
+def test_edit_line_expression_rapid_changes_apply_latest_standard_only(qt_app, tmp_path: Path, monkeypatch) -> None:
     import quick_processing_tool.edit_ui as edit_ui
     from quick_processing_tool.edit_ui import QuickEditPage
     from quick_processing_tool.editing import LineArtAmount
@@ -167,11 +168,11 @@ def test_edit_line_expression_rapid_styles_apply_latest_only(qt_app, tmp_path: P
     def controlled_render(_path, settings, _max_dimension):
         if not settings.line_art.enabled:
             return Image.new("RGBA", (6, 4), "white")
-        calls.append(settings.line_art.amount)
-        if settings.line_art.amount is LineArtAmount.CLEAN:
+        calls.append(settings.line_art)
+        if settings.line_art.enabled and settings.line_art.line_color == (0, 0, 0, 255):
             started.set()
             release.wait(2)
-        color = "blue" if settings.line_art.amount is LineArtAmount.DETAILED else "red"
+        color = "blue" if settings.line_art.line_color == (0, 70, 255, 255) else "red"
         return Image.new("RGBA", (6, 4), color)
 
     monkeypatch.setattr(edit_ui, "render_path_preview", controlled_render)
@@ -179,24 +180,20 @@ def test_edit_line_expression_rapid_styles_apply_latest_only(qt_app, tmp_path: P
     assert page.load_image(source)
     _wait(qt_app, lambda: page._preview_thread is None)
     page.line_art_enabled.setChecked(True)
-    page.line_art_amount_combo.setCurrentIndex(
-        page.line_art_amount_combo.findData(LineArtAmount.CLEAN.value)
-    )
     page.update_preview()
     _wait(qt_app, started.is_set)
-    page.line_art_amount_combo.setCurrentIndex(
-        page.line_art_amount_combo.findData(LineArtAmount.COMIC.value)
-    )
+    page.line_art_enabled.setChecked(False)
     page.update_preview()
-    page.line_art_amount_combo.setCurrentIndex(
-        page.line_art_amount_combo.findData(LineArtAmount.DETAILED.value)
-    )
+    page._line_art_color = QColor(0, 70, 255, 255)
+    page.line_art_enabled.setChecked(True)
     page.update_preview()
     release.set()
     _wait(qt_app, lambda: page._preview_thread is None)
-    assert calls == [LineArtAmount.CLEAN, LineArtAmount.DETAILED]
+    assert len(calls) == 2
+    assert all(settings.amount is LineArtAmount.STANDARD for settings in calls)
+    assert calls[-1].enabled and calls[-1].line_color == (0, 70, 255, 255)
     assert _preview_pixel(page)[:3] == (0, 0, 255)
-    assert page.settings().line_art.amount is LineArtAmount.DETAILED
+    assert page.settings().line_art.amount is LineArtAmount.STANDARD
     assert page._preview_activity_token is None
     assert not page.preview_activity._delay_timer.isActive()
     assert not page.preview_activity._tick_timer.isActive()
@@ -309,8 +306,8 @@ def test_pixel_import_busy_blocks_document_mutation_but_accepts_latest(
         page.filename_edit,
     ):
         assert not widget.isEnabled()
-    assert page.reference_button.isEnabled()
-    assert page.pixelize_button.isEnabled()
+    assert not hasattr(page, "reference_button")
+    assert not hasattr(page, "pixelize_button")
     page.clear()
     page.undo()
     page.redo()

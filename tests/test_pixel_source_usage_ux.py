@@ -50,8 +50,9 @@ def test_usage_frame_hidden_without_source_and_explicit_when_loaded(
         app.processEvents()
         assert page.current_source_usage.isVisible()
         assert page.current_source_usage_heading.text() == "この画像をどう使いますか？"
-        assert page.current_reference_button.text() == "下絵として使う"
-        assert page.current_pixels_button.text() == "ドット化して編集"
+        assert page.current_source_card.title_label.text() == "現在の画像："
+        assert page.current_reference_button.text() == "下絵にする"
+        assert page.current_pixels_button.text() == "ドット化"
         assert page.current_reference_button.isEnabled()
         assert page.current_pixels_button.isEnabled()
         assert str(source_path.resolve()) in page.current_source_card.name_label.toolTip()
@@ -87,6 +88,64 @@ def test_usage_feedback_tracks_draw_clear_and_undo(
         page.close()
         page.deleteLater()
         app.processEvents()
+
+
+def test_document_summary_tracks_filename_dimensions_and_history_state(
+    app: QApplication,
+) -> None:
+    page = PixelEditorPage()
+    try:
+        page.resize(900, 760)
+        page.show()
+        app.processEvents()
+        assert page.document_name_label.toolTip() == "pixel_art.png"
+        assert page.document_meta_label.text() == "128 × 128 / 新規キャンバス"
+        page.filename_edit.setText("very-long-" + "x" * 80)
+        app.processEvents()
+        assert page.document_name_label.toolTip().endswith(".png")
+        assert page.document_name_label.text() != page.document_name_label.toolTip()
+        page.canvas.stroke((1, 1), (4, 1), (10, 20, 30, 255))
+        page._refresh()
+        assert page.document_meta_label.text() == "128 × 128 / 編集中"
+        page.undo()
+        assert page.document_meta_label.text() == "128 × 128 / 新規キャンバス"
+        page.preset_combo.setCurrentIndex(0)
+        page.new_canvas()
+        assert page.document_name_label.toolTip() == "pixel_art.png"
+        assert page.document_meta_label.text() == "32 × 32 / 新規キャンバス"
+    finally:
+        page.close()
+
+
+def test_source_change_notice_is_persistent_and_cleared_by_explicit_use(
+    app: QApplication, tmp_path: Path
+) -> None:
+    first = read_source_image(make_image(tmp_path / "first.png"), 1)
+    second = read_source_image(make_image(tmp_path / "second.png"), 2)
+    page = PixelEditorPage()
+    try:
+        page.set_current_source(first)
+        assert page.source_change_notice.isHidden()
+        page.set_current_source(first)
+        assert page.source_change_notice.isHidden()
+        page.set_current_source(second)
+        assert not page.source_change_notice.isHidden()
+        page.hide()
+        app.processEvents()
+        page.show()
+        app.processEvents()
+        assert not page.source_change_notice.isHidden()
+        page.use_current_as_reference()
+        assert page.source_change_notice.isHidden()
+        wait_for_import(app, page)
+
+        edited = PixelEditorPage()
+        edited.canvas.stroke((1, 1), (2, 1), (1, 2, 3, 255))
+        edited.set_current_source(first)
+        assert not edited.source_change_notice.isHidden()
+        edited.close()
+    finally:
+        page.close()
 
 
 def test_passive_source_replace_preserves_complete_pixel_state(
@@ -134,6 +193,11 @@ def test_passive_source_replace_preserves_complete_pixel_state(
         )
         assert after == before
         assert "自動では変更されません" in page.current_source_usage_guidance.text()
+        assert not page.source_change_notice.isHidden()
+        assert page.source_change_notice.text() == (
+            "現在の画像を変更しました。編集中のドット絵はそのままです。"
+            "この画像を使う場合は下から選んでください。"
+        )
     finally:
         page.close()
         page.deleteLater()
@@ -156,10 +220,18 @@ def test_usage_frame_fits_without_horizontal_scroll_or_preview_regression(
         scroll = page.findChild(QScrollArea, "pixelSettingsScroll")
         assert scroll is not None
         assert scroll.horizontalScrollBar().maximum() == 0
+        assert scroll.widget().width() <= scroll.viewport().width()
+        assert page.document_summary.width() <= scroll.viewport().width()
         assert page.current_source_usage.width() <= scroll.viewport().width()
         assert page.current_reference_button.width() <= page.current_source_usage.width()
         assert page.current_pixels_button.width() <= page.current_source_usage.width()
-        assert page.canvas_view.width() >= 350
+        assert page.canvas_view.width() == {900: 374, 1180: 654, 1440: 914}[width]
+        replacement = make_image(tmp_path / f"layout-replacement-{width}.png")
+        window.set_current_source(replacement)
+        app.processEvents()
+        assert not page.source_change_notice.isHidden()
+        assert page.source_change_notice.width() <= scroll.viewport().width()
+        assert scroll.horizontalScrollBar().maximum() == 0
     finally:
         deadline = time.monotonic() + 3.0
         while window.edit_page._preview_thread is not None and time.monotonic() < deadline:

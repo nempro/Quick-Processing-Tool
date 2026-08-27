@@ -105,21 +105,11 @@ def test_line_expression_ui_labels_tooltips_data_and_details_contract(qt_app) ->
     qt_app.processEvents()
     assert page.line_art_group.title() == "輪郭・線表現"
     assert page.line_art_enabled.text() == "線で表現する"
-    assert page.line_art_description.text() == "画像の輪郭や細部を拾って、線を主体にした表現へ変えます"
-    expected = [
-        (LineArtAmount.CLEAN, "細い輪郭", "大きな輪郭を細く残します。薄い線や背景は省かれることがあります"),
-        (LineArtAmount.STANDARD, "バランス", "主要な輪郭と内側の線を残します。迷ったらこれ"),
-        (LineArtAmount.DETAILED, "細部を強調", "小さな線や背景まで太めに拾います。写真の模様やノイズも出やすくなります"),
-        (LineArtAmount.COMIC, "太いインク線", "輪郭を最も太くします。アイコンや強い線向け。小さい文字はつぶれることがあります"),
-    ]
-    assert page.line_art_amount_combo.accessibleName() == "線の仕上がり"
-    assert page.line_art_amount_combo.toolTip() == "輪郭や細部をどの程度拾うか選びます"
+    assert page.line_art_description.text() == "画像を線主体の表現へ変えます"
+    assert not hasattr(page, "line_art_amount_combo")
     assert page.line_art_color_button.toolTip().startswith("輪郭・線表現に使う線の色を選びます\n現在:")
     assert page.line_art_background_color_button.toolTip().startswith("輪郭・線表現の背景色を選びます\n現在:")
-    for index, (amount, label, tooltip) in enumerate(expected):
-        assert page.line_art_amount_combo.itemText(index) == label
-        assert page.line_art_amount_combo.itemData(index) == amount.value
-        assert page.line_art_amount_combo.itemData(index, Qt.ItemDataRole.ToolTipRole) == tooltip
+    assert page.settings().line_art.amount is LineArtAmount.STANDARD
     assert page.line_art_details.isHidden()
     page.line_art_enabled.setChecked(True)
     qt_app.processEvents()
@@ -202,6 +192,26 @@ def test_line_expression_clips_hidden_rgb_and_transparency_background_edges() ->
     )
 
 
+def test_fixed_standard_line_expression_preserves_selected_line_alpha() -> None:
+    source = Image.new("RGBA", (32, 24), "white")
+    ImageDraw.Draw(source).rectangle((7, 5, 24, 18), outline="black", width=3)
+    settings = LineArtSettings(
+        enabled=True,
+        amount=LineArtAmount.STANDARD,
+        line_color=(12, 34, 56, 128),
+        background=LineArtBackground.TRANSPARENT,
+    )
+    mask = edge_mask(source, LineArtAmount.STANDARD)
+    line_point = next(
+        (x, y)
+        for y in range(mask.height)
+        for x in range(mask.width)
+        if mask.getpixel((x, y)) == 255
+    )
+    result = apply_line_art(source, settings)
+    assert result.getpixel(line_point) == (12, 34, 56, 128)
+
+
 def test_recolor_then_line_expression_uses_final_line_and_background_colors() -> None:
     from quick_processing_tool.editing import EditSettings
 
@@ -274,18 +284,15 @@ def test_line_expression_changes_are_single_history_actions_and_branch(qt_app, t
     assert page.load_image(source)
     start = len(page._history)
     page.line_art_enabled.setChecked(True)
-    page.line_art_amount_combo.setCurrentIndex(
-        page.line_art_amount_combo.findData(LineArtAmount.COMIC.value)
-    )
     monkeypatch.setattr(edit_ui, "choose_color", lambda *_args, **_kwargs: QColor(255, 105, 180, 255))
     page.choose_line_art_color()
     page.line_art_background_combo.setCurrentIndex(
         page.line_art_background_combo.findData(LineArtBackground.WHITE.value)
     )
-    assert len(page._history) == start + 4
+    assert len(page._history) == start + 3
     assert page.settings().line_art == LineArtSettings(
         True,
-        LineArtAmount.COMIC,
+        LineArtAmount.STANDARD,
         (255, 105, 180, 255),
         LineArtBackground.WHITE,
         (255, 255, 255, 255),
@@ -295,17 +302,16 @@ def test_line_expression_changes_are_single_history_actions_and_branch(qt_app, t
     page.undo()
     assert page.settings().line_art.line_color == (0, 0, 0, 255)
     page.undo()
-    assert page.settings().line_art.amount is LineArtAmount.STANDARD
-    page.undo()
     assert not page.settings().line_art.enabled
-    for _ in range(4):
+    for _ in range(3):
         page.redo()
     assert page.settings().line_art.background is LineArtBackground.WHITE
     page.undo()
-    page.line_art_amount_combo.setCurrentIndex(
-        page.line_art_amount_combo.findData(LineArtAmount.DETAILED.value)
+    page.line_art_background_combo.setCurrentIndex(
+        page.line_art_background_combo.findData(LineArtBackground.BLACK.value)
     )
-    assert page.settings().line_art.amount is LineArtAmount.DETAILED
+    assert page.settings().line_art.amount is LineArtAmount.STANDARD
+    assert page.settings().line_art.background is LineArtBackground.BLACK
     assert not page.redo_button.isEnabled()
     _wait_for_edit_preview_idle(qt_app, page)
     page.close()
@@ -322,9 +328,8 @@ def test_line_expression_same_source_keeps_settings_replacement_resets(qt_app, t
     page = QuickEditPage()
     assert page.load_image(first)
     page.line_art_enabled.setChecked(True)
-    page.line_art_amount_combo.setCurrentIndex(
-        page.line_art_amount_combo.findData(LineArtAmount.COMIC.value)
-    )
+    page._line_art_color = QColor(20, 30, 40, 255)
+    page._control_changed()
     kept = page.settings().line_art
     page.set_current_source(read_source_image(first, 1))
     assert page.settings().line_art == kept
@@ -334,6 +339,51 @@ def test_line_expression_same_source_keeps_settings_replacement_resets(qt_app, t
     assert page.line_art_details.isHidden()
     assert len(page._history) == 1 and page._history_index == 0
     _wait_for_edit_preview_idle(qt_app, page)
+    page.close()
+
+
+def test_legacy_line_profiles_are_canonicalized_and_deduped_in_history(qt_app) -> None:
+    from dataclasses import replace
+    from quick_processing_tool.edit_ui import QuickEditPage
+
+    page = QuickEditPage()
+    base = page.settings()
+    clean = replace(
+        base,
+        line_art=replace(base.line_art, enabled=True, amount=LineArtAmount.CLEAN),
+    )
+    comic = replace(clean, line_art=replace(clean.line_art, amount=LineArtAmount.COMIC))
+    colored = replace(
+        comic,
+        line_art=replace(
+            comic.line_art,
+            amount=LineArtAmount.DETAILED,
+            line_color=(12, 34, 56, 255),
+            background=LineArtBackground.BLACK,
+        ),
+    )
+    page._history = [base, clean, comic, colored]
+    page._history_index = 3
+    page.apply_settings(colored)
+    page._canonicalize_line_expression_history()
+    assert [item.line_art.amount for item in page._history] == [
+        LineArtAmount.STANDARD,
+        LineArtAmount.STANDARD,
+        LineArtAmount.STANDARD,
+    ]
+    assert len(page._history) == 3
+    assert page.settings().line_art == replace(
+        colored.line_art, amount=LineArtAmount.STANDARD
+    )
+    page.undo()
+    assert page.settings().line_art.enabled
+    assert page.settings().line_art.line_color == (0, 0, 0, 255)
+    page.undo()
+    assert not page.settings().line_art.enabled
+    page.redo()
+    page.redo()
+    assert page.settings().line_art.line_color == (12, 34, 56, 255)
+    assert page.settings().line_art.background is LineArtBackground.BLACK
     page.close()
 
 
@@ -1118,7 +1168,7 @@ def test_main_window_palette_handoff_preserves_pixel_source_without_switching_ta
     assert window.navigation.currentIndex() == window.image_edit_tab
     assert window.pixel_page._received_palette == colors
     assert window.pixel_page.palette_status_label.text() == "✓ 6色のパレットを受け取りました"
-    assert window.pixel_page.source_path == source
+    assert window.pixel_page.source_path is None
     assert window.pixel_page.reference == reference
     assert window.pixel_page.filename_edit.text() == "keep_name"
     assert window.pixel_page.output_folder == tmp_path

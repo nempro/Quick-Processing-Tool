@@ -281,7 +281,7 @@ def test_pixel_source_change_is_passive_until_explicit_action(
         assert len(pixel.canvas.history._entries) == history_count_before
         assert pixel.filename_edit.text() == filename_before
         assert pixel.output_folder == output_folder_before
-        assert pixel.source_path == first
+        assert pixel.source_path is None
 
         pixel.use_current_as_reference()
         wait_for_window_idle(app, window)
@@ -395,16 +395,13 @@ def test_pixel_corrupt_source_is_rejected_before_workspace_or_import(
     page = PixelEditorPage()
     page.set_workspace_managed(True)
     requested = []
-    import_choices = []
     warnings = []
     page.source_change_requested.connect(requested.append)
-    page.import_choice_provider = lambda path: import_choices.append(path) or "pixels"
     monkeypatch.setattr(QMessageBox, "warning", lambda _p, title, text: warnings.append((title, text)))
     before = page.canvas.snapshot()
     try:
         page._handle_dropped_path(corrupt)
         assert requested == []
-        assert import_choices == []
         assert page.canvas.snapshot() == before
         assert warnings == [("画像を開けません", "PNG / JPEG / WebP画像を選んでください。")]
     finally:
