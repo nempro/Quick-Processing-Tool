@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from quick_processing_tool.edit_ui import QuickEditPage
 from quick_processing_tool.editing import (
     EditSettings,
     FilterPreset,
+    LineArtBackground,
     PaletteSettings,
     RecolorBlendMode,
 )
@@ -274,6 +276,58 @@ def test_expanded_edit_material_stays_inside_viewport_with_eight_rows(
         assert all(button.height() <= 32 for button in page._palette_reset_buttons)
         assert page.drop_zone.preview.width() >= 300
     finally:
+        window.close()
+
+
+@pytest.mark.parametrize("width", [900, 1180, 1440])
+def test_line_expression_off_on_custom_layout_has_no_overflow_or_preview_regression(
+    app: QApplication, tmp_path: Path, width: int
+) -> None:
+    source = tmp_path / f"line-layout-{width}.png"
+    Image.new("RGB", (120, 90), "white").save(source)
+    window = MainWindow()
+    try:
+        window.resize(width, 760)
+        window.set_current_source(source)
+        window.navigation.setCurrentIndex(window.image_edit_tab)
+        window.show()
+        app.processEvents()
+        page = window.edit_page
+        page.material_section.set_expanded(True)
+        app.processEvents()
+        viewport = page.settings_scroll.viewport()
+        content = page.settings_scroll.widget()
+        assert page.line_art_details.isHidden()
+        assert page.settings_scroll.horizontalScrollBar().maximum() == 0
+        assert content.width() <= viewport.width()
+        assert page.drop_zone.preview.width() >= {900: 380, 1180: 560, 1440: 701}[width]
+
+        page.line_art_enabled.setChecked(True)
+        app.processEvents()
+        assert page.line_art_details.isVisible()
+        assert not page.line_art_background_color_button.isVisible()
+        assert page.line_art_group.width() <= viewport.width()
+        assert page.settings_scroll.horizontalScrollBar().maximum() == 0
+        assert content.width() <= viewport.width()
+
+        page.line_art_background_combo.setCurrentIndex(
+            page.line_art_background_combo.findData(LineArtBackground.CUSTOM.value)
+        )
+        app.processEvents()
+        assert page.line_art_background_color_button.isVisible()
+        assert page.settings_scroll.horizontalScrollBar().maximum() == 0
+        assert content.width() <= viewport.width()
+        for child in page.line_art_details.findChildren(QWidget):
+            if not child.isVisibleTo(content) or child.width() <= 0:
+                continue
+            left = child.mapTo(content, QPoint(0, 0)).x()
+            assert left >= -2
+            assert left + child.width() <= content.width() + 2
+        assert page.drop_zone.preview.width() >= {900: 380, 1180: 560, 1440: 701}[width]
+    finally:
+        deadline = time.monotonic() + 3.0
+        while window.edit_page._preview_thread is not None and time.monotonic() < deadline:
+            app.processEvents()
         window.close()
 
 

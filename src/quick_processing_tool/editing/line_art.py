@@ -113,6 +113,9 @@ def apply_line_art(image: Image.Image, settings: LineArtSettings) -> Image.Image
     if not settings.enabled:
         return source.copy()
     mask = edge_mask(source, settings.amount)
+    # Hidden RGB values in fully transparent pixels must not become visible
+    # lines.  Opaque sources remain byte-for-byte unchanged by this clipping.
+    mask = ImageChops.multiply(mask, source.getchannel("A"))
     result = _background(settings, source.size)
     lines = Image.new("RGBA", source.size, settings.line_color)
     lines.putalpha(mask.point(lambda value: value * settings.line_color[3] // 255))

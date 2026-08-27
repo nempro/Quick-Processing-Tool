@@ -117,10 +117,16 @@ POSITION_LABELS = {
     TextPosition.BOTTOM_RIGHT: "右下",
 }
 LINE_ART_LABELS = {
-    LineArtAmount.CLEAN: "すっきり",
-    LineArtAmount.STANDARD: "標準",
-    LineArtAmount.DETAILED: "細密",
-    LineArtAmount.COMIC: "コミック",
+    LineArtAmount.CLEAN: "細い輪郭",
+    LineArtAmount.STANDARD: "バランス",
+    LineArtAmount.DETAILED: "細部を強調",
+    LineArtAmount.COMIC: "太いインク線",
+}
+LINE_ART_TOOLTIPS = {
+    LineArtAmount.CLEAN: "大きな輪郭を細く残します。薄い線や背景は省かれることがあります",
+    LineArtAmount.STANDARD: "主要な輪郭と内側の線を残します。迷ったらこれ",
+    LineArtAmount.DETAILED: "小さな線や背景まで太めに拾います。写真の模様やノイズも出やすくなります",
+    LineArtAmount.COMIC: "輪郭を最も太くします。アイコンや強い線向け。小さい文字はつぶれることがあります",
 }
 EDIT_STYLE = INPUT_CONTROL_STYLE + """
 QPlainTextEdit {
@@ -1001,27 +1007,56 @@ class QuickEditPage(QWidget):
         sticker_form.addRow("", self.sticker_shadow_enabled)
         sticker_layout.addLayout(sticker_form)
         material_layout.addWidget(sticker_group)
-        line_group = QGroupBox("線画")
-        line_form = QFormLayout(line_group)
+        line_group = QGroupBox("輪郭・線表現")
+        self.line_art_group = line_group
+        line_layout = QVBoxLayout(line_group)
+        line_layout.setContentsMargins(7, 7, 7, 7)
+        line_layout.setSpacing(4)
+        self.line_art_description = QLabel("画像の輪郭や細部を拾って、線を主体にした表現へ変えます")
+        self.line_art_description.setWordWrap(True)
+        self.line_art_description.setStyleSheet("color: #667085;")
+        line_layout.addWidget(self.line_art_description)
+        self.line_art_enabled = QCheckBox("線で表現する")
+        self.line_art_enabled.setAccessibleName("輪郭・線表現を有効にする")
+        line_layout.addWidget(self.line_art_enabled)
+        self.line_art_details = QWidget()
+        line_form = QFormLayout(self.line_art_details)
         self._configure_form(line_form)
-        self.line_art_enabled = QCheckBox("線画にする")
+        line_form.setContentsMargins(0, 1, 0, 0)
+        line_form.setVerticalSpacing(3)
         self.line_art_amount_combo = QComboBox()
         for amount in (LineArtAmount.CLEAN, LineArtAmount.STANDARD, LineArtAmount.DETAILED, LineArtAmount.COMIC):
             self.line_art_amount_combo.addItem(LINE_ART_LABELS[amount], amount.value)
+            index = self.line_art_amount_combo.count() - 1
+            self.line_art_amount_combo.setItemData(
+                index, LINE_ART_TOOLTIPS[amount], Qt.ItemDataRole.ToolTipRole
+            )
+        self.line_art_amount_combo.setAccessibleName("線の仕上がり")
+        self.line_art_amount_combo.setToolTip("輪郭や細部をどの程度拾うか選びます")
         self.line_art_color_button = QPushButton()
         self.line_art_color_button.setProperty("showAlphaValue", True)
+        self.line_art_color_button.setProperty(
+            "colorPurpose", "輪郭・線表現に使う線の色を選びます"
+        )
+        self.line_art_color_button.setAccessibleName("線の色")
         self.line_art_color_button.clicked.connect(self.choose_line_art_color)
         self.line_art_background_combo = QComboBox()
         for label, value in (("透明", LineArtBackground.TRANSPARENT.value), ("白", LineArtBackground.WHITE.value), ("黒", LineArtBackground.BLACK.value), ("指定色", LineArtBackground.CUSTOM.value)):
             self.line_art_background_combo.addItem(label, value)
+        self.line_art_background_combo.setAccessibleName("輪郭・線表現の背景")
+        self.line_art_background_combo.setToolTip("線以外の背景を選びます")
         self.line_art_background_color_button = QPushButton()
         self.line_art_background_color_button.setProperty("showAlphaValue", True)
+        self.line_art_background_color_button.setProperty(
+            "colorPurpose", "輪郭・線表現の背景色を選びます"
+        )
+        self.line_art_background_color_button.setAccessibleName("輪郭・線表現の指定背景色")
         self.line_art_background_color_button.clicked.connect(self.choose_line_art_background_color)
-        line_form.addRow("", self.line_art_enabled)
         line_form.addRow("仕上がり", self.line_art_amount_combo)
         line_form.addRow("線色", self.line_art_color_button)
         line_form.addRow("背景", self.line_art_background_combo)
         line_form.addRow("指定色", self.line_art_background_color_button)
+        line_layout.addWidget(self.line_art_details)
         material_layout.addWidget(line_group)
         palette_group = QGroupBox("色を整理・変える")
         palette_layout = QVBoxLayout(palette_group)
@@ -1122,7 +1157,7 @@ class QuickEditPage(QWidget):
         self.palette_feedback_label.setStyleSheet("color: #137333; font-weight: 700;")
         palette_layout.addWidget(self.palette_feedback_label)
         material_layout.addWidget(palette_group)
-        self.material_section = CollapsibleSection("素材化", "ステッカー、線画、代表色を目的別に作ります", material_content)
+        self.material_section = CollapsibleSection("素材化", "ステッカー、輪郭・線表現、代表色を目的別に作ります", material_content)
         ll.addWidget(self.material_section)
         ll.addStretch()
         self.settings_scroll.setWidget(left)
@@ -1928,7 +1963,7 @@ class QuickEditPage(QWidget):
 
     @Slot()
     def choose_line_art_background_color(self) -> None:
-        self._choose_material_color("線画背景色を選ぶ", "_line_art_background_color", self.line_art_background_color_button)
+        self._choose_material_color("輪郭・線表現の背景色を選ぶ", "_line_art_background_color", self.line_art_background_color_button)
 
     def _upstream_signature(self, settings: EditSettings):
         return settings.filter_preset, settings.transparency
@@ -2058,6 +2093,7 @@ class QuickEditPage(QWidget):
         self.sticker_outline_width_spin.setEnabled(self.sticker_enabled.isChecked() and sticker_ready)
         self.sticker_outline_color_button.setEnabled(self.sticker_enabled.isChecked() and sticker_ready)
         self.sticker_shadow_enabled.setEnabled(self.sticker_enabled.isChecked() and sticker_ready)
+        self.line_art_details.setVisible(self.line_art_enabled.isChecked())
         self.line_art_amount_combo.setEnabled(self.line_art_enabled.isChecked())
         self.line_art_color_button.setEnabled(self.line_art_enabled.isChecked())
         self.line_art_background_combo.setEnabled(self.line_art_enabled.isChecked())
@@ -2303,7 +2339,8 @@ class QuickEditPage(QWidget):
             display = color.name().upper()
             background = color.name()
         button.setText(display)
-        button.setToolTip(display)
+        purpose = button.property("colorPurpose")
+        button.setToolTip(f"{purpose}\n現在: {display}" if purpose else display)
         button.setStyleSheet(
             f"QPushButton {{ background: {background}; color: {contrast}; border: 1px solid #65768a;"
             "border-radius: 6px; min-height: 30px; font-weight: 700; }"

@@ -6,6 +6,8 @@ from quick_processing_tool.editing.renderer import render_edit, render_preview
 from quick_processing_tool.editing.palette import rgba_digest
 from PIL import ImageDraw
 import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
 
@@ -34,7 +36,7 @@ def _luminance_values(image: Image.Image) -> list[int]:
     return values
 
 
-from quick_processing_tool.editing.line_art import EDGE_METHOD, apply_line_art, compare_edge_candidates, edge_mask_candidate
+from quick_processing_tool.editing.line_art import EDGE_METHOD, apply_line_art, compare_edge_candidates, edge_mask, edge_mask_candidate
 from quick_processing_tool.editing.models import (
     FilterPreset,
     LineArtAmount,
@@ -92,6 +94,247 @@ def test_line_art_presets_keep_dimensions_and_background_contract() -> None:
         assert result.mode == "RGBA"
         assert result.getpixel((0, 0))[3] == 255
         assert any(result.getpixel((x, y))[:3] != (255, 255, 255) for x in range(12) for y in range(8))
+
+
+def test_line_expression_ui_labels_tooltips_data_and_details_contract(qt_app) -> None:
+    from quick_processing_tool.edit_ui import QuickEditPage
+
+    page = QuickEditPage()
+    page.material_section.set_expanded(True)
+    page.show()
+    qt_app.processEvents()
+    assert page.line_art_group.title() == "輪郭・線表現"
+    assert page.line_art_enabled.text() == "線で表現する"
+    assert page.line_art_description.text() == "画像の輪郭や細部を拾って、線を主体にした表現へ変えます"
+    expected = [
+        (LineArtAmount.CLEAN, "細い輪郭", "大きな輪郭を細く残します。薄い線や背景は省かれることがあります"),
+        (LineArtAmount.STANDARD, "バランス", "主要な輪郭と内側の線を残します。迷ったらこれ"),
+        (LineArtAmount.DETAILED, "細部を強調", "小さな線や背景まで太めに拾います。写真の模様やノイズも出やすくなります"),
+        (LineArtAmount.COMIC, "太いインク線", "輪郭を最も太くします。アイコンや強い線向け。小さい文字はつぶれることがあります"),
+    ]
+    assert page.line_art_amount_combo.accessibleName() == "線の仕上がり"
+    assert page.line_art_amount_combo.toolTip() == "輪郭や細部をどの程度拾うか選びます"
+    assert page.line_art_color_button.toolTip().startswith("輪郭・線表現に使う線の色を選びます\n現在:")
+    assert page.line_art_background_color_button.toolTip().startswith("輪郭・線表現の背景色を選びます\n現在:")
+    for index, (amount, label, tooltip) in enumerate(expected):
+        assert page.line_art_amount_combo.itemText(index) == label
+        assert page.line_art_amount_combo.itemData(index) == amount.value
+        assert page.line_art_amount_combo.itemData(index, Qt.ItemDataRole.ToolTipRole) == tooltip
+    assert page.line_art_details.isHidden()
+    page.line_art_enabled.setChecked(True)
+    qt_app.processEvents()
+    assert page.line_art_details.isVisible()
+    assert not page.line_art_background_color_button.isVisible()
+    page.line_art_background_combo.setCurrentIndex(
+        page.line_art_background_combo.findData(LineArtBackground.CUSTOM.value)
+    )
+    qt_app.processEvents()
+    assert page.line_art_background_color_button.isVisible()
+    page.line_art_enabled.setChecked(False)
+    qt_app.processEvents()
+    assert page.line_art_details.isHidden()
+    passthrough = Image.new("RGBA", (7, 5), (20, 40, 60, 120))
+    assert apply_line_art(passthrough, LineArtSettings()).tobytes() == passthrough.tobytes()
+    page.close()
+
+
+@pytest.mark.parametrize(
+    "line_color,background,custom_background,expected_background",
+    [
+        ((0, 0, 0, 255), LineArtBackground.WHITE, (1, 2, 3, 255), (255, 255, 255, 255)),
+        ((255, 105, 180, 255), LineArtBackground.TRANSPARENT, (1, 2, 3, 255), (0, 0, 0, 0)),
+        ((0, 70, 255, 255), LineArtBackground.CUSTOM, (255, 248, 220, 255), (255, 248, 220, 255)),
+        ((255, 255, 255, 255), LineArtBackground.BLACK, (1, 2, 3, 255), (0, 0, 0, 255)),
+    ],
+)
+def test_line_expression_exact_line_and_background_colors(
+    line_color, background, custom_background, expected_background
+) -> None:
+    source = Image.new("RGBA", (48, 32), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(source)
+    draw.rectangle((8, 7, 38, 25), outline="black", width=3)
+    settings = LineArtSettings(
+        enabled=True,
+        amount=LineArtAmount.STANDARD,
+        line_color=line_color,
+        background=background,
+        custom_background=custom_background,
+    )
+    mask = edge_mask(source, settings.amount)
+    result = apply_line_art(source, settings)
+    line_point = next((x, y) for y in range(mask.height) for x in range(mask.width) if mask.getpixel((x, y)) == 255)
+    background_point = next((x, y) for y in range(mask.height) for x in range(mask.width) if mask.getpixel((x, y)) == 0)
+    assert result.getpixel(line_point) == line_color
+    assert result.getpixel(background_point) == expected_background
+
+
+def test_line_expression_clips_hidden_rgb_and_transparency_background_edges() -> None:
+    source = Image.new("RGBA", (32, 24), (255, 255, 255, 0))
+    for y in range(source.height):
+        for x in range(source.width):
+            source.putpixel((x, y), ((255, 0, 0, 0) if (x + y) % 2 else (0, 0, 255, 0)))
+    ImageDraw.Draw(source).rectangle((10, 7, 21, 16), fill=(20, 180, 40, 255))
+    settings = LineArtSettings(enabled=True, amount=LineArtAmount.COMIC)
+    result = apply_line_art(source, settings)
+    assert all(
+        result.getpixel((x, y))[3] == 0
+        for y in range(source.height)
+        for x in range(source.width)
+        if source.getpixel((x, y))[3] == 0
+    )
+    assert result.getchannel("A").getbbox() is not None
+
+    from quick_processing_tool.editing import EditSettings, TransparencySettings
+    opaque = Image.new("RGBA", (32, 24), "white")
+    ImageDraw.Draw(opaque).rectangle((10, 7, 21, 16), fill=(220, 20, 30, 255))
+    rendered = render_edit(
+        opaque,
+        EditSettings(
+            transparency=TransparencySettings(True, (255, 255, 255), 0, 0),
+            line_art=LineArtSettings(enabled=True, amount=LineArtAmount.DETAILED),
+        ),
+    )
+    assert all(
+        rendered.getpixel((x, y))[3] == 0
+        for y in range(opaque.height)
+        for x in range(opaque.width)
+        if not (10 <= x <= 21 and 7 <= y <= 16)
+    )
+
+
+def test_recolor_then_line_expression_uses_final_line_and_background_colors() -> None:
+    from quick_processing_tool.editing import EditSettings
+
+    source = Image.new("RGBA", (48, 32), (240, 40, 30, 255))
+    ImageDraw.Draw(source).ellipse((8, 5, 38, 27), fill=(20, 170, 210, 255), outline=(5, 10, 20, 255), width=2)
+    mapping = extract_palette(source, 5)
+    replacements = tuple((255 - red, 255 - green, 255 - blue) for red, green, blue in mapping.palette)
+    line_color = (12, 34, 56, 255)
+    background = (255, 248, 220, 255)
+    settings = EditSettings(
+        palette=PaletteSettings(
+            True,
+            True,
+            5,
+            mapping.palette,
+            replacements,
+            mapping.indices,
+            mapping.width,
+            mapping.height,
+            mapping.digest,
+        ),
+        line_art=LineArtSettings(
+            True,
+            LineArtAmount.DETAILED,
+            line_color,
+            LineArtBackground.CUSTOM,
+            background,
+        ),
+    )
+    result = render_edit(source, settings)
+    colors = set(_rgba_pixels(result))
+    assert colors <= {line_color, background}
+    assert line_color in colors and background in colors
+
+
+def test_small_line_expression_preview_and_export_match_render_edit(tmp_path: Path) -> None:
+    from quick_processing_tool.editing import EditOutputFormat, EditSettings
+    from quick_processing_tool.editing.service import EditService
+
+    source_path = tmp_path / "line-parity.png"
+    source = Image.new("RGBA", (52, 36), "white")
+    ImageDraw.Draw(source).rectangle((7, 6, 43, 29), outline="black", width=3)
+    source.save(source_path)
+    settings = EditSettings(
+        line_art=LineArtSettings(
+            True,
+            LineArtAmount.COMIC,
+            (0, 70, 255, 255),
+            LineArtBackground.CUSTOM,
+            (255, 248, 220, 255),
+        )
+    )
+    rendered = render_edit(source, settings)
+    preview = render_preview(source, settings, 1400)
+    assert preview.size == rendered.size
+    assert preview.tobytes() == rendered.tobytes()
+    exported = EditService().export(source_path, tmp_path, settings, EditOutputFormat.PNG)
+    with Image.open(exported.output_path) as reopened:
+        reopened.load()
+        assert reopened.convert("RGBA").tobytes() == rendered.tobytes()
+
+
+def test_line_expression_changes_are_single_history_actions_and_branch(qt_app, tmp_path: Path, monkeypatch) -> None:
+    import quick_processing_tool.edit_ui as edit_ui
+    from quick_processing_tool.edit_ui import QuickEditPage
+
+    source = tmp_path / "line-history.png"
+    Image.new("RGB", (24, 18), "white").save(source)
+    page = QuickEditPage()
+    assert page.load_image(source)
+    start = len(page._history)
+    page.line_art_enabled.setChecked(True)
+    page.line_art_amount_combo.setCurrentIndex(
+        page.line_art_amount_combo.findData(LineArtAmount.COMIC.value)
+    )
+    monkeypatch.setattr(edit_ui, "choose_color", lambda *_args, **_kwargs: QColor(255, 105, 180, 255))
+    page.choose_line_art_color()
+    page.line_art_background_combo.setCurrentIndex(
+        page.line_art_background_combo.findData(LineArtBackground.WHITE.value)
+    )
+    assert len(page._history) == start + 4
+    assert page.settings().line_art == LineArtSettings(
+        True,
+        LineArtAmount.COMIC,
+        (255, 105, 180, 255),
+        LineArtBackground.WHITE,
+        (255, 255, 255, 255),
+    )
+    page.undo()
+    assert page.settings().line_art.background is LineArtBackground.TRANSPARENT
+    page.undo()
+    assert page.settings().line_art.line_color == (0, 0, 0, 255)
+    page.undo()
+    assert page.settings().line_art.amount is LineArtAmount.STANDARD
+    page.undo()
+    assert not page.settings().line_art.enabled
+    for _ in range(4):
+        page.redo()
+    assert page.settings().line_art.background is LineArtBackground.WHITE
+    page.undo()
+    page.line_art_amount_combo.setCurrentIndex(
+        page.line_art_amount_combo.findData(LineArtAmount.DETAILED.value)
+    )
+    assert page.settings().line_art.amount is LineArtAmount.DETAILED
+    assert not page.redo_button.isEnabled()
+    _wait_for_edit_preview_idle(qt_app, page)
+    page.close()
+
+
+def test_line_expression_same_source_keeps_settings_replacement_resets(qt_app, tmp_path: Path) -> None:
+    from quick_processing_tool.edit_ui import QuickEditPage
+    from quick_processing_tool.image_workspace import read_source_image
+
+    first = tmp_path / "line-source-a.png"
+    second = tmp_path / "line-source-b.png"
+    Image.new("RGB", (24, 18), "white").save(first)
+    Image.new("RGB", (30, 20), "blue").save(second)
+    page = QuickEditPage()
+    assert page.load_image(first)
+    page.line_art_enabled.setChecked(True)
+    page.line_art_amount_combo.setCurrentIndex(
+        page.line_art_amount_combo.findData(LineArtAmount.COMIC.value)
+    )
+    kept = page.settings().line_art
+    page.set_current_source(read_source_image(first, 1))
+    assert page.settings().line_art == kept
+    page.set_current_source(read_source_image(second, 2))
+    assert page.source_path == second.resolve()
+    assert page.settings().line_art == LineArtSettings()
+    assert page.line_art_details.isHidden()
+    assert len(page._history) == 1 and page._history_index == 0
+    _wait_for_edit_preview_idle(qt_app, page)
+    page.close()
 
 
 def test_phase4b_settings_defaults_are_non_destructive() -> None:
