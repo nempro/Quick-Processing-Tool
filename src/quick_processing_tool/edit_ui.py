@@ -75,6 +75,8 @@ from .editing.renderer import load_normalized, prepare_palette_source, render_pa
 from .editing.service import EditProcessingError, SOURCE_FORMATS
 from .naming import EXTENSIONS, KNOWN_IMAGE_EXTENSIONS, normalize_filename_stem
 from .editing.text import pil_to_qimage
+from .image_workspace import MISSING_SOURCE_MESSAGE, MissingSourceError, SourceImage, require_source_file
+from .source_ui import CurrentSourceCard
 from .ui_styles import INPUT_CONTROL_STYLE
 
 
@@ -588,6 +590,9 @@ class EditExportWorker(QObject):
                     self.custom_stem,
                 )
             )
+        except MissingSourceError:
+            LOGGER.exception("Quick edit UI source missing: %s", self.source)
+            self.failed.emit(MISSING_SOURCE_MESSAGE)
         except EditProcessingError as exc:
             LOGGER.exception("Quick edit UI export failed: %s", self.source)
             self.failed.emit(str(exc))
@@ -629,12 +634,14 @@ class PaletteExtractionThread(QThread):
 
 class QuickEditPage(QWidget):
     processing_changed = Signal(bool)
+    source_change_requested = Signal(object)
     palette_handoff_requested = Signal(object)
     palette_open_requested = Signal()
 
     def __init__(self, service: EditService | None = None) -> None:
         super().__init__()
         self.service = service or EditService()
+        self._workspace_managed = False
         self.font_catalog = FontCatalog()
         self.source_path: Path | None = None
         self.output_folder: Path | None = None
@@ -708,6 +715,9 @@ class QuickEditPage(QWidget):
         heading = QLabel("何をしますか？")
         heading.setStyleSheet("font-size: 18px; font-weight: 700; color: #182230;")
         ll.addWidget(heading)
+        self.current_source_card = CurrentSourceCard()
+        self.current_source_card.change_requested.connect(self.choose_image)
+        ll.addWidget(self.current_source_card)
         history_row = QGridLayout()
         history_row.setSpacing(4)
         self.undo_button = QPushButton("元に戻す")
@@ -1041,7 +1051,7 @@ class QuickEditPage(QWidget):
         cl.addLayout(preview_head)
         self.drop_zone = EditDropZone()
         self.drop_zone.choose_requested.connect(self.choose_image)
-        self.drop_zone.path_dropped.connect(self.load_image)
+        self.drop_zone.path_dropped.connect(self._request_or_load_image)
         self.drop_zone.preview.color_picked.connect(self._color_picked)
         cl.addWidget(self.drop_zone, 1)
         self.preview_status = QLabel("画像を読み込むと、ここへ加工結果を表示します")
@@ -1270,19 +1280,38 @@ class QuickEditPage(QWidget):
     def choose_image(self) -> None:
         name, _ = QFileDialog.getOpenFileName(self, "加工する画像を選ぶ", "", "画像 (*.png *.jpg *.jpeg *.webp)")
         if name:
-            self.load_image(Path(name))
+            self._request_or_load_image(Path(name))
+
+    def set_workspace_managed(self, managed: bool = True) -> None:
+        self._workspace_managed = managed
 
     @Slot(object)
-    def load_image(self, path: Path) -> None:
-        if self._thread is not None:
+    def _request_or_load_image(self, path: Path) -> None:
+        if self._workspace_managed:
+            self.source_change_requested.emit(Path(path))
+        else:
+            self.load_image(Path(path))
+
+    @Slot(object)
+    def set_current_source(self, source: SourceImage) -> None:
+        if self.source_path is not None and self.source_path.resolve() == source.path:
+            self.current_source_card.set_source(source)
             return
+        if self.load_image(source.path):
+            self.current_source_card.set_source(source)
+
+    @Slot(object)
+    def load_image(self, path: Path) -> bool:
+        if self._thread is not None:
+            return False
         if self._palette_thread is not None:
             self.cancel_palette_extraction()
         path = Path(path)
         try:
             if path.suffix.lower() not in SUPPORTED_SUFFIXES:
                 raise OSError("unsupported suffix")
-            with Image.open(path) as opened:
+            resolved_path = path.resolve()
+            with Image.open(resolved_path) as opened:
                 opened.load()
                 normalized = ImageOps.exif_transpose(opened)
                 width, height = normalized.size
@@ -1293,15 +1322,19 @@ class QuickEditPage(QWidget):
                     normalized.mode == "P" and "transparency" in normalized.info
                 )
                 alpha_min, _alpha_max = normalized.convert("RGBA").getchannel("A").getextrema()
+            source_size_bytes = resolved_path.stat().st_size
         except (OSError, UnidentifiedImageError, ValueError):
-            QMessageBox.warning(self, "画像を開けません", "PNG / JPEG / WebP画像を選んでください。")
-            return
+            if not path.is_file():
+                QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
+            else:
+                QMessageBox.warning(self, "画像を開けません", "PNG / JPEG / WebP画像を選んでください。")
+            return False
         self.finish_ime(clear_focus=True)
-        self.source_path = path.resolve()
+        self.source_path = resolved_path
         self._palette_generation += 1
         self._source_size = (width, height)
         self._source_format = source_format
-        self._source_size_bytes = self.source_path.stat().st_size
+        self._source_size_bytes = source_size_bytes
         self._source_has_alpha = has_alpha
         self._source_alpha_min = alpha_min
         if not self._output_folder_explicit:
@@ -1325,6 +1358,7 @@ class QuickEditPage(QWidget):
         self._show_original = False
         self._update_actions()
         self.update_preview()
+        return True
 
     def settings(self) -> EditSettings:
         canvas_data = self.canvas_preset_combo.currentData()
@@ -1576,7 +1610,8 @@ class QuickEditPage(QWidget):
         try:
             identity = self._palette_source_identity(source)
         except OSError:
-            self.preview_status.setText("代表色を抽出できませんでした。画像を確認してください。")
+            self.preview_status.setText(MISSING_SOURCE_MESSAGE)
+            QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
             return
         signature = (settings.filter_preset.value, settings.transparency, settings.palette.color_count)
         generation = self._palette_generation
@@ -1839,6 +1874,7 @@ class QuickEditPage(QWidget):
             self.drop_zone.preview.clear_image()
             return
         try:
+            require_source_file(self.source_path)
             if self._show_original:
                 image = load_normalized(self.source_path)
                 image.thumbnail((1400, 1400), Image.Resampling.LANCZOS)
@@ -2098,6 +2134,9 @@ class QuickEditPage(QWidget):
         self._normalize_output_filename_input()
         if not self.source_path or self._thread is not None:
             return
+        if not self.source_path.is_file():
+            QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
+            return
         normalized = self._normalized_output_stem()
         if not normalized:
             QMessageBox.warning(self, "ファイル名を入力してください", "保存するファイル名を入力してください。")
@@ -2160,6 +2199,7 @@ class QuickEditPage(QWidget):
     def _set_processing(self, processing: bool) -> None:
         for widget in (
             self.drop_zone,
+            self.current_source_card.change_button,
             self.filter_combo,
             self.text_enabled,
             self.text_details,
@@ -2220,6 +2260,7 @@ class QuickEditPage(QWidget):
         self.open_folder_button.setEnabled(idle and self._last_output is not None and self._last_output.parent.is_dir())
         self.original_button.setEnabled(loaded and not self._show_original)
         self.edited_button.setEnabled(loaded and self._show_original)
+        self.current_source_card.change_button.setEnabled(idle)
 
     @Slot()
     def open_saved_folder(self) -> None:

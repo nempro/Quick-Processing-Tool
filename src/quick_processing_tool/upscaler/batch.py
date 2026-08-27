@@ -9,6 +9,7 @@ from threading import Event
 from typing import Callable
 
 from .errors import UpscaleCancelledError, UpscaleError
+from ..image_workspace import MissingSourceError
 from .models import UpscaleOptions, UpscaleResult
 from .service import UpscaleService
 
@@ -24,6 +25,7 @@ class QueueStatus(str, Enum):
     SAVING = "saving"
     DONE = "done"
     FAILED = "failed"
+    MISSING = "missing"
     CANCELLED = "cancelled"
 
 
@@ -106,6 +108,14 @@ def run_sequential_batch(
                 cancelled += 1
             break
 
+        if not job.source_path.is_file():
+            LOGGER.warning("Upscale batch source missing: %s", job.source_path)
+            callbacks.status(job.queue_index, QueueStatus.MISSING, "元画像なし")
+            failed += 1
+            processed += 1
+            callbacks.progress(processed, total)
+            continue
+
         LOGGER.info("[%d/%d] start %s", position, total, job.source_path)
         callbacks.current(job.queue_index, position, total, job.source_path.name)
         callbacks.status(job.queue_index, QueueStatus.PROCESSING, "高画質化中")
@@ -123,6 +133,9 @@ def run_sequential_batch(
                 cancel_event,
                 stage=stage_changed,
             )
+        except MissingSourceError:
+            callbacks.status(job.queue_index, QueueStatus.MISSING, "元画像なし")
+            failed += 1
         except UpscaleCancelledError:
             callbacks.status(job.queue_index, QueueStatus.CANCELLED, "キャンセル")
             cancelled += 1
@@ -136,7 +149,9 @@ def run_sequential_batch(
             failed += 1
         except Exception as exc:
             LOGGER.exception("Unexpected upscale batch item failure: %s", job.source_path)
-            callbacks.status(job.queue_index, QueueStatus.FAILED, str(exc))
+            status = QueueStatus.MISSING if not job.source_path.is_file() else QueueStatus.FAILED
+            detail = "元画像なし" if status is QueueStatus.MISSING else str(exc)
+            callbacks.status(job.queue_index, status, detail)
             failed += 1
         else:
             callbacks.result(job.queue_index, result)

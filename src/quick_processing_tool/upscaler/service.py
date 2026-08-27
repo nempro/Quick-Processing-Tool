@@ -10,6 +10,7 @@ from typing import Callable
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from ..naming import EXTENSIONS, write_unique_bytes
+from ..image_workspace import MISSING_SOURCE_MESSAGE, MissingSourceError, require_source_file
 from ..processors.encode import encode_once
 from .backend import ProgressCallback, UpscaleBackend
 from .errors import InputDecodeError, UpscaleCancelledError, UpscaleProcessingError, UpscaleSaveError
@@ -35,6 +36,7 @@ class UpscaleService:
     ) -> UpscaleResult:
         started = time.perf_counter()
         source_path = source_path.resolve()
+        require_source_file(source_path)
         LOGGER.info(
             "Upscale start: input=%s mode=%s scale=%sx backend=%s",
             source_path, options.mode.value, options.scale, self.backend.name,
@@ -46,6 +48,8 @@ class UpscaleService:
                 source = ImageOps.exif_transpose(opened).copy()
         except (OSError, UnidentifiedImageError) as exc:
             LOGGER.exception("Upscale input decode failed: %s", source_path)
+            if not source_path.is_file():
+                raise MissingSourceError(MISSING_SOURCE_MESSAGE) from exc
             raise InputDecodeError("画像を読み込めませんでした。") from exc
 
         width, height = source.size

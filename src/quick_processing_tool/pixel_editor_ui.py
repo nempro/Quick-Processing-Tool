@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QUrl, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractScrollArea, QCheckBox, QColorDialog, QComboBox, QDialog, QFileDialog,
@@ -14,11 +14,14 @@ from PySide6.QtWidgets import (
 )
 
 from .pixel_editor.canvas import MAX_SIZE, MIN_SIZE, PixelCanvas, pixel_from_display
-from .pixel_editor.importers import import_as_pixels, load_reference
+from .pixel_editor.importers import load_reference, load_rgba
 from .pixel_editor.models import PixelExportResult, PixelTool, ReferenceImage
 from .pixel_editor.service import PixelExportError, save_png
 from .naming import normalize_filename_stem
 from .ui_styles import INPUT_CONTROL_STYLE
+from .errors import ProcessingError
+from .image_workspace import MISSING_SOURCE_MESSAGE, MissingSourceError, SourceImage, read_source_image
+from .source_ui import CurrentSourceCard
 
 
 def _qimage(image: Image.Image) -> QImage:
@@ -283,9 +286,12 @@ class PixelCanvasView(QAbstractScrollArea):
 
 class PixelEditorPage(QWidget):
     processing_changed = Signal(bool)
+    source_change_requested = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._workspace_managed = False
+        self._current_source: SourceImage | None = None
         self.source_path: Path | None = None
         self.output_folder: Path | None = None
         self._last_saved_result: PixelExportResult | None = None
@@ -312,6 +318,23 @@ class PixelEditorPage(QWidget):
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(8, 8, 8, 8)
+
+        self.current_source_card = CurrentSourceCard()
+        self.current_source_card.change_requested.connect(self.choose_current_source)
+        left_layout.addWidget(self.current_source_card)
+        current_source_actions = QVBoxLayout()
+        self.current_reference_button = QPushButton("現在の画像から下絵を作る")
+        self.current_pixels_button = QPushButton("現在の画像をドット化して編集")
+        for button in (self.current_reference_button, self.current_pixels_button):
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.current_reference_button.clicked.connect(self.use_current_as_reference)
+        self.current_pixels_button.clicked.connect(self.use_current_as_pixels)
+        self.current_reference_button.setEnabled(False)
+        self.current_pixels_button.setEnabled(False)
+        current_source_actions.addWidget(self.current_reference_button)
+        current_source_actions.addWidget(self.current_pixels_button)
+        left_layout.addLayout(current_source_actions)
 
         tools = QGroupBox("ツール")
         tl = QVBoxLayout(tools)
@@ -555,6 +578,10 @@ class PixelEditorPage(QWidget):
         path = Path(path)
         if path.suffix.lower() not in SUPPORTED_DROP_SUFFIXES or not path.is_file():
             return
+        if self._read_valid_import_source(path) is None:
+            return
+        if self._workspace_managed:
+            self.source_change_requested.emit(path)
         choice = self.import_choice_provider(path)
         if choice == "reference":
             self._load_reference_path(path)
@@ -644,31 +671,110 @@ class PixelEditorPage(QWidget):
         self._refresh()
 
     def _load_reference_path(self, path: Path):
-        self.reference = load_reference(path, (self.canvas.width, self.canvas.height), self.opacity_slider.value())
+        try:
+            reference = load_reference(path, (self.canvas.width, self.canvas.height), self.opacity_slider.value())
+        except (OSError, ValueError):
+            if not path.is_file():
+                QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
+            else:
+                QMessageBox.warning(self, "画像を開けません", "PNG / JPEG / WebP画像を選んでください。")
+            return False
+        self.reference = reference
         self.canvas_view.reference = self.reference
         self.source_path = path
         self._set_filename_default(path)
         self._update_palette_guidance()
         self._refresh()
+        return True
 
     def load_reference(self):
         path, _ = QFileDialog.getOpenFileName(self, "下絵を読み込む", "", "画像 (*.png *.jpg *.jpeg *.webp)")
         if path:
+            if self._read_valid_import_source(Path(path)) is None:
+                return
+            if self._workspace_managed:
+                self.source_change_requested.emit(Path(path))
             self._load_reference_path(Path(path))
 
     def _load_pixels_path(self, path: Path):
-        import_as_pixels(path, self.canvas)
+        try:
+            image = load_rgba(path)
+        except (OSError, ValueError):
+            if not path.is_file():
+                QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
+            else:
+                QMessageBox.warning(self, "画像を開けません", "PNG / JPEG / WebP画像を選んでください。")
+            return False
+        self.canvas.import_image(image)
         self.source_path = path
         self.reference = None
         self.canvas_view.reference = None
         self._set_filename_default(path)
         self._update_palette_guidance()
         self._refresh()
+        return True
 
     def load_pixels(self):
         path, _ = QFileDialog.getOpenFileName(self, "ドット化して編集", "", "画像 (*.png *.jpg *.jpeg *.webp)")
         if path:
+            if self._read_valid_import_source(Path(path)) is None:
+                return
+            if self._workspace_managed:
+                self.source_change_requested.emit(Path(path))
             self._load_pixels_path(Path(path))
+
+    def set_workspace_managed(self, managed: bool = True) -> None:
+        self._workspace_managed = managed
+
+    @Slot(object)
+    def set_current_source(self, source: SourceImage) -> None:
+        """Update only passive source UI; never mutate canvas/reference/history."""
+        self._current_source = source
+        self.current_source_card.set_source(source)
+        self.current_reference_button.setEnabled(True)
+        self.current_pixels_button.setEnabled(True)
+
+    @Slot()
+    def choose_current_source(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "現在の画像を選ぶ", "", "画像 (*.png *.jpg *.jpeg *.webp)"
+        )
+        if not path:
+            return
+        source = self._read_valid_import_source(Path(path))
+        if source is None:
+            return
+        if self._workspace_managed:
+            self.source_change_requested.emit(Path(path))
+        else:
+            self.set_current_source(source)
+
+    def _read_valid_import_source(self, path: Path) -> SourceImage | None:
+        try:
+            return read_source_image(path, 0)
+        except MissingSourceError:
+            QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
+        except ProcessingError as exc:
+            QMessageBox.warning(self, "画像を開けません", str(exc))
+        return None
+
+    @Slot()
+    def use_current_as_reference(self) -> None:
+        if self._current_source is None:
+            return
+        if not self._current_source.path.is_file():
+            QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
+            return
+        self._load_reference_path(self._current_source.path)
+
+    @Slot()
+    def use_current_as_pixels(self) -> None:
+        if self._current_source is None:
+            return
+        if not self._current_source.path.is_file():
+            QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
+            return
+        self._load_pixels_path(self._current_source.path)
 
     def _reference_visibility(self, value):
         self.canvas_view.reference_visible = value

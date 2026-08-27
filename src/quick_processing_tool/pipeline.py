@@ -7,6 +7,7 @@ from pathlib import Path
 from PIL import Image, UnidentifiedImageError
 
 from .errors import ProcessingError, TargetSizeUnreachable, UnsupportedImageError
+from .image_workspace import MISSING_SOURCE_MESSAGE, MissingSourceError, require_source_file
 from .models import ImageInfo, OutputFormat, ProcessedImage, ProcessingOptions, ResizeMode
 from .processors.encode import encode_best_quality
 from .processors.metadata import safe_metadata
@@ -42,6 +43,7 @@ def resolve_output_format(original: str, selected: OutputFormat) -> str:
 
 def process_image(path: Path, options: ProcessingOptions) -> ProcessedImage:
     LOGGER.info("Conversion start: %s", path)
+    require_source_file(path)
     try:
         with Image.open(path) as opened:
             original_format = (opened.format or "").upper()
@@ -95,6 +97,8 @@ def process_image(path: Path, options: ProcessingOptions) -> ProcessedImage:
     except ProcessingError:
         raise
     except (UnidentifiedImageError, OSError, ValueError) as exc:
+        if not path.is_file():
+            raise MissingSourceError(MISSING_SOURCE_MESSAGE) from exc
         raise ProcessingError(f"画像処理に失敗しました: {path.name}") from exc
 
     result = ProcessedImage(data, resized.width, resized.height, output_format, quality, path)
@@ -115,4 +119,6 @@ def write_processed(result: ProcessedImage, destination: Path, preserve_timestam
     except (OSError, PermissionError) as exc:
         if created:
             destination.unlink(missing_ok=True)
+        if preserve_timestamp and not result.source.is_file():
+            raise MissingSourceError(MISSING_SOURCE_MESSAGE) from exc
         raise ProcessingError(f"保存できません: {destination}") from exc

@@ -6,8 +6,8 @@ from pathlib import Path
 from threading import Event
 
 from PIL import Image, ImageOps, UnidentifiedImageError
-from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal, Slot
-from PySide6.QtGui import QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QImage, QPainter, QPixmap
+from PySide6.QtCore import QObject, QSize, Qt, QThread, QUrl, Signal, Slot
+from PySide6.QtGui import QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QImage, QImageReader, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFileDialog, QFormLayout, QFrame,
     QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
 )
 
 from .ui_styles import INPUT_CONTROL_STYLE
+from .image_workspace import MISSING_SOURCE_MESSAGE, SourceImage
+from .source_ui import CurrentSourceCard
 from .upscaler import (
     RealESRGANNCNNBackend, UpscaleMode, UpscaleOptions, UpscaleOutputFormat,
     UpscaleResult, UpscaleService,
@@ -33,6 +35,7 @@ STATUS_TEXT = {
     QueueStatus.WAITING: "待機", QueueStatus.PROCESSING: "処理中",
     QueueStatus.SAVING: "保存中", QueueStatus.DONE: "完了",
     QueueStatus.FAILED: "失敗", QueueStatus.CANCELLED: "キャンセル",
+    QueueStatus.MISSING: "元画像なし",
     QueueStatus.WARNING: "大きすぎる可能性", QueueStatus.SKIPPED: "スキップ",
 }
 UPSCALE_STYLE = INPUT_CONTROL_STYLE + """
@@ -75,7 +78,14 @@ class UpscalePreview(QGraphicsView):
         self._fit_mode = True
 
     def set_image_path(self, path: Path) -> bool:
-        image = QImage(str(path))
+        reader = QImageReader(str(path))
+        reader.setAutoTransform(True)
+        source_size = reader.size()
+        if source_size.isValid():
+            reader.setScaledSize(
+                source_size.scaled(QSize(1800, 1800), Qt.AspectRatioMode.KeepAspectRatio)
+            )
+        image = reader.read()
         if image.isNull():
             return False
         self._item.setPixmap(QPixmap.fromImage(image))
@@ -248,10 +258,13 @@ class ElidedPathLabel(QLabel):
 
 class UpscalePage(QWidget):
     processing_changed = Signal(bool)
+    source_change_requested = Signal(object)
 
     def __init__(self, service: UpscaleService | None = None) -> None:
         super().__init__()
         self.service = service or UpscaleService(RealESRGANNCNNBackend())
+        self._workspace_managed = False
+        self._current_source: SourceImage | None = None
         self.items: list[UpscaleQueueItem] = []
         self.current_index = -1
         self.output_folder: Path | None = None
@@ -298,6 +311,13 @@ class UpscalePage(QWidget):
         help_text = QLabel("すべての画像に同じ設定を適用します")
         help_text.setStyleSheet("color: #667085;"); help_text.setWordWrap(True)
         ll.addWidget(help_text)
+        self.current_source_card = CurrentSourceCard()
+        self.current_source_card.change_requested.connect(self.choose_current_source)
+        ll.addWidget(self.current_source_card)
+        self.add_current_source_button = QPushButton("現在の画像を高画質化に追加")
+        self.add_current_source_button.clicked.connect(self.add_current_source)
+        self.add_current_source_button.setEnabled(False)
+        ll.addWidget(self.add_current_source_button)
 
         scale_box = QGroupBox("拡大倍率")
         scale_box.setMinimumWidth(0)
@@ -414,17 +434,49 @@ class UpscalePage(QWidget):
         if names:
             self.load_paths([Path(name) for name in names])
 
+    @Slot()
+    def choose_current_source(self) -> None:
+        name, _ = QFileDialog.getOpenFileName(
+            self, "現在の画像を選ぶ", "", "画像 (*.png *.jpg *.jpeg *.webp)"
+        )
+        if not name:
+            return
+        if self._workspace_managed:
+            self.source_change_requested.emit(Path(name))
+        else:
+            self.load_paths([Path(name)])
+
+    def set_workspace_managed(self, managed: bool = True) -> None:
+        self._workspace_managed = managed
+
+    @Slot(object)
+    def set_current_source(self, source: SourceImage) -> None:
+        self._current_source = source
+        self.current_source_card.set_source(source)
+        self.add_current_source_button.setEnabled(self._thread is None)
+        if not self.items:
+            self.load_paths([source.path], update_workspace=False)
+
+    @Slot()
+    def add_current_source(self) -> None:
+        if self._current_source is not None:
+            if not self._current_source.path.is_file():
+                QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
+                return
+            self.load_paths([self._current_source.path], update_workspace=False)
+
     def load_image(self, path: Path) -> None:
         self.load_paths([path])
 
     @Slot(object)
-    def load_paths(self, paths: list[Path]) -> None:
+    def load_paths(self, paths: list[Path], *, update_workspace: bool = True) -> None:
         if self._thread is not None:
             return
         existing = {os.path.normcase(str(item.source_path.resolve())) for item in self.items}
         added: list[UpscaleQueueItem] = []
         duplicates = 0
         errors: list[str] = []
+        selected_source: Path | None = None
         for candidate in paths:
             path = Path(candidate)
             if path.suffix.lower() not in SUPPORTED_SUFFIXES or not path.is_file():
@@ -433,18 +485,25 @@ class UpscalePage(QWidget):
             try:
                 resolved = path.resolve()
                 key = os.path.normcase(str(resolved))
-                if key in existing:
-                    duplicates += 1
-                    continue
                 with Image.open(resolved) as opened:
                     opened.load()
                     image = ImageOps.exif_transpose(opened)
                     width, height = image.size
                     source_format = (opened.format or resolved.suffix[1:]).upper()
+                    if source_format not in {"PNG", "JPEG", "WEBP"}:
+                        raise ValueError("unsupported decoded format")
                     has_alpha = "A" in image.getbands() or (image.mode == "P" and "transparency" in image.info)
-                added.append(UpscaleQueueItem(resolved, width, height, source_format, resolved.stat().st_size, has_alpha))
+                size_bytes = resolved.stat().st_size
+                if key in existing:
+                    duplicates += 1
+                    if selected_source is None:
+                        selected_source = resolved
+                    continue
+                added.append(UpscaleQueueItem(resolved, width, height, source_format, size_bytes, has_alpha))
+                if selected_source is None:
+                    selected_source = resolved
                 existing.add(key)
-            except (OSError, UnidentifiedImageError) as exc:
+            except (OSError, UnidentifiedImageError, ValueError) as exc:
                 LOGGER.exception("Upscale queue input decode failed: %s", path)
                 errors.append(f"{path.name}: {exc}")
 
@@ -466,6 +525,8 @@ class UpscalePage(QWidget):
             self.queue_feedback.setText(feedback)
         if errors:
             QMessageBox.warning(self, "一部の画像を追加できませんでした", "\n".join(errors))
+        if update_workspace and self._workspace_managed and selected_source is not None:
+            self.source_change_requested.emit(selected_source)
         self._refresh_large_warnings()
         self._clear_summary(); self._update_actions()
 
@@ -582,6 +643,12 @@ class UpscalePage(QWidget):
     @Slot()
     def start(self) -> None:
         if not self.items or self._thread is not None:
+            return
+        if len(self.items) == 1 and not self.items[0].source_path.is_file():
+            self.items[0].status = QueueStatus.MISSING
+            self.items[0].detail = MISSING_SOURCE_MESSAGE
+            self._update_queue_row(0)
+            QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
             return
         if self._output_folder_explicit and self.output_folder is not None:
             if self.output_folder.exists() and not self.output_folder.is_dir():
@@ -743,6 +810,8 @@ class UpscalePage(QWidget):
             self.scale_2, self.scale_4, self.illustration, self.photo,
             self.format_combo, self.folder_button, self.start_button,
             self.drop_zone, self.add_button, self.clear_button,
+            self.add_current_source_button,
+            self.current_source_card.change_button,
         ):
             widget.setEnabled(not active)
         self.cancel_button.setVisible(active); self.cancel_button.setEnabled(active)
@@ -755,6 +824,8 @@ class UpscalePage(QWidget):
         count = len(self.items)
         self.start_button.setEnabled(bool(count) and self._engine_available and idle)
         self.add_button.setEnabled(idle); self.clear_button.setEnabled(bool(count) and idle)
+        self.add_current_source_button.setEnabled(self._current_source is not None and idle)
+        self.current_source_card.change_button.setEnabled(idle)
         if not count:
             self.start_button.setText("画像を選んでください")
         elif count == 1:
@@ -772,6 +843,7 @@ class UpscalePage(QWidget):
             QueueStatus.PROCESSING: QColor("#2457b2"), QueueStatus.SAVING: QColor("#2457b2"),
             QueueStatus.CANCELLED: QColor("#9a6700"), QueueStatus.WARNING: QColor("#9a6700"),
             QueueStatus.SKIPPED: QColor("#9a6700"),
+            QueueStatus.MISSING: QColor("#c62828"),
         }.get(item.status, QColor("#273142"))
         row.setForeground(2, color)
 

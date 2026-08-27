@@ -6,6 +6,7 @@ from pathlib import Path
 from PIL import Image, UnidentifiedImageError
 
 from ..errors import ProcessingError
+from ..image_workspace import MISSING_SOURCE_MESSAGE, MissingSourceError, require_source_file
 from ..naming import EXTENSIONS, KNOWN_IMAGE_EXTENSIONS, normalize_filename_stem, write_unique_bytes
 from ..processors.encode import encode_once
 from .models import EditOutputFormat, EditResult, EditSettings
@@ -32,6 +33,7 @@ class EditService:
         custom_stem: str | None = None,
     ) -> EditResult:
         source_path = source_path.resolve()
+        require_source_file(source_path)
         try:
             with Image.open(source_path) as opened:
                 opened.load()
@@ -57,6 +59,8 @@ class EditService:
             )
         except (OSError, UnidentifiedImageError, ValueError) as exc:
             LOGGER.exception("Quick edit export failed: %s", source_path)
+            if not source_path.is_file():
+                raise MissingSourceError(MISSING_SOURCE_MESSAGE) from exc
             raise EditProcessingError("加工した画像を保存できませんでした。") from exc
 
         try:

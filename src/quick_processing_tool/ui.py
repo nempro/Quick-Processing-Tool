@@ -41,6 +41,13 @@ from PySide6.QtWidgets import (
 )
 
 from .errors import ProcessingError
+from .image_workspace import (
+    ImageWorkspace,
+    MISSING_SOURCE_MESSAGE,
+    MissingSourceError,
+    SourceImage,
+    require_source_file,
+)
 from .models import ImageInfo, OutputFormat, ProcessingOptions, ResizeMode, Transform
 from .naming import unique_output_path
 from .pipeline import process_image, read_image_info, write_processed
@@ -50,6 +57,7 @@ from .thumbnail_ui import ThumbnailPage
 from .edit_ui import QuickEditPage
 from .upscale_ui import UpscalePage
 from .pixel_editor_ui import PixelEditorPage
+from .source_ui import CurrentSourceCard
 from .ui_styles import INPUT_CONTROL_STYLE
 
 
@@ -411,6 +419,7 @@ class ProcessingWorker(QObject):
             row = self.row_indices[index]
             self.file_status.emit(row, "Processing", "")
             try:
+                require_source_file(path)
                 result = process_image(path, self.options)
                 if self.copy_mode:
                     self.copy_ready.emit(result.data)
@@ -421,11 +430,18 @@ class ProcessingWorker(QObject):
                     detail = str(destination)
                 succeeded += 1
                 self.file_status.emit(row, "Done", detail)
+            except MissingSourceError:
+                failed += 1
+                LOGGER.warning("Processing source missing: %s", path)
+                self.file_status.emit(row, "Missing", MISSING_SOURCE_MESSAGE)
             except Exception as exc:  # Worker must continue after a partial batch failure.
                 failed += 1
                 LOGGER.exception("Processing failed: %s", path)
-                message = str(exc) if isinstance(exc, ProcessingError) else f"処理に失敗しました: {path.name}"
-                self.file_status.emit(row, "Error", message)
+                if not path.is_file():
+                    self.file_status.emit(row, "Missing", MISSING_SOURCE_MESSAGE)
+                else:
+                    message = str(exc) if isinstance(exc, ProcessingError) else f"処理に失敗しました: {path.name}"
+                    self.file_status.emit(row, "Error", message)
             self.progress.emit(round((index + 1) * 100 / total))
         self.finished.emit(succeeded, failed)
 
@@ -437,6 +453,7 @@ class MainWindow(QMainWindow):
         self.resize(1180, 760)
         self.setMinimumSize(900, 620)
         self.setAcceptDrops(True)
+        self.workspace = ImageWorkspace(self)
         self.files: list[ImageInfo] = []
         self.current_index = -1
         self.custom_folder: Path | None = None
@@ -455,7 +472,7 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         self.open_action = QAction("画像を開く", self)
         self.open_action.setShortcut("Ctrl+O")
-        self.open_action.triggered.connect(self.open_files)
+        self.open_action.triggered.connect(self.open_source_image)
         self.export_action = QAction("画像を保存", self)
         self.export_action.setShortcut("Ctrl+S")
         self.export_action.triggered.connect(self.export_all)
@@ -477,11 +494,15 @@ class MainWindow(QMainWindow):
         self.thumbnail_page.processing_changed.connect(self._thumbnail_processing_changed)
         self.thumbnail_tab = self.navigation.addTab(self.thumbnail_page, "文字サムネ")
         self.edit_page = QuickEditPage()
+        self.edit_page.set_workspace_managed(True)
+        self.edit_page.source_change_requested.connect(self.set_current_source)
         self.edit_page.processing_changed.connect(self._edit_processing_changed)
         self.edit_page.palette_handoff_requested.connect(self._handoff_palette_to_pixel)
         self.edit_page.palette_open_requested.connect(self._open_pixel_tab_from_edit)
         self.image_edit_tab = self.navigation.addTab(self.edit_page, "画像加工")
         self.upscale_page = UpscalePage()
+        self.upscale_page.set_workspace_managed(True)
+        self.upscale_page.source_change_requested.connect(self.set_current_source)
         self.upscale_page.processing_changed.connect(self._upscale_processing_changed)
         self.upscale_tab = self.navigation.addTab(self.upscale_page, "高画質化")
         placeholder = QLabel("動画加工 · 今後追加予定")
@@ -489,9 +510,12 @@ class MainWindow(QMainWindow):
         self.video_tab = self.navigation.addTab(placeholder, "動画加工（今後追加予定）")
         self.navigation.setTabEnabled(self.video_tab, False)
         self.pixel_page = PixelEditorPage()
+        self.pixel_page.set_workspace_managed(True)
+        self.pixel_page.source_change_requested.connect(self.set_current_source)
         self.pixel_tab = self.navigation.addTab(self.pixel_page, "ドット絵")
         self.navigation.setTabToolTip(self.video_tab, "今後追加予定")
         self.navigation.currentChanged.connect(self._navigation_changed)
+        self.workspace.source_changed.connect(self._workspace_source_changed)
         self.setCentralWidget(self.navigation)
         self._navigation_changed(0)
 
@@ -561,6 +585,14 @@ class MainWindow(QMainWindow):
         guidance.setStyleSheet("color: #667085; padding-bottom: 4px;")
         layout.addWidget(heading)
         layout.addWidget(guidance)
+
+        self.quick_source_card = CurrentSourceCard()
+        self.quick_source_card.change_requested.connect(self.open_source_image)
+        layout.addWidget(self.quick_source_card)
+        self.quick_add_source_button = QPushButton("現在の画像を一覧へ追加")
+        self.quick_add_source_button.clicked.connect(self.add_current_source_to_quick)
+        self.quick_add_source_button.setEnabled(False)
+        layout.addWidget(self.quick_add_source_button)
 
         capacity_content = QWidget()
         self.capacity_form = QFormLayout(capacity_content)
@@ -724,6 +756,50 @@ class MainWindow(QMainWindow):
         return spin
 
     @Slot()
+    def open_source_image(self) -> None:
+        if not self._source_change_available():
+            return
+        name, _ = QFileDialog.getOpenFileName(
+            self,
+            "画像を開く",
+            "",
+            "画像ファイル (*.png *.jpg *.jpeg *.webp)",
+        )
+        if name:
+            self.set_current_source(Path(name))
+
+    @Slot(object)
+    def set_current_source(self, path: Path) -> None:
+        if not self._source_change_available():
+            return
+        try:
+            self.workspace.set_source(Path(path))
+        except MissingSourceError:
+            QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
+        except ProcessingError as exc:
+            QMessageBox.warning(self, "画像を開けません", str(exc))
+
+    @Slot(object)
+    def _workspace_source_changed(self, source: SourceImage) -> None:
+        self.quick_source_card.set_source(source)
+        self.quick_add_source_button.setEnabled(True)
+        if not self.files:
+            self.load_paths([source.path], update_workspace=False)
+        self.edit_page.set_current_source(source)
+        self.upscale_page.set_current_source(source)
+        self.pixel_page.set_current_source(source)
+        self.statusBar().showMessage(f"現在の画像を {source.filename} に変更しました")
+
+    @Slot()
+    def add_current_source_to_quick(self) -> None:
+        source = self.workspace.current
+        if source is not None:
+            if not source.path.is_file():
+                QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
+                return
+            self.load_paths([source.path], update_workspace=False)
+
+    @Slot()
     def open_files(self) -> None:
         names, _ = QFileDialog.getOpenFileNames(
             self,
@@ -765,7 +841,7 @@ class MainWindow(QMainWindow):
         else:
             event.ignore()
 
-    def load_paths(self, paths: list[Path]) -> None:
+    def load_paths(self, paths: list[Path], *, update_workspace: bool = True) -> None:
         if self._thread is not None:
             return
         valid: list[ImageInfo] = []
@@ -809,6 +885,8 @@ class MainWindow(QMainWindow):
                 "画像を保存" if count == 1 else f"{count}枚をまとめて保存"
             )
             self._update_quick_actions()
+            if update_workspace:
+                self.set_current_source(valid[0].path)
         elif duplicate_count:
             self.statusBar().showMessage("すでに読み込まれている画像です")
         if errors:
@@ -820,6 +898,8 @@ class MainWindow(QMainWindow):
             return
         self.current_index = self.file_tree.indexOfTopLevelItem(current)
         self._show_current()
+        if 0 <= self.current_index < len(self.files):
+            self.set_current_source(self.files[self.current_index].path)
 
     def _show_current(self) -> None:
         if not 0 <= self.current_index < len(self.files):
@@ -1006,6 +1086,12 @@ class MainWindow(QMainWindow):
                 self, "処理中", "現在の処理が終わるまでお待ちください。"
             )
             return
+        missing = [path for path in paths if not Path(path).is_file()]
+        if len(paths) == 1 and missing:
+            row = row_indices[0]
+            self._on_file_status(row, "Missing", MISSING_SOURCE_MESSAGE)
+            QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
+            return
         self.progress.setValue(0)
         self.open_action.setEnabled(False)
         self.export_action.setEnabled(False)
@@ -1056,14 +1142,28 @@ class MainWindow(QMainWindow):
         self._update_quick_actions()
 
     def _update_quick_actions(self) -> None:
-        enabled = self.navigation.currentIndex() == 0 and self._thread is None
-        self.open_action.setEnabled(enabled)
-        self.export_action.setEnabled(enabled and bool(self.files))
-        self.copy_action.setEnabled(enabled and bool(self.files))
-        self.reset_action.setEnabled(enabled)
-        if not enabled:
+        quick_enabled = self.navigation.currentIndex() == 0 and self._thread is None
+        global_open_enabled = self._source_change_available()
+        self.open_action.setEnabled(global_open_enabled)
+        self.export_action.setEnabled(quick_enabled and bool(self.files))
+        self.copy_action.setEnabled(quick_enabled and bool(self.files))
+        self.reset_action.setEnabled(quick_enabled)
+        if not quick_enabled:
             self.drop_zone.set_drag_active(False)
-        self.drop_zone.setEnabled(enabled)
+        self.drop_zone.setEnabled(quick_enabled)
+        self.quick_source_card.change_button.setEnabled(global_open_enabled)
+        self.quick_add_source_button.setEnabled(
+            global_open_enabled and self.workspace.current is not None
+        )
+
+    def _source_change_available(self) -> bool:
+        return (
+            self._thread is None
+            and self.thumbnail_page.can_close()
+            and self.edit_page.can_close()
+            and self.upscale_page.can_close()
+            and self.pixel_page.can_close()
+        )
 
     @Slot(bool)
     def _thumbnail_processing_changed(self, processing: bool) -> None:
@@ -1071,6 +1171,7 @@ class MainWindow(QMainWindow):
         self.navigation.setTabEnabled(self.upscale_tab, not processing)
         self.navigation.setTabEnabled(self.image_edit_tab, not processing)
         self.navigation.setTabEnabled(self.pixel_tab, not processing)
+        self._update_quick_actions()
 
     @Slot(bool)
     def _upscale_processing_changed(self, processing: bool) -> None:
@@ -1078,6 +1179,7 @@ class MainWindow(QMainWindow):
         self.navigation.setTabEnabled(self.thumbnail_tab, not processing)
         self.navigation.setTabEnabled(self.image_edit_tab, not processing)
         self.navigation.setTabEnabled(self.pixel_tab, not processing)
+        self._update_quick_actions()
 
     @Slot(object)
     def _handoff_palette_to_pixel(self, colors) -> None:
@@ -1094,6 +1196,7 @@ class MainWindow(QMainWindow):
         self.navigation.setTabEnabled(self.upscale_tab, not processing)
         self.navigation.setTabEnabled(self.image_edit_tab, True)
         self.navigation.setTabEnabled(self.pixel_tab, not processing)
+        self._update_quick_actions()
 
     @Slot(int, str, str)
     def _on_file_status(self, index: int, status: str, detail: str) -> None:
@@ -1101,6 +1204,7 @@ class MainWindow(QMainWindow):
             "Processing": "処理中",
             "Done": "完了",
             "Error": "エラー",
+            "Missing": "元画像なし",
         }.get(status, status)
         if 0 <= index < self.file_tree.topLevelItemCount():
             item = self.file_tree.topLevelItem(index)
