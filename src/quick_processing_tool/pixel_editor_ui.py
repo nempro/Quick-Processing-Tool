@@ -336,7 +336,12 @@ class PixelEditorPage(QWidget):
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(8, 8, 8, 8)
 
-        self.current_source_card = CurrentSourceCard(title_text="現在の画像：")
+        self.current_source_card = CurrentSourceCard(
+            title_text="元にする画像",
+            empty_button_text="画像を選ぶ",
+            source_button_text="別の画像を選ぶ",
+            button_on_separate_row=True,
+        )
         self.current_source_card.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
         )
@@ -355,7 +360,7 @@ class PixelEditorPage(QWidget):
         document_first_row = QHBoxLayout()
         document_first_row.setContentsMargins(0, 0, 0, 0)
         document_first_row.setSpacing(4)
-        document_heading = QLabel("編集中のドット絵：")
+        document_heading = QLabel("編集中のドット絵")
         document_heading.setMinimumWidth(0)
         document_heading.setStyleSheet("font-weight: 700; color: #182230; border: 0;")
         document_first_row.addWidget(document_heading)
@@ -375,9 +380,11 @@ class PixelEditorPage(QWidget):
         self.source_change_notice = QLabel()
         self.source_change_notice.setObjectName("pixelSourceChangeNotice")
         self.source_change_notice.setMinimumWidth(0)
-        self.source_change_notice.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
+        notice_policy = QSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
+        notice_policy.setHeightForWidth(True)
+        self.source_change_notice.setSizePolicy(notice_policy)
         self.source_change_notice.setWordWrap(True)
         self.source_change_notice.setStyleSheet(
             "QLabel#pixelSourceChangeNotice { color: #174a9c; background: #eef5ff; "
@@ -390,7 +397,7 @@ class PixelEditorPage(QWidget):
         current_source_actions = QVBoxLayout(self.current_source_usage)
         current_source_actions.setContentsMargins(7, 6, 7, 7)
         current_source_actions.setSpacing(4)
-        self.current_source_usage_heading = QLabel("この画像をどう使いますか？")
+        self.current_source_usage_heading = QLabel("この画像を使う")
         self.current_source_usage_heading.setStyleSheet("font-weight: 700; color: #182230;")
         self.current_source_usage_guidance = QLabel()
         self.current_source_usage_guidance.setWordWrap(True)
@@ -416,6 +423,7 @@ class PixelEditorPage(QWidget):
             source_use_row.addWidget(button, 1)
         current_source_actions.addLayout(source_use_row)
         self.current_source_usage.hide()
+        left_layout.addWidget(self.current_source_usage)
 
         tools = QGroupBox("ツール")
         self.tools_group = tools
@@ -578,7 +586,6 @@ class PixelEditorPage(QWidget):
         left_layout.addWidget(tools)
         left_layout.addWidget(view_group)
         left_layout.addWidget(canvas_group)
-        left_layout.addWidget(self.current_source_usage)
         left_layout.addWidget(palette_group)
         clear_frame = QFrame()
         clear_frame.setObjectName("pixelClearActions")
@@ -814,12 +821,14 @@ class PixelEditorPage(QWidget):
     @Slot()
     def _update_document_summary(self) -> None:
         filename = self._normalized_filename_stem()
-        display_name = f"{filename}.png" if filename else "ファイル名未設定"
+        if self._document_is_edited() or self._last_saved_result is not None:
+            display_name = f"{filename}.png" if filename else "ファイル名未設定"
+        else:
+            display_name = "新規キャンバス"
         self.document_name_label.set_value(display_name, display_name)
-        state = "編集中" if self._document_is_edited() else "新規キャンバス"
-        self.document_meta_label.setText(f"{self.canvas.width} × {self.canvas.height} / {state}")
+        self.document_meta_label.setText(f"{self.canvas.width} × {self.canvas.height}")
         self.document_meta_label.setToolTip(
-            f"{display_name}\n{self.canvas.width} × {self.canvas.height} / {state}"
+            f"{display_name}\n{self.canvas.width} × {self.canvas.height}"
         )
 
     def _hide_source_change_notice(self) -> None:
@@ -875,10 +884,11 @@ class PixelEditorPage(QWidget):
         self.current_source_card.set_source(source)
         if changed and (previous is not None or self._document_is_edited()):
             self.source_change_notice.setText(
-                "現在の画像を変更しました。編集中のドット絵はそのままです。"
-                "この画像を使う場合は下から選んでください。"
+                "元にする画像を変更しました\n"
+                "編集中のドット絵はそのままです"
             )
             self.source_change_notice.show()
+            self.source_change_notice.updateGeometry()
         self._update_current_source_usage()
 
     def _update_current_source_usage(self) -> None:
@@ -1285,6 +1295,7 @@ class PixelEditorPage(QWidget):
             self.saved_label.setStyleSheet("color: #137333; font-weight: 700;")
             self.saved_label.setText(f"✓ PNGを保存しました\n{result.output_path.name}\n{result.width} × {result.height} / {result.size_bytes:,} bytes")
             self._update_save_ui()
+            self._update_document_summary()
         except PixelExportError as exc:
             QMessageBox.warning(self, "保存エラー", str(exc))
 

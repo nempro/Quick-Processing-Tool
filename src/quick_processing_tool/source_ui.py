@@ -23,12 +23,18 @@ class CurrentSourceCard(QFrame):
         *,
         show_change_button: bool = True,
         title_text: str = "画像：",
+        empty_button_text: str = "変更",
+        source_button_text: str = "変更",
+        button_on_separate_row: bool = False,
     ) -> None:
         super().__init__()
         self.setObjectName("currentSourceCard")
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         self._source: SourceImage | None = None
+        self._empty_button_text = empty_button_text
+        self._source_button_text = source_button_text
+        self._button_on_separate_row = button_on_separate_row
         self.setStyleSheet(
             "QFrame#currentSourceCard { background: #f5f8fc; border: 1px solid #c8d4e3; "
             "border-radius: 8px; }"
@@ -51,9 +57,15 @@ class CurrentSourceCard(QFrame):
         self.change_button.setObjectName("currentSourceChange")
         self.change_button.setMinimumWidth(0)
         self.change_button.setMaximumHeight(32)
-        self.change_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.change_button.setToolTip("別の画像を選びます")
-        self.change_button.setAccessibleName("別の画像を選ぶ")
+        if button_on_separate_row:
+            self.change_button.setMinimumHeight(30)
+            self.change_button.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+        else:
+            self.change_button.setSizePolicy(
+                QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+            )
         self.change_button.setStyleSheet(
             "QPushButton#currentSourceChange { min-height: 26px; max-height: 30px; padding: 1px 8px; "
             "background: #f5f7fa; color: #273142; border: 1px solid #7b899a; border-radius: 5px; }"
@@ -63,16 +75,37 @@ class CurrentSourceCard(QFrame):
         )
         self.change_button.clicked.connect(self.change_requested)
         self.change_button.setVisible(show_change_button)
-        first_row.addWidget(self.change_button)
+        if not button_on_separate_row:
+            first_row.addWidget(self.change_button)
         layout.addLayout(first_row)
         self.meta_label = QLabel("画像を選択してください")
         self.meta_label.setMinimumWidth(0)
         self.meta_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.meta_label.setStyleSheet("color: #667085; border: 0;")
         layout.addWidget(self.meta_label)
+        if button_on_separate_row:
+            layout.addWidget(self.change_button)
+        self._sync_change_button(has_source=False)
+
+    @staticmethod
+    def _button_tooltip(text: str) -> str:
+        if text.endswith("選ぶ"):
+            return f"{text[:-2]}選びます"
+        return text
+
+    def _sync_change_button(self, *, has_source: bool) -> None:
+        text = self._source_button_text if has_source else self._empty_button_text
+        self.change_button.setText(text)
+        if text == "変更":
+            self.change_button.setToolTip("別の画像を選びます")
+            self.change_button.setAccessibleName("別の画像を選ぶ")
+        else:
+            self.change_button.setToolTip(self._button_tooltip(text))
+            self.change_button.setAccessibleName(text)
 
     def set_source(self, source: SourceImage | None) -> None:
         self._source = source
+        self._sync_change_button(has_source=source is not None)
         if source is None:
             self.name_label.setText("未選択")
             self.name_label.setToolTip("")

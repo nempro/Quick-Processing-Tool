@@ -189,20 +189,30 @@ def test_compact_source_and_pixel_first_viewport_layout(app: QApplication, tmp_p
     try:
         window.resize(width, 760)
         window.set_current_source(source)
+        window.navigation.setCurrentIndex(window.pixel_tab)
         window.show()
         app.processEvents()
         for card in (
             window.quick_source_card,
             window.edit_page.current_source_card,
             window.upscale_page.current_source_card,
-            window.pixel_page.current_source_card,
         ):
             assert card.sizeHint().height() <= 64
+            assert card.title_label.text() == "画像："
+            assert card.change_button.text() == "変更"
             assert card.change_button.sizeHint().height() <= 32
             assert card.change_button.toolTip() == "別の画像を選びます"
             assert card.change_button.accessibleName() == "別の画像を選ぶ"
             assert str(source.resolve()) in card.name_label.toolTip()
             assert card.meta_label.text() == "120 × 90 / PNG"
+
+        pixel_card = window.pixel_page.current_source_card
+        assert pixel_card.title_label.text() == "元にする画像"
+        assert pixel_card.change_button.text() == "別の画像を選ぶ"
+        assert pixel_card.change_button.height() >= 30
+        assert pixel_card.change_button.geometry().top() > pixel_card.meta_label.geometry().bottom()
+        assert str(source.resolve()) in pixel_card.name_label.toolTip()
+        assert pixel_card.meta_label.text() == "120 × 90 / PNG"
 
         window.navigation.setCurrentIndex(window.pixel_tab)
         app.processEvents()
@@ -233,12 +243,12 @@ def test_compact_source_and_pixel_first_viewport_layout(app: QApplication, tmp_p
             window.pixel_page.current_reference_button.geometry().top()
             == window.pixel_page.current_pixels_button.geometry().top()
         )
-        redo_bottom = (
-            window.pixel_page.redo_button.mapTo(content, QPoint(0, 0)).y()
-            + window.pixel_page.redo_button.height()
-        )
-        assert redo_bottom <= scroll.viewport().height()
+        assert window.pixel_page.current_source_usage.geometry().top() < window.pixel_page.tools_group.geometry().top()
     finally:
+        deadline = time.monotonic() + 3.0
+        while window.edit_page._preview_thread is not None and time.monotonic() < deadline:
+            app.processEvents()
+        assert window.edit_page._preview_thread is None
         window.close()
 
 
