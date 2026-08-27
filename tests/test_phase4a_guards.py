@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from threading import Event
 
@@ -173,4 +174,8 @@ def test_edit_image_replacement_resets_text_and_preserves_committed_text(qt_app:
     assert page.source_path == second.resolve()
     assert page.settings().text.enabled is False
     assert page.text_edit.toPlainText() == ""
+    deadline = time.monotonic() + 3.0
+    while page._preview_thread is not None and time.monotonic() < deadline:
+        qt_app.processEvents()
+    assert page._preview_thread is None
     page.close()

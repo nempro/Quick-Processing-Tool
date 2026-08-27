@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -22,6 +23,16 @@ def app() -> QApplication:
 def window(app: QApplication) -> MainWindow:
     result = MainWindow()
     yield result
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and (
+        result._quick_preview_thread is not None
+        or result.edit_page._preview_thread is not None
+        or result.pixel_page._import_thread is not None
+    ):
+        app.processEvents()
+    assert result._quick_preview_thread is None
+    assert result.edit_page._preview_thread is None
+    assert result.pixel_page._import_thread is None
     result.close()
     app.processEvents()
 

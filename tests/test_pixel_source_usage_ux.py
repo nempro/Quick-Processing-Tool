@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -23,6 +24,14 @@ def app() -> QApplication:
 def make_image(path: Path, size=(64, 48), color=(30, 80, 130, 255)) -> Path:
     Image.new("RGBA", size, color).save(path)
     return path
+
+
+def wait_for_import(app: QApplication, page: PixelEditorPage, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while page._import_thread is not None and time.monotonic() < deadline:
+        app.processEvents()
+    app.processEvents()
+    assert page._import_thread is None
 
 
 def test_usage_frame_hidden_without_source_and_explicit_when_loaded(
@@ -88,6 +97,7 @@ def test_passive_source_replace_preserves_complete_pixel_state(
     page = PixelEditorPage()
     page.canvas.stroke((1, 1), (5, 1), (1, 2, 3, 255))
     page._load_reference_path(first_path)
+    wait_for_import(app, page)
     page.receive_palette(((1, 2, 3), (4, 5, 6)))
     page.filename_edit.setText("keep-name")
     page.output_folder = tmp_path / "keep-folder"
@@ -151,6 +161,10 @@ def test_usage_frame_fits_without_horizontal_scroll_or_preview_regression(
         assert page.current_pixels_button.width() <= page.current_source_usage.width()
         assert page.canvas_view.width() >= 350
     finally:
+        deadline = time.monotonic() + 3.0
+        while window.edit_page._preview_thread is not None and time.monotonic() < deadline:
+            app.processEvents()
+        assert window.edit_page._preview_thread is None
         window.close()
         window.deleteLater()
         app.processEvents()

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QThread, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractScrollArea, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from .pixel_editor.canvas import MAX_SIZE, MIN_SIZE, PixelCanvas, pixel_from_display
-from .pixel_editor.importers import load_reference, load_rgba
+from .pixel_editor.importers import SUPPORTED_IMAGE_FORMATS, load_reference, load_rgba
 from .pixel_editor.models import PixelExportResult, PixelTool, ReferenceImage
 from .pixel_editor.service import PixelExportError, save_png
 from .naming import normalize_filename_stem
@@ -23,6 +23,7 @@ from .color_picker import choose_color
 from .errors import ProcessingError
 from .image_workspace import MISSING_SOURCE_MESSAGE, MissingSourceError, SourceImage, read_source_image
 from .source_ui import CurrentSourceCard
+from .preview_activity import PreviewActivityIndicator
 
 
 def _qimage(image: Image.Image) -> QImage:
@@ -31,6 +32,35 @@ def _qimage(image: Image.Image) -> QImage:
 
 
 SUPPORTED_DROP_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+INVALID_IMAGE_MESSAGE = "PNG / JPEG / WebP画像を選んでください。"
+
+
+class PixelImportWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(object)
+    finished = Signal()
+
+    def __init__(self, request) -> None:
+        super().__init__()
+        self.request = request
+
+    @Slot()
+    def run(self) -> None:
+        generation, request_id, mode, path, identity, canvas_size, opacity, activity_token = self.request
+        try:
+            if mode == "reference":
+                reference = load_reference(path, canvas_size, opacity)
+                pixels = reference.image.tobytes()
+            else:
+                canvas = PixelCanvas(*canvas_size)
+                canvas.import_image(load_rgba(path), commit=False)
+                pixels = canvas.snapshot()
+            self.succeeded.emit((generation, request_id, mode, path, identity, canvas_size, opacity, activity_token, pixels))
+        except Exception as exc:
+            message = MISSING_SOURCE_MESSAGE if not path.is_file() else f"画像を読み込めませんでした: {exc}"
+            self.failed.emit((generation, request_id, mode, path, identity, canvas_size, opacity, activity_token, message))
+        finally:
+            self.finished.emit()
 
 
 def local_image_paths(mime_data) -> list[Path]:
@@ -300,6 +330,15 @@ class PixelEditorPage(QWidget):
         self._palette_selected_index = -1
         self._palette_chip_buttons: list[QToolButton] = []
         self.reference: ReferenceImage | None = None
+        self._import_thread: QThread | None = None
+        self._import_worker: PixelImportWorker | None = None
+        self._import_generation = 0
+        self._import_request_id = 0
+        self._import_active_request = None
+        self._import_pending_request = None
+        self._import_active_result = None
+        self._import_activity_token: int | None = None
+        self._committing_import = False
         self.import_choice_provider = lambda path: PixelImportChoiceDialog.choose(path, self)
         self.canvas = PixelCanvas()
         self.canvas_view = PixelCanvasView(self.canvas)
@@ -346,14 +385,20 @@ class PixelEditorPage(QWidget):
         self.current_pixels_button.setEnabled(False)
         current_source_actions.addWidget(self.current_source_usage_heading)
         current_source_actions.addWidget(self.current_source_usage_guidance)
-        current_source_actions.addWidget(self.current_reference_button)
-        current_source_actions.addWidget(self.current_pixels_button)
+        source_use_row = QHBoxLayout()
+        source_use_row.setSpacing(4)
+        for button in (self.current_reference_button, self.current_pixels_button):
+            button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            button.setStyleSheet("font-size: 11px; padding: 3px 2px; min-height: 30px;")
+            source_use_row.addWidget(button, 1)
+        current_source_actions.addLayout(source_use_row)
         self.current_source_usage.hide()
-        left_layout.addWidget(self.current_source_usage)
 
         tools = QGroupBox("ツール")
         self.tools_group = tools
         tl = QVBoxLayout(tools)
+        tl.setContentsMargins(7, 7, 7, 7)
+        tl.setSpacing(5)
         self.pencil_button = QPushButton("鉛筆")
         self.eraser_button = QPushButton("消しゴム")
         self.eyedropper_button = QPushButton("スポイト")
@@ -364,17 +409,34 @@ class PixelEditorPage(QWidget):
             PixelTool.ERASER: self.eraser_button,
             PixelTool.EYEDROPPER: self.eyedropper_button,
         }
+        tool_row = QHBoxLayout()
+        tool_row.setSpacing(0)
+        tool_help = {
+            PixelTool.PENCIL: "鉛筆で描画します",
+            PixelTool.ERASER: "描いたドットを消します",
+            PixelTool.EYEDROPPER: "キャンバスから色を選びます",
+        }
         for tool, button in self._tool_buttons.items():
             button.setCheckable(True)
+            button.setMinimumHeight(30)
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            button.setToolTip(tool_help[tool])
+            button.setAccessibleName(f"描画ツール: {button.text()}")
             self.tool_group.addButton(button)
             button.clicked.connect(lambda checked=False, t=tool: self._set_tool(t))
-            tl.addWidget(button)
+            tool_row.addWidget(button, 1)
+        tools.setStyleSheet(
+            "QPushButton { min-height: 30px; padding: 3px 2px; border-radius: 3px; }"
+            "QPushButton:checked { background: #315fbd; color: white; border: 2px solid #173a82; font-weight: 700; }"
+        )
+        tl.addLayout(tool_row)
         self.pencil_button.setChecked(True)
         size_row = QHBoxLayout()
         size_row.addWidget(QLabel("太さ"))
         self.size_combo = QComboBox()
         self.size_combo.addItems(["1", "2", "3"])
-        size_row.addWidget(self.size_combo)
+        size_row.addWidget(self.size_combo, 1)
         tl.addLayout(size_row)
         color_row = QHBoxLayout()
         color_row.addWidget(QLabel("現在色"))
@@ -382,28 +444,47 @@ class PixelEditorPage(QWidget):
         self.current_color_button.clicked.connect(self.choose_current_color)
         color_row.addWidget(self.current_color_button, 1)
         tl.addLayout(color_row)
-        left_layout.addWidget(tools)
 
         canvas_group = QGroupBox("キャンバス")
         self.canvas_group = canvas_group
-        cl = QFormLayout(canvas_group)
+        cl = QVBoxLayout(canvas_group)
+        cl.setContentsMargins(7, 7, 7, 7)
+        cl.setSpacing(5)
         self.preset_combo = QComboBox()
+        self.preset_combo.setMinimumWidth(0)
+        self.preset_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.preset_combo.addItems(["32 × 32", "64 × 64", "128 × 128", "カスタム"])
         self.preset_combo.setCurrentIndex(2)
         self.preset_combo.currentIndexChanged.connect(self._preset_changed)
-        cl.addRow("サイズ", self.preset_combo)
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(self.preset_combo, 1)
         self.width_spin = QSpinBox()
+        self.width_spin.setMinimumWidth(0)
+        self.width_spin.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.width_spin.setRange(MIN_SIZE, MAX_SIZE)
         self.width_spin.setValue(128)
         self.height_spin = QSpinBox()
+        self.height_spin.setMinimumWidth(0)
+        self.height_spin.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.height_spin.setRange(MIN_SIZE, MAX_SIZE)
         self.height_spin.setValue(128)
-        cl.addRow("幅", self.width_spin)
-        cl.addRow("高さ", self.height_spin)
         self.new_button = QPushButton("新規キャンバス")
         self.new_button.clicked.connect(self.new_canvas)
-        cl.addRow(self.new_button)
-        left_layout.addWidget(canvas_group)
+        self.new_button.setMinimumWidth(110)
+        self.new_button.setMinimumHeight(30)
+        self.new_button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.new_button.setStyleSheet("font-size: 11px; padding: 3px 2px;")
+        preset_row.addWidget(self.new_button)
+        cl.addLayout(preset_row)
+        self.custom_size_widget = QWidget()
+        custom_size_row = QHBoxLayout(self.custom_size_widget)
+        custom_size_row.setContentsMargins(0, 0, 0, 0)
+        custom_size_row.addWidget(QLabel("幅"))
+        custom_size_row.addWidget(self.width_spin, 1)
+        custom_size_row.addWidget(QLabel("高さ"))
+        custom_size_row.addWidget(self.height_spin, 1)
+        self.custom_size_widget.hide()
+        cl.addWidget(self.custom_size_widget)
 
         io_group = QGroupBox("画像")
         il = QVBoxLayout(io_group)
@@ -413,9 +494,9 @@ class PixelEditorPage(QWidget):
         self.pixelize_button.clicked.connect(self.load_pixels)
         il.addWidget(self.reference_button)
         il.addWidget(self.pixelize_button)
-        left_layout.addWidget(io_group)
 
         palette_group = QGroupBox("パレット")
+        self.palette_group = palette_group
         pl = QVBoxLayout(palette_group)
         self.palette_status_label = QLabel("画像加工からパレットを受け取ると、ここに並びます。")
         self.palette_status_label.setWordWrap(True)
@@ -442,36 +523,50 @@ class PixelEditorPage(QWidget):
         self.palette_clear_button.clicked.connect(self.clear_palette)
         palette_footer.addWidget(self.palette_clear_button)
         pl.addLayout(palette_footer)
-        left_layout.addWidget(palette_group)
 
         view_group = QGroupBox("表示")
         self.view_group = view_group
         vl = QVBoxLayout(view_group)
+        vl.setContentsMargins(7, 7, 7, 7)
+        vl.setSpacing(5)
         self.zoom_combo = QComboBox()
         self.zoom_combo.addItems(["Fit", "2x", "4x", "8x", "16x"])
         self.zoom_combo.setCurrentIndex(2)
         self.zoom_combo.currentIndexChanged.connect(self._zoom_changed)
-        vl.addWidget(self.zoom_combo)
+        view_row = QHBoxLayout()
+        view_row.addWidget(QLabel("倍率"))
+        view_row.addWidget(self.zoom_combo, 1)
         self.grid_check = QCheckBox("グリッド")
         self.grid_check.setChecked(True)
         self.grid_check.toggled.connect(lambda value: setattr(self.canvas_view, "grid_enabled", value) or self.canvas_view.viewport().update())
-        vl.addWidget(self.grid_check)
+        view_row.addWidget(self.grid_check)
+        vl.addLayout(view_row)
         self.undo_button = QPushButton("元に戻す")
         self.undo_button.clicked.connect(self.undo)
         self.redo_button = QPushButton("やり直す")
         self.redo_button.clicked.connect(self.redo)
         self.clear_button = QPushButton("全消去")
         self.clear_button.clicked.connect(self.clear)
-        vl.addWidget(self.undo_button)
-        vl.addWidget(self.redo_button)
-        left_layout.addWidget(view_group)
+        history_row = QHBoxLayout()
+        for button in (self.undo_button, self.redo_button):
+            button.setMinimumWidth(0)
+            button.setMinimumHeight(30)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            history_row.addWidget(button, 1)
+        self.undo_button.setToolTip("直前の操作を元に戻します")
+        self.undo_button.setAccessibleName("元に戻す")
+        self.redo_button.setToolTip("元に戻した操作をやり直します")
+        self.redo_button.setAccessibleName("やり直す")
+        vl.addLayout(history_row)
 
         # Keep the high-frequency controls in the first viewport and destructive
         # canvas clearing separate at the bottom.
-        left_layout.removeWidget(self.current_source_usage)
-        left_layout.removeWidget(view_group)
-        left_layout.insertWidget(2, view_group)
-        left_layout.insertWidget(4, self.current_source_usage)
+        left_layout.addWidget(tools)
+        left_layout.addWidget(view_group)
+        left_layout.addWidget(canvas_group)
+        left_layout.addWidget(self.current_source_usage)
+        left_layout.addWidget(io_group)
+        left_layout.addWidget(palette_group)
         clear_frame = QFrame()
         clear_frame.setObjectName("pixelClearActions")
         clear_layout = QVBoxLayout(clear_frame)
@@ -507,6 +602,8 @@ class PixelEditorPage(QWidget):
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.addWidget(QLabel("実寸プレビュー"))
+        self.preview_activity = PreviewActivityIndicator()
+        rl.addWidget(self.preview_activity)
         self.preview_size_label = QLabel()
         rl.addWidget(self.preview_size_label)
         self.preview_hint_label = QLabel("現在色: #000000")
@@ -584,6 +681,8 @@ class PixelEditorPage(QWidget):
         self._refresh()
 
     def _set_tool(self, tool):
+        if self._import_thread is not None:
+            return
         tool = PixelTool(tool)
         self.canvas_view.tool = tool
         button = self._tool_buttons.get(tool)
@@ -612,19 +711,16 @@ class PixelEditorPage(QWidget):
 
     def _handle_dropped_path(self, path):
         path = Path(path)
-        if path.suffix.lower() not in SUPPORTED_DROP_SUFFIXES or not path.is_file():
+        if not self._preflight_import(path):
             return
-        if self._read_valid_import_source(path) is None:
-            return
-        if self._workspace_managed:
-            self.source_change_requested.emit(path)
         choice = self.import_choice_provider(path)
         if choice == "reference":
-            self._load_reference_path(path)
+            self._queue_import("reference", path, preflight=False)
         elif choice == "pixels":
-            self._load_pixels_path(path)
+            self._queue_import("pixels", path, preflight=False)
 
     def _preset_changed(self, index):
+        self.custom_size_widget.setVisible(index == 3)
         if index < 3:
             self.width_spin.setValue((32, 64, 128)[index])
             self.height_spin.setValue((32, 64, 128)[index])
@@ -656,6 +752,8 @@ class PixelEditorPage(QWidget):
         for button_index, button in enumerate(self._palette_chip_buttons):
             button.setChecked(button_index == index)
             button.setText("✓" if button_index == index else "")
+            state = "選択中" if button_index == index else "未選択"
+            button.setAccessibleName(f"パレット {button_index + 1}: {button.toolTip()}・{state}")
         self._palette_button_group.setExclusive(previous)
 
     def _set_current_color(self, color: QColor, *, palette_index: int = -1, message: str | None = None) -> None:
@@ -684,6 +782,9 @@ class PixelEditorPage(QWidget):
             self.palette_guidance_label.setText("現在のキャンバスや下絵はそのままです。パレットだけを更新しました。")
 
     def new_canvas(self):
+        if self._import_thread is not None:
+            return
+        self._invalidate_import_requests()
         self.canvas = PixelCanvas(self.width_spin.value(), self.height_spin.value())
         self.canvas_view.set_canvas(self.canvas)
         self.reference = None
@@ -694,69 +795,38 @@ class PixelEditorPage(QWidget):
         self._refresh()
 
     def clear(self):
+        if self._import_thread is not None:
+            return
         self.canvas.clear()
         self._update_palette_guidance()
         self._refresh()
 
     def undo(self):
+        if self._import_thread is not None:
+            return
         self.canvas.undo()
         self._refresh()
 
     def redo(self):
+        if self._import_thread is not None:
+            return
         self.canvas.redo()
         self._refresh()
 
     def _load_reference_path(self, path: Path):
-        try:
-            reference = load_reference(path, (self.canvas.width, self.canvas.height), self.opacity_slider.value())
-        except (OSError, ValueError):
-            if not path.is_file():
-                QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
-            else:
-                QMessageBox.warning(self, "画像を開けません", "PNG / JPEG / WebP画像を選んでください。")
-            return False
-        self.reference = reference
-        self.canvas_view.reference = self.reference
-        self.source_path = path
-        self._set_filename_default(path)
-        self._update_palette_guidance()
-        self._refresh()
-        return True
+        return self._queue_import("reference", Path(path))
 
     def load_reference(self):
         path, _ = QFileDialog.getOpenFileName(self, "下絵を読み込む", "", "画像 (*.png *.jpg *.jpeg *.webp)")
         if path:
-            if self._read_valid_import_source(Path(path)) is None:
-                return
-            if self._workspace_managed:
-                self.source_change_requested.emit(Path(path))
             self._load_reference_path(Path(path))
 
     def _load_pixels_path(self, path: Path):
-        try:
-            image = load_rgba(path)
-        except (OSError, ValueError):
-            if not path.is_file():
-                QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
-            else:
-                QMessageBox.warning(self, "画像を開けません", "PNG / JPEG / WebP画像を選んでください。")
-            return False
-        self.canvas.import_image(image)
-        self.source_path = path
-        self.reference = None
-        self.canvas_view.reference = None
-        self._set_filename_default(path)
-        self._update_palette_guidance()
-        self._refresh()
-        return True
+        return self._queue_import("pixels", Path(path))
 
     def load_pixels(self):
         path, _ = QFileDialog.getOpenFileName(self, "ドット化して編集", "", "画像 (*.png *.jpg *.jpeg *.webp)")
         if path:
-            if self._read_valid_import_source(Path(path)) is None:
-                return
-            if self._workspace_managed:
-                self.source_change_requested.emit(Path(path))
             self._load_pixels_path(Path(path))
 
     def set_workspace_managed(self, managed: bool = True) -> None:
@@ -765,6 +835,10 @@ class PixelEditorPage(QWidget):
     @Slot(object)
     def set_current_source(self, source: SourceImage) -> None:
         """Update only passive source UI; never mutate canvas/reference/history."""
+        if not self._committing_import and (
+            self._current_source is None or self._current_source.document_id != source.document_id
+        ):
+            self._invalidate_import_requests()
         self._current_source = source
         self.current_source_card.set_source(source)
         self._update_current_source_usage()
@@ -843,6 +917,183 @@ class PixelEditorPage(QWidget):
             return
         self._load_pixels_path(self._current_source.path)
 
+    @staticmethod
+    def _import_source_identity(path: Path):
+        stat = path.stat()
+        return str(path.resolve()), stat.st_mtime_ns, stat.st_size
+
+    def _preflight_import(self, path: Path) -> bool:
+        try:
+            if path.suffix.lower() not in SUPPORTED_DROP_SUFFIXES:
+                raise ValueError(INVALID_IMAGE_MESSAGE)
+            if not path.is_file():
+                raise MissingSourceError(MISSING_SOURCE_MESSAGE)
+            with Image.open(path) as opened:
+                if (opened.format or "").upper() not in SUPPORTED_IMAGE_FORMATS:
+                    raise ValueError(INVALID_IMAGE_MESSAGE)
+                opened.verify()
+            return True
+        except (MissingSourceError, FileNotFoundError, OSError):
+            if not path.is_file():
+                QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
+            else:
+                QMessageBox.warning(self, "画像を開けません", INVALID_IMAGE_MESSAGE)
+            return False
+        except Exception:
+            QMessageBox.warning(self, "画像を開けません", INVALID_IMAGE_MESSAGE)
+            return False
+
+    def _queue_import(self, mode: str, path: Path, *, preflight: bool = True) -> bool:
+        if preflight and not self._preflight_import(path):
+            return False
+        try:
+            identity = self._import_source_identity(path)
+        except OSError:
+            QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
+            return False
+        self._import_request_id += 1
+        activity_token = self.preview_activity.begin(
+            "下絵を準備しています" if mode == "reference" else "画像をドット化しています"
+        )
+        self._import_activity_token = activity_token
+        request = (
+            self._import_generation,
+            self._import_request_id,
+            mode,
+            path.resolve(),
+            identity,
+            (self.canvas.width, self.canvas.height),
+            self.opacity_slider.value(),
+            activity_token,
+        )
+        if self._import_thread is not None:
+            self._import_pending_request = request
+            return True
+        self._start_import_request(request)
+        return True
+
+    def _start_import_request(self, request) -> None:
+        self._import_active_request = request
+        self._import_active_result = None
+        thread = QThread(self)
+        worker = PixelImportWorker(request)
+        self._import_thread = thread
+        self._import_worker = worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(lambda payload: self._capture_import_result("success", payload))
+        worker.failed.connect(lambda payload: self._capture_import_result("failed", payload))
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(lambda t=thread, w=worker: self._finalize_import_request(t, w))
+        thread.finished.connect(thread.deleteLater)
+        self._set_import_processing(True)
+        thread.start()
+
+    def _capture_import_result(self, kind: str, payload) -> None:
+        self._import_active_result = (kind, payload)
+
+    def _import_request_is_current(self, request) -> bool:
+        generation, _request_id, _mode, path, identity, canvas_size, _opacity, _token = request
+        if generation != self._import_generation or canvas_size != (self.canvas.width, self.canvas.height):
+            return False
+        try:
+            return identity == self._import_source_identity(path)
+        except OSError:
+            return False
+
+    def _import_request_owns_ui(self, request) -> bool:
+        generation, request_id, *_rest = request
+        return generation == self._import_generation and request_id == self._import_request_id
+
+    def _finalize_import_request(self, thread: QThread, worker: PixelImportWorker) -> None:
+        if thread is not self._import_thread:
+            return
+        request = self._import_active_request
+        result = self._import_active_result
+        self._import_thread = None
+        self._import_worker = None
+        self._import_active_request = None
+        self._import_active_result = None
+        if self._import_pending_request is not None:
+            pending = self._import_pending_request
+            self._import_pending_request = None
+            self._start_import_request(pending)
+            return
+        owns_ui = request is not None and self._import_request_owns_ui(request)
+        if owns_ui:
+            activity_token = request[-1]
+            if result is None:
+                result = ("failed", (*request, "画像の読み込みを完了できませんでした。"))
+            kind, payload = result
+            if kind == "success" and self._import_request_is_current(request):
+                _generation, _request_id, mode, path, _identity, canvas_size, opacity, _token, pixels = payload
+                if self._workspace_managed:
+                    self._committing_import = True
+                    try:
+                        self.source_change_requested.emit(path)
+                    finally:
+                        self._committing_import = False
+                image = Image.frombytes("RGBA", canvas_size, pixels)
+                if mode == "reference":
+                    self.reference = ReferenceImage(image, opacity)
+                    self.canvas_view.reference = self.reference
+                else:
+                    self.canvas.restore(pixels)
+                    self.canvas.history.commit(pixels)
+                    self.reference = None
+                    self.canvas_view.reference = None
+                self.source_path = path
+                self._set_filename_default(path)
+                self._update_palette_guidance()
+                self._refresh()
+                self.preview_hint_label.setStyleSheet("color: #667085;")
+                self.preview_hint_label.setText(f"現在色: {self._current_color_hex(QColor(*self.canvas_view.color))}")
+                self.preview_activity.complete(activity_token)
+            else:
+                if kind == "success":
+                    path = request[3]
+                    message = MISSING_SOURCE_MESSAGE if not path.is_file() else "元画像が変更されたため、読み込み結果を適用しませんでした。"
+                else:
+                    message = payload[-1]
+                self.preview_hint_label.setStyleSheet("color: #c62828; font-weight: 700;")
+                self.preview_hint_label.setText(message)
+                if message == MISSING_SOURCE_MESSAGE:
+                    QMessageBox.warning(self, "元画像が見つかりません", MISSING_SOURCE_MESSAGE)
+                else:
+                    QMessageBox.warning(self, "画像を開けません", message)
+                self.preview_activity.fail(activity_token)
+            if self._import_activity_token == activity_token:
+                self._import_activity_token = None
+        self._set_import_processing(False)
+
+    def _set_import_processing(self, processing: bool) -> None:
+        for widget in (
+            self.canvas_view,
+            self.tools_group,
+            self.view_group,
+            self.canvas_group,
+            self.palette_group,
+            self.clear_button,
+            self.reference_check,
+            self.opacity_slider,
+            self.filename_edit,
+            self.choose_folder_button,
+            self.save_button,
+            self.new_button,
+        ):
+            widget.setEnabled(not processing)
+        self.processing_changed.emit(processing)
+        if not processing:
+            self._update_current_source_usage()
+            self._update_save_ui()
+
+    def _invalidate_import_requests(self) -> None:
+        self._import_generation += 1
+        self._import_pending_request = None
+        self.preview_activity.invalidate()
+        self._import_activity_token = None
+
     def _reference_visibility(self, value):
         self.canvas_view.reference_visible = value
         self.canvas_view.viewport().update()
@@ -856,6 +1107,8 @@ class PixelEditorPage(QWidget):
             self._refresh()
 
     def choose_current_color(self) -> None:
+        if self._import_thread is not None:
+            return
         color = choose_color(
             QColor(*self.canvas_view.color),
             self,
@@ -866,12 +1119,16 @@ class PixelEditorPage(QWidget):
             self._set_current_color(color)
 
     def _on_canvas_color_picked(self, color: QColor) -> None:
+        if self._import_thread is not None:
+            return
         self._set_current_color(color)
 
     def set_palette(self, colors) -> None:
         self.receive_palette(colors)
 
     def receive_palette(self, colors) -> None:
+        if self._import_thread is not None:
+            return
         self._received_palette = tuple(tuple(color) for color in colors or ())
         self._set_palette_selection(-1)
         self._rebuild_palette_chips()
@@ -900,6 +1157,10 @@ class PixelEditorPage(QWidget):
             button.setCheckable(True)
             button.setText("")
             button.setToolTip(f"#{color[0]:02X}{color[1]:02X}{color[2]:02X}")
+            button.setAccessibleName(
+                f"パレット {index + 1}: {button.toolTip()}・"
+                f"{'選択中' if index == self._palette_selected_index else '未選択'}"
+            )
             button.setFixedSize(28, 28)
             button.setStyleSheet(
                 f"QToolButton {{ background: rgb{color}; color: {contrast}; border: 1px solid #65768a; border-radius: 6px; font-size: 14px; font-weight: 800; }}"
@@ -915,6 +1176,8 @@ class PixelEditorPage(QWidget):
         self._set_current_color(QColor(color[0], color[1], color[2], 255), palette_index=index)
 
     def clear_palette(self) -> None:
+        if self._import_thread is not None:
+            return
         self._received_palette = ()
         self._set_palette_selection(-1)
         self._rebuild_palette_chips()
@@ -1008,7 +1271,10 @@ class PixelEditorPage(QWidget):
         super().resizeEvent(event)
 
     def can_close(self):
+        return self._import_thread is None
+
+    def can_replace_source(self):
         return True
 
     def cleanup(self):
-        return None
+        self._invalidate_import_requests()

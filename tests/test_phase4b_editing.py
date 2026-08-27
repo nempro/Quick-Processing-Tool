@@ -453,10 +453,19 @@ def test_palette_worker_stale_result_and_error_are_ignored_or_localized(qt_app) 
 
 def _wait_for_palette_thread_idle(qt_app, page, timeout: float = 3.0) -> None:
     deadline = time.monotonic() + timeout
-    while page._palette_thread is not None and time.monotonic() < deadline:
+    while (page._palette_thread is not None or page._preview_thread is not None) and time.monotonic() < deadline:
         qt_app.processEvents()
     qt_app.processEvents()
     assert page._palette_thread is None
+    assert page._preview_thread is None
+
+
+def _wait_for_edit_preview_idle(qt_app, page, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while page._preview_thread is not None and time.monotonic() < deadline:
+        qt_app.processEvents()
+    qt_app.processEvents()
+    assert page._preview_thread is None
 
 
 def test_palette_thread_runs_off_gui_thread(qt_app, tmp_path: Path, monkeypatch) -> None:
@@ -833,6 +842,7 @@ def test_main_window_extract_palette_does_not_switch_tabs(qt_app, tmp_path: Path
     window.edit_page._on_palette_extracted((*token, mapping))
     qt_app.processEvents()
     assert window.navigation.currentIndex() == window.image_edit_tab
+    _wait_for_edit_preview_idle(qt_app, window.edit_page)
     window.close()
 
 
@@ -843,6 +853,10 @@ def test_main_window_palette_handoff_preserves_pixel_source_without_switching_ta
     source = tmp_path / "source.png"
     Image.new("RGB", (8, 8), "blue").save(source)
     window.pixel_page._load_reference_path(source)
+    deadline = time.monotonic() + 3.0
+    while window.pixel_page._import_thread is not None and time.monotonic() < deadline:
+        qt_app.processEvents()
+    assert window.pixel_page._import_thread is None
     window.pixel_page.output_folder = tmp_path
     window.pixel_page._update_save_ui()
     window.pixel_page.filename_edit.setText("keep_name")

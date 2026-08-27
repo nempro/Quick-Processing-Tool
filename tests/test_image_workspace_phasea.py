@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 from pathlib import Path
 from threading import Event
 
@@ -57,6 +58,23 @@ def make_image(
     image = Image.new("RGBA" if alpha else "RGB", size, color if alpha else color[:3])
     image.save(path)
     return path
+
+
+def wait_for_window_idle(app: QApplication, window: MainWindow, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        active = (
+            window._quick_preview_thread is not None
+            or window.edit_page._preview_thread is not None
+            or window.pixel_page._import_thread is not None
+        )
+        if not active:
+            break
+        app.processEvents()
+    app.processEvents()
+    assert window._quick_preview_thread is None
+    assert window.edit_page._preview_thread is None
+    assert window.pixel_page._import_thread is None
 
 
 class CopyBackend(UpscaleBackend):
@@ -155,6 +173,7 @@ def test_global_open_and_cross_tab_source_sharing(
             assert "shared.png" in card.name_label.toolTip()
             assert "1883 × 61 / PNG" in card.meta_label.text()
     finally:
+        wait_for_window_idle(app, window)
         window.close()
 
 
@@ -193,6 +212,7 @@ def test_edit_replacement_resets_source_state_and_result_never_becomes_source(
         assert window.upscale_page.scale_4.isChecked()
         assert window.upscale_page.format_combo.currentData() == "PNG"
     finally:
+        wait_for_window_idle(app, window)
         window.close()
 
 
@@ -228,6 +248,7 @@ def test_quick_and_upscale_nonempty_batches_are_preserved_and_use_explicit_add(
         assert [info.path for info in window.files] == [first, second, third]
         assert [item.source_path for item in window.upscale_page.items] == [first.resolve(), third.resolve()]
     finally:
+        wait_for_window_idle(app, window)
         window.close()
 
 
@@ -243,6 +264,7 @@ def test_pixel_source_change_is_passive_until_explicit_action(
         before_hash = hashlib.sha256(pixel.canvas.snapshot()).hexdigest()
         history_before = pixel.canvas.history.current
         pixel._load_reference_path(first)
+        wait_for_window_idle(app, window)
         reference_before = pixel.reference
         filename_before = pixel.filename_edit.text()
         pixel.output_folder = tmp_path / "pixel-output"
@@ -262,12 +284,15 @@ def test_pixel_source_change_is_passive_until_explicit_action(
         assert pixel.source_path == first
 
         pixel.use_current_as_reference()
+        wait_for_window_idle(app, window)
         assert pixel.reference is not None
         assert pixel.reference is not reference_before
         assert hashlib.sha256(pixel.canvas.snapshot()).hexdigest() == before_hash
         pixel.use_current_as_pixels()
+        wait_for_window_idle(app, window)
         assert hashlib.sha256(pixel.canvas.snapshot()).hexdigest() != before_hash
     finally:
+        wait_for_window_idle(app, window)
         window.close()
 
 
@@ -381,7 +406,7 @@ def test_pixel_corrupt_source_is_rejected_before_workspace_or_import(
         assert requested == []
         assert import_choices == []
         assert page.canvas.snapshot() == before
-        assert warnings and warnings[0][0] == "画像を開けません"
+        assert warnings == [("画像を開けません", "PNG / JPEG / WebP画像を選んでください。")]
     finally:
         page.close()
 
@@ -415,6 +440,10 @@ def test_pixel_import_race_preserves_all_editing_state(
     page = PixelEditorPage()
     page.canvas.stroke((1, 1), (4, 1), (9, 8, 7, 255))
     page._load_reference_path(existing)
+    deadline = time.monotonic() + 3.0
+    while page._import_thread is not None and time.monotonic() < deadline:
+        app.processEvents()
+    assert page._import_thread is None
     page.output_folder = tmp_path / "out"
     before = (
         page.canvas.snapshot(),
@@ -440,8 +469,14 @@ def test_pixel_import_race_preserves_all_editing_state(
     monkeypatch.setattr(pixel_ui_module, "load_reference", vanish_reference)
     monkeypatch.setattr(pixel_ui_module, "load_rgba", vanish_pixels)
     try:
-        assert page._load_reference_path(disappearing_reference) is False
-        assert page._load_pixels_path(disappearing_pixels) is False
+        assert page._load_reference_path(disappearing_reference) is True
+        deadline = time.monotonic() + 3.0
+        while page._import_thread is not None and time.monotonic() < deadline:
+            app.processEvents()
+        assert page._load_pixels_path(disappearing_pixels) is True
+        deadline = time.monotonic() + 3.0
+        while page._import_thread is not None and time.monotonic() < deadline:
+            app.processEvents()
         after = (
             page.canvas.snapshot(),
             page.canvas.history.current,
@@ -483,6 +518,7 @@ def test_edit_source_replacement_failure_is_atomic(
         assert page.settings().filter_preset is FilterPreset.SEPIA
         assert warnings == [("元画像が見つかりません", MISSING_SOURCE_MESSAGE)]
     finally:
+        wait_for_window_idle(app, window)
         window.close()
 
 
@@ -564,6 +600,7 @@ def test_single_source_missing_dialog_is_specific(
         assert len(messages) == 7
         assert all(text == MISSING_SOURCE_MESSAGE for _title, text in messages)
     finally:
+        wait_for_window_idle(app, window)
         window.close()
 
 
@@ -594,4 +631,5 @@ def test_source_cards_keep_layout_without_horizontal_scroll(
         ):
             assert card.width() <= card.parentWidget().width()
     finally:
+        wait_for_window_idle(app, window)
         window.close()

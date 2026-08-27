@@ -7,7 +7,7 @@ import logging
 import sys
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from PySide6.QtCore import QEvent, QObject, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QDragEnterEvent, QDropEvent, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .errors import ProcessingError
+from .errors import ProcessingError, UnsupportedImageError
 from .image_workspace import (
     ImageWorkspace,
     MISSING_SOURCE_MESSAGE,
@@ -59,9 +59,11 @@ from .upscale_ui import UpscalePage
 from .pixel_editor_ui import PixelEditorPage
 from .source_ui import CurrentSourceCard
 from .ui_styles import INPUT_CONTROL_STYLE
+from .preview_activity import PreviewActivityIndicator
 
 
 LOGGER = logging.getLogger(__name__)
+QUICK_PREVIEW_FORMATS = {"PNG", "JPEG", "WEBP"}
 NAVIGATION_TAB_STYLE = """
 QTabWidget::pane {
     border: 0;
@@ -304,6 +306,11 @@ class DropZone(QWidget):
         self._has_image = False
         self.set_drag_active(False)
 
+    def set_loading(self) -> None:
+        """Leave any prior preview in place while making the accepted drop state explicit."""
+        self._has_image = True
+        self.set_drag_active(False)
+
     def set_drag_active(self, active: bool) -> None:
         if active:
             self._stack.setCurrentWidget(self.overlay)
@@ -446,6 +453,57 @@ class ProcessingWorker(QObject):
         self.finished.emit(succeeded, failed)
 
 
+def decode_quick_preview(path: Path) -> tuple[QImage, ImageInfo]:
+    """Validate metadata and build the preview with one image-file open."""
+    require_source_file(path)
+    try:
+        size_bytes = path.stat().st_size
+        with Image.open(path) as opened:
+            image_format = (opened.format or "").upper()
+            if image_format not in QUICK_PREVIEW_FORMATS:
+                raise UnsupportedImageError("PNG / JPEG / WebP のみ開けます。")
+            opened.load()
+            image = normalize_orientation(opened).convert("RGBA")
+            info = ImageInfo(path, image.width, image.height, image_format, size_bytes)
+            image.thumbnail((2400, 2400), Image.Resampling.LANCZOS)
+        raw = image.tobytes("raw", "RGBA")
+        qimage = QImage(
+            raw,
+            image.width,
+            image.height,
+            image.width * 4,
+            QImage.Format.Format_RGBA8888,
+        ).copy()
+        return qimage, info
+    except UnsupportedImageError:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise UnsupportedImageError(f"画像を開けません: {path.name}") from exc
+
+
+class QuickPreviewWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(object)
+    finished = Signal()
+
+    def __init__(self, request) -> None:
+        super().__init__()
+        self.request = request
+
+    @Slot()
+    def run(self) -> None:
+        generation, request_id, path, identity = self.request
+        try:
+            qimage, _info = decode_quick_preview(path)
+            self.succeeded.emit((generation, request_id, path, identity, qimage))
+        except Exception as exc:
+            LOGGER.exception("Preview failed: %s", path)
+            message = MISSING_SOURCE_MESSAGE if not path.is_file() else f"プレビューを表示できませんでした: {exc}"
+            self.failed.emit((generation, request_id, path, identity, message))
+        finally:
+            self.finished.emit()
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -460,6 +518,14 @@ class MainWindow(QMainWindow):
         self.transform_queue: list[Transform] = []
         self._thread: QThread | None = None
         self._worker: ProcessingWorker | None = None
+        self._quick_preview_thread: QThread | None = None
+        self._quick_preview_worker: QuickPreviewWorker | None = None
+        self._quick_preview_generation = 0
+        self._quick_preview_request_id = 0
+        self._quick_preview_active_request = None
+        self._quick_preview_pending_request = None
+        self._quick_preview_active_result = None
+        self._quick_preview_activity_token: int | None = None
         self._last_navigation_index = -1
 
         self._build_toolbar()
@@ -512,6 +578,7 @@ class MainWindow(QMainWindow):
         self.pixel_page = PixelEditorPage()
         self.pixel_page.set_workspace_managed(True)
         self.pixel_page.source_change_requested.connect(self.set_current_source)
+        self.pixel_page.processing_changed.connect(self._pixel_processing_changed)
         self.pixel_tab = self.navigation.addTab(self.pixel_page, "ドット絵")
         self.navigation.setTabToolTip(self.video_tab, "今後追加予定")
         self.navigation.currentChanged.connect(self._navigation_changed)
@@ -529,6 +596,8 @@ class MainWindow(QMainWindow):
         center.setMinimumWidth(400)
         center_layout = QVBoxLayout(center)
         center_layout.setContentsMargins(8, 8, 8, 8)
+        self.quick_preview_activity = PreviewActivityIndicator()
+        center_layout.addWidget(self.quick_preview_activity)
         self.drop_zone = DropZone()
         self.drop_zone.choose_requested.connect(self.open_files)
         self.drop_zone.paths_dropped.connect(self.load_paths)
@@ -905,23 +974,112 @@ class MainWindow(QMainWindow):
         if not 0 <= self.current_index < len(self.files):
             return
         info = self.files[self.current_index]
+        # Selection owns preview feedback immediately, even if its source
+        # disappears before identity inspection.  Older workers must not
+        # overwrite the concrete missing-source state below.
+        self._quick_preview_request_id += 1
+        self._quick_preview_pending_request = None
+        self.quick_preview_activity.invalidate()
+        self._quick_preview_activity_token = None
         try:
-            with Image.open(info.path) as opened:
-                image = normalize_orientation(opened).convert("RGBA")
-                image.thumbnail((2400, 2400), Image.Resampling.LANCZOS)
-                raw = image.tobytes("raw", "RGBA")
-                qimage = QImage(
-                    raw,
-                    image.width,
-                    image.height,
-                    image.width * 4,
-                    QImage.Format.Format_RGBA8888,
-                ).copy()
-            self.drop_zone.set_image(qimage)
-        except Exception:
-            LOGGER.exception("Preview failed: %s", info.path)
+            identity = self._quick_preview_source_identity(info.path)
+        except OSError:
             self.drop_zone.clear_image()
+            self.statusBar().showMessage(MISSING_SOURCE_MESSAGE)
+            self._settings_changed()
+            return
+        request = (
+            self._quick_preview_generation,
+            self._quick_preview_request_id,
+            info.path,
+            identity,
+        )
+        self._quick_preview_activity_token = self.quick_preview_activity.begin("プレビューを準備しています")
+        if self._quick_preview_thread is not None:
+            self._quick_preview_pending_request = request
+        else:
+            self._start_quick_preview_request(request)
+        self.drop_zone.set_loading()
         self._settings_changed()
+
+    @staticmethod
+    def _quick_preview_source_identity(path: Path):
+        stat = path.stat()
+        return str(path.resolve()), stat.st_mtime_ns, stat.st_size
+
+    def _start_quick_preview_request(self, request) -> None:
+        self._quick_preview_active_request = request
+        self._quick_preview_active_result = None
+        thread = QThread(self)
+        worker = QuickPreviewWorker(request)
+        self._quick_preview_thread = thread
+        self._quick_preview_worker = worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(lambda payload: self._capture_quick_preview_result("success", payload))
+        worker.failed.connect(lambda payload: self._capture_quick_preview_result("failed", payload))
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(lambda t=thread, w=worker: self._finalize_quick_preview_request(t, w))
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _capture_quick_preview_result(self, kind: str, payload) -> None:
+        self._quick_preview_active_result = (kind, payload)
+
+    def _quick_preview_request_is_current(self, request) -> bool:
+        generation, _request_id, path, identity = request
+        if generation != self._quick_preview_generation:
+            return False
+        if not 0 <= self.current_index < len(self.files) or self.files[self.current_index].path != path:
+            return False
+        try:
+            return identity == self._quick_preview_source_identity(path)
+        except OSError:
+            return False
+
+    def _quick_preview_request_owns_ui(self, request) -> bool:
+        generation, request_id, *_rest = request
+        return generation == self._quick_preview_generation and request_id == self._quick_preview_request_id
+
+    def _finalize_quick_preview_request(self, thread: QThread, worker: QuickPreviewWorker) -> None:
+        if thread is not self._quick_preview_thread:
+            return
+        request = self._quick_preview_active_request
+        result = self._quick_preview_active_result
+        self._quick_preview_thread = None
+        self._quick_preview_worker = None
+        self._quick_preview_active_request = None
+        self._quick_preview_active_result = None
+        if self._quick_preview_pending_request is not None:
+            pending = self._quick_preview_pending_request
+            self._quick_preview_pending_request = None
+            self._start_quick_preview_request(pending)
+            return
+        if request is None:
+            self.quick_preview_activity.invalidate()
+            self._quick_preview_activity_token = None
+            return
+        if not self._quick_preview_request_owns_ui(request):
+            return
+        if result is None:
+            result = ("failed", (*request, "プレビュー処理を完了できませんでした。"))
+        kind, payload = result
+        if kind == "success" and self._quick_preview_request_is_current(request):
+            self.drop_zone.set_image(payload[-1])
+            if self._quick_preview_activity_token is not None:
+                self.quick_preview_activity.complete(self._quick_preview_activity_token)
+        else:
+            if kind == "success":
+                path = request[2]
+                message = MISSING_SOURCE_MESSAGE if not path.is_file() else "元画像が変更されたため、プレビューを更新しませんでした。"
+            else:
+                message = payload[-1]
+            self.drop_zone.clear_image()
+            self.statusBar().showMessage(message)
+            if self._quick_preview_activity_token is not None:
+                self.quick_preview_activity.fail(self._quick_preview_activity_token)
+        self._quick_preview_activity_token = None
 
     def options(self) -> ProcessingOptions:
         target = self.target_combo.currentData()
@@ -1160,9 +1318,9 @@ class MainWindow(QMainWindow):
         return (
             self._thread is None
             and self.thumbnail_page.can_close()
-            and self.edit_page.can_close()
+            and self.edit_page.can_replace_source()
             and self.upscale_page.can_close()
-            and self.pixel_page.can_close()
+            and self.pixel_page.can_replace_source()
         )
 
     @Slot(bool)
@@ -1196,6 +1354,15 @@ class MainWindow(QMainWindow):
         self.navigation.setTabEnabled(self.upscale_tab, not processing)
         self.navigation.setTabEnabled(self.image_edit_tab, True)
         self.navigation.setTabEnabled(self.pixel_tab, not processing)
+        self._update_quick_actions()
+
+    @Slot(bool)
+    def _pixel_processing_changed(self, processing: bool) -> None:
+        self.navigation.setTabEnabled(self.quick_tab, not processing)
+        self.navigation.setTabEnabled(self.thumbnail_tab, not processing)
+        self.navigation.setTabEnabled(self.upscale_tab, not processing)
+        self.navigation.setTabEnabled(self.image_edit_tab, not processing)
+        self.navigation.setTabEnabled(self.pixel_tab, True)
         self._update_quick_actions()
 
     @Slot(int, str, str)
@@ -1243,6 +1410,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802
         if (
             self._thread is not None
+            or self._quick_preview_thread is not None
             or not self.thumbnail_page.can_close()
             or not self.edit_page.can_close()
             or not self.upscale_page.can_close()
@@ -1252,6 +1420,9 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.thumbnail_page.save_state()
+        self._quick_preview_generation += 1
+        self._quick_preview_pending_request = None
+        self.quick_preview_activity.invalidate()
         self.edit_page.cleanup()
         self.upscale_page.cleanup()
         self.pixel_page.cleanup()

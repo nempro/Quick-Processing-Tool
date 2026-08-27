@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -27,6 +28,14 @@ def _palette_tooltips(page: PixelEditorPage) -> list[str]:
 
 def _checked_palette_indices(page: PixelEditorPage) -> list[int]:
     return [index for index, button in enumerate(page._palette_chip_buttons) if button.isChecked()]
+
+
+def _wait_for_import(qt_app: QApplication, page: PixelEditorPage, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while page._import_thread is not None and time.monotonic() < deadline:
+        qt_app.processEvents()
+    qt_app.processEvents()
+    assert page._import_thread is None
 
 
 def test_pixel_page_japanese_controls_defaults_and_state(qt_app: QApplication) -> None:
@@ -131,9 +140,11 @@ def test_filename_entry_resets_only_for_new_document_sources_and_not_ordinary_ac
     Image.new("RGBA", (16, 16), (255, 0, 0, 255)).save(source)
     page.filename_edit.setText("keep_me")
     page._load_reference_path(source)
+    _wait_for_import(qt_app, page)
     assert page.filename_edit.text() == "勇者_pixel"
     page.filename_edit.setText("keep_me_again")
     page._load_pixels_path(source)
+    _wait_for_import(qt_app, page)
     assert page.filename_edit.text() == "勇者_pixel"
 
 
@@ -246,6 +257,7 @@ def test_receive_palette_preserves_existing_document_state(qt_app: QApplication,
     source = tmp_path / "source.png"
     Image.new("RGBA", (16, 16), (255, 0, 0, 255)).save(source)
     page._load_reference_path(source)
+    _wait_for_import(qt_app, page)
     page.output_folder = tmp_path
     page._update_save_ui()
     page.filename_edit.setText("keep_name")

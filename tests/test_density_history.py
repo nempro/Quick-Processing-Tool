@@ -10,7 +10,7 @@ import pytest
 from PIL import Image
 from PySide6.QtGui import QColor
 from PySide6.QtCore import QPoint
-from PySide6.QtWidgets import QApplication, QScrollArea
+from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
 
 import quick_processing_tool.edit_ui as edit_ui_module
 from quick_processing_tool.edit_ui import QuickEditPage
@@ -210,6 +210,27 @@ def test_compact_source_and_pixel_first_viewport_layout(app: QApplication, tmp_p
         content = scroll.widget()
         assert content.width() <= scroll.viewport().width()
         assert window.pixel_page.clear_button.height() >= 26
+        assert window.pixel_page.new_button.width() >= 110
+        assert window.pixel_page.new_button.height() >= 30
+        tools = (
+            window.pixel_page.pencil_button,
+            window.pixel_page.eraser_button,
+            window.pixel_page.eyedropper_button,
+        )
+        assert max(button.width() for button in tools) - min(button.width() for button in tools) <= 1
+        assert all(button.height() >= 30 and button.toolTip() and button.accessibleName() for button in tools)
+        window.pixel_page.eraser_button.click()
+        assert window.pixel_page.eraser_button.isChecked()
+        assert not window.pixel_page.pencil_button.isChecked()
+        assert window.pixel_page.custom_size_widget.isHidden()
+        window.pixel_page.preset_combo.setCurrentIndex(3)
+        assert not window.pixel_page.custom_size_widget.isHidden()
+        window.pixel_page.preset_combo.setCurrentIndex(2)
+        assert window.pixel_page.custom_size_widget.isHidden()
+        assert (
+            window.pixel_page.current_reference_button.geometry().top()
+            == window.pixel_page.current_pixels_button.geometry().top()
+        )
         redo_bottom = (
             window.pixel_page.redo_button.mapTo(content, QPoint(0, 0)).y()
             + window.pixel_page.redo_button.height()
@@ -248,8 +269,50 @@ def test_expanded_edit_material_stays_inside_viewport_with_eight_rows(
         assert page.settings_scroll.widget().width() <= page.settings_scroll.viewport().width()
         assert page.palette_send_button.width() > 0
         assert page.palette_open_button.width() > 0
-        assert abs(page.palette_send_button.width() - page.palette_open_button.width()) <= 1
+        assert page.palette_open_button.width() <= 90
+        assert page.palette_open_button.height() >= 30
         assert all(button.height() <= 32 for button in page._palette_reset_buttons)
         assert page.drop_zone.preview.width() >= 300
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("width", [900, 1180, 1440])
+def test_all_implemented_settings_panes_have_no_horizontal_overflow(
+    app: QApplication, width: int
+) -> None:
+    window = MainWindow()
+    try:
+        window.resize(width, 760)
+        window.show()
+        for tab in (
+            window.quick_tab,
+            window.thumbnail_tab,
+            window.image_edit_tab,
+            window.upscale_tab,
+            window.pixel_tab,
+        ):
+            window.navigation.setCurrentIndex(tab)
+            app.processEvents()
+            page = window.navigation.currentWidget()
+            for scroll in page.findChildren(QScrollArea):
+                if scroll.objectName() == "pixelPreviewScroll":
+                    continue
+                assert scroll.horizontalScrollBar().maximum() == 0, (tab, scroll.objectName())
+                content = scroll.widget()
+                if content is not None:
+                    assert content.width() <= scroll.viewport().width(), (tab, scroll.objectName())
+                    for child in content.findChildren(QWidget):
+                        if not child.isVisibleTo(content) or child.width() <= 0:
+                            continue
+                        left = child.mapTo(content, QPoint(0, 0)).x()
+                        assert left >= -2, (tab, scroll.objectName(), child.objectName(), left)
+                        assert left + child.width() <= content.width() + 2, (
+                            tab,
+                            scroll.objectName(),
+                            child.objectName(),
+                            left + child.width(),
+                            content.width(),
+                        )
     finally:
         window.close()

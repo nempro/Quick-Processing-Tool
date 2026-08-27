@@ -7,10 +7,14 @@ from PIL import Image, ImageOps
 from .canvas import PixelCanvas
 from .models import ReferenceImage
 
+SUPPORTED_IMAGE_FORMATS = {"PNG", "JPEG", "WEBP"}
+
 
 def load_rgba(path: Path) -> Image.Image:
     with Image.open(path) as opened:
         opened.load()
+        if (opened.format or "").upper() not in SUPPORTED_IMAGE_FORMATS:
+            raise ValueError("PNG / JPEG / WebP画像を選んでください。")
         return ImageOps.exif_transpose(opened).convert("RGBA")
 
 

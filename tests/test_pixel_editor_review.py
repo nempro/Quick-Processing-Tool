@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 from pathlib import Path
@@ -31,6 +32,14 @@ def _send_drop(target, mime: QMimeData):
     return enter, drop
 
 
+def _wait_for_import(app: QApplication, page: PixelEditorPage, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while page._import_thread is not None and time.monotonic() < deadline:
+        app.processEvents()
+    app.processEvents()
+    assert page._import_thread is None
+
+
 def test_tools_are_exclusive_and_right_drag_preserves_selection() -> None:
     app = QApplication.instance() or QApplication([])
     page = PixelEditorPage()
@@ -53,6 +62,7 @@ def test_page_drop_accepts_image_chooses_reference_and_cancel(tmp_path: Path) ->
     page.import_choice_provider = lambda dropped: "reference"
     enter, drop = _send_drop(page, _mime(path))
     assert enter.isAccepted() and drop.isAccepted()
+    _wait_for_import(app, page)
     assert page.reference is not None
     page.reference = None
     page.import_choice_provider = lambda dropped: None
@@ -69,6 +79,7 @@ def test_canvas_view_drop_routes_pixel_mode_and_rejects_invalid_file(tmp_path: P
     page.import_choice_provider = lambda dropped: "pixels"
     enter, drop = _send_drop(page.canvas_view, _mime(path))
     assert enter.isAccepted() and drop.isAccepted()
+    _wait_for_import(app, page)
     assert page.canvas.pixel(64, 64)[3] > 0
     invalid = tmp_path / "notes.txt"
     invalid.write_text("not an image", encoding="utf-8")
