@@ -1,12 +1,14 @@
 ﻿from __future__ import annotations
 
 import logging
+import math
 from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
-from PySide6.QtCore import QEvent, QObject, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import (
+    QBrush,
     QColor,
     QDesktopServices,
     QGuiApplication,
@@ -14,10 +16,14 @@ from PySide6.QtGui import (
     QDropEvent,
     QImage,
     QPainter,
+    QPainterPath,
+    QPen,
     QPixmap,
+    QTabletEvent,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -27,6 +33,9 @@ from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
     QGridLayout,
+    QGraphicsEllipseItem,
+    QGraphicsItem,
+    QGraphicsPathItem,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
@@ -59,6 +68,10 @@ from .editing import (
     EditService,
     EditSettings,
     FilterPreset,
+    HandDrawSettings,
+    HandPoint,
+    HandStroke,
+    HandTool,
     LineArtAmount,
     LineArtBackground,
     LineArtSettings,
@@ -69,7 +82,10 @@ from .editing import (
     TextPosition,
     TextSettings,
     TransparencySettings,
+    render_hand_overlay,
+    scale_hand_draw,
 )
+from .editing.canvas import output_dimensions
 from .editing.palette import extract_palette
 from .editing.renderer import load_normalized, prepare_palette_source, render_path_preview
 from .editing.service import EditProcessingError, SOURCE_FORMATS
@@ -382,19 +398,120 @@ class CollapsibleSection(QWidget):
         self.expanded.emit(expanded)
 
 
+class ActiveHandOverlayItem(QGraphicsItem):
+    """Paint a mutable display-sized QImage without QPixmap conversion per move."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._image = QImage()
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        return QRectF(0, 0, self._image.width(), self._image.height())
+
+    def paint(self, painter: QPainter, _option, _widget=None) -> None:
+        if not self._image.isNull():
+            painter.drawImage(QPointF(0, 0), self._image)
+
+    def set_image(self, image: QImage) -> None:
+        self.prepareGeometryChange()
+        self._image = image
+        self.update()
+
+    def clear(self) -> None:
+        self.set_image(QImage())
+        self.hide()
+
+    def update_region(self, rect: QRectF) -> None:
+        self.update(rect.adjusted(-2, -2, 2, 2))
+
+    def paint_segment(
+        self,
+        start: QPointF,
+        end: QPointF,
+        tool: HandTool,
+        color: QColor,
+        width: float,
+    ) -> None:
+        if self._image.isNull():
+            return
+        painter = QPainter(self._image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if tool is HandTool.ERASER:
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+            paint_color = QColor(0, 0, 0, 255)
+        else:
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+            paint_color = color
+        pen = QPen(paint_color)
+        pen.setWidthF(width)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        if start == end:
+            painter.setPen(QPen(Qt.PenStyle.NoPen))
+            painter.setBrush(paint_color)
+            painter.drawEllipse(start, width / 2, width / 2)
+        else:
+            painter.drawLine(start, end)
+        painter.end()
+        radius = width / 2
+        dirty = QRectF(start, end).normalized().adjusted(-radius, -radius, radius, radius)
+        self.update_region(dirty)
+
+
 class EditPreview(QGraphicsView):
     color_picked = Signal(int, int, int)
+    hand_pressed = Signal(object)
+    hand_moved = Signal(object)
+    hand_released = Signal()
+    hand_cancelled = Signal()
 
     def __init__(self) -> None:
         super().__init__()
         self.setScene(QGraphicsScene(self))
         self._item = QGraphicsPixmapItem()
         self._item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+        self._item.setZValue(0)
         self.scene().addItem(self._item)
+        self._overlay_item = QGraphicsPixmapItem()
+        self._overlay_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+        self._overlay_item.setZValue(1)
+        self.scene().addItem(self._overlay_item)
+        self._active_overlay_item = ActiveHandOverlayItem()
+        self._active_overlay_item.setZValue(1.5)
+        self._active_overlay_item.hide()
+        self.scene().addItem(self._active_overlay_item)
+        self._active_path_item = QGraphicsPathItem()
+        self._active_path_item.setZValue(1.5)
+        self._active_path_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self._active_path_item.hide()
+        self.scene().addItem(self._active_path_item)
+        self._cursor_item = QGraphicsEllipseItem()
+        self._cursor_item.setZValue(2)
+        self._cursor_item.setPen(QPen(QColor(35, 55, 85, 220), 1))
+        self._cursor_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self._cursor_item.hide()
+        self.scene().addItem(self._cursor_item)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        self.viewport().installEventFilter(self)
         self._image = QImage()
         self._picking = False
+        self._drawing_enabled = False
+        self._pointer_active = False
+        self._brush_width = 8.0
+        self._full_size = (0, 0)
+        self._geometry_generation: int | None = None
+        self._zoom_mode = "fit"
+        self._committed_overlay_key = None
+        self._committed_overlay_image = QImage()
+        self._active_last_canvas: HandPoint | None = None
+        self._active_tool = HandTool.PEN
+        self._active_color = QColor("#000000")
+        self._active_width = 8.0
+        self._active_path = QPainterPath()
+        self._active_path_has_segment = False
         tile = QPixmap(24, 24)
         tile.fill(QColor("#d7dbe0"))
         painter = QPainter(tile)
@@ -403,24 +520,270 @@ class EditPreview(QGraphicsView):
         painter.end()
         self.setBackgroundBrush(tile)
 
-    def set_image(self, image: QImage) -> None:
+    def set_image(
+        self,
+        image: QImage,
+        full_size: tuple[int, int] | None = None,
+        geometry_generation: int | None = None,
+    ) -> None:
+        next_full_size = full_size or (image.width(), image.height())
+        same_geometry = (
+            self._geometry_generation == geometry_generation
+            and self._full_size == next_full_size
+            and not self._image.isNull()
+            and self._image.size() == image.size()
+        )
+        if not same_geometry:
+            self._cancel_pointer()
         self._image = image.copy()
         self._item.setPixmap(QPixmap.fromImage(image))
+        self._overlay_item.setPos(self._item.pos())
+        self._active_overlay_item.setPos(self._item.pos())
+        self._active_path_item.setPos(self._item.pos())
+        self._full_size = next_full_size
+        self._geometry_generation = geometry_generation
+        if not same_geometry:
+            self._committed_overlay_key = None
+            self._committed_overlay_image = QImage()
+            self._overlay_item.setPixmap(QPixmap())
+            self.cancel_active_hand()
         self.scene().setSceneRect(self._item.boundingRect())
-        self._fit()
+        self._apply_zoom()
 
     def clear_image(self) -> None:
         self._image = QImage()
         self._item.setPixmap(QPixmap())
+        self._overlay_item.setPixmap(QPixmap())
+        self._committed_overlay_key = None
+        self._committed_overlay_image = QImage()
+        self.cancel_active_hand()
+        self._cursor_item.hide()
+        self._full_size = (0, 0)
+        self._geometry_generation = None
         self.scene().setSceneRect(0, 0, 1, 1)
 
     def set_picking(self, enabled: bool) -> None:
         self._picking = enabled
-        self.viewport().setCursor(Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor)
+        self._update_viewport_cursor()
+
+    def set_drawing_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self._drawing_enabled and not enabled and self._pointer_active:
+            self._cancel_pointer()
+        self._drawing_enabled = enabled
+        if not enabled:
+            self._cursor_item.hide()
+        self._update_viewport_cursor()
+
+    def set_brush_width(self, width: float) -> None:
+        self._brush_width = max(1.0, float(width))
+
+    def set_zoom_mode(self, mode: str) -> None:
+        if mode not in {"fit", "100", "200"}:
+            raise ValueError(f"Unsupported preview zoom mode: {mode}")
+        self._zoom_mode = mode
+        self._apply_zoom()
+
+    def set_hand_overlay(
+        self,
+        settings: HandDrawSettings,
+        *,
+        visible: bool = True,
+    ) -> None:
+        display_size = (self._image.width(), self._image.height())
+        key = (settings, display_size, bool(visible))
+        if key == self._committed_overlay_key:
+            return
+        self._committed_overlay_key = key
+        if self._image.isNull() or not visible or not settings.visible or not settings.strokes:
+            self._committed_overlay_image = QImage()
+            self._overlay_item.setPixmap(QPixmap())
+            return
+        overlay = render_hand_overlay(settings, display_size)
+        self._committed_overlay_image = pil_to_qimage(overlay)
+        self._overlay_item.setPixmap(QPixmap.fromImage(self._committed_overlay_image))
+
+    def _canvas_to_display(self, point: HandPoint) -> QPointF:
+        return QPointF(
+            point.x * self._image.width() / max(1, self._full_size[0]),
+            point.y * self._image.height() / max(1, self._full_size[1]),
+        )
+
+    def _active_display_width(self) -> float:
+        return max(
+            0.25,
+            self._active_width
+            * min(
+                self._image.width() / max(1, self._full_size[0]),
+                self._image.height() / max(1, self._full_size[1]),
+            ),
+        )
+
+    def _paint_active_segment(self, start: HandPoint, end: HandPoint) -> None:
+        width = self._active_display_width()
+        display_start = self._canvas_to_display(start)
+        display_end = self._canvas_to_display(end)
+        if self._active_tool is HandTool.PEN:
+            if start == end and not self._active_path_has_segment:
+                self._active_path = QPainterPath(display_start)
+                self._active_path.lineTo(display_start + QPointF(0.001, 0.0))
+            elif not self._active_path_has_segment:
+                self._active_path = QPainterPath(display_start)
+                self._active_path.lineTo(display_end)
+                self._active_path_has_segment = True
+            else:
+                self._active_path.lineTo(display_end)
+            self._active_path_item.setPath(self._active_path)
+            return
+        self._active_overlay_item.paint_segment(
+            display_start,
+            display_end,
+            self._active_tool,
+            self._active_color,
+            width,
+        )
+
+    def begin_active_hand(
+        self,
+        point: HandPoint,
+        tool: HandTool,
+        color: QColor,
+        width: float,
+    ) -> None:
+        if self._image.isNull():
+            return
+        self._active_tool = tool
+        self._active_color = QColor(color)
+        self._active_width = float(width)
+        self._active_last_canvas = point
+        self._active_path = QPainterPath()
+        self._active_path_has_segment = False
+        if tool is HandTool.PEN:
+            pen = QPen(self._active_color)
+            pen.setWidthF(self._active_display_width())
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            self._active_path_item.setPen(pen)
+            self._active_path_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            self._active_overlay_item.clear()
+            self._overlay_item.show()
+            self._active_path_item.show()
+            self._paint_active_segment(point, point)
+            return
+        if (
+            not self._committed_overlay_image.isNull()
+            and self._committed_overlay_image.size() == self._image.size()
+        ):
+            active_overlay_image = self._committed_overlay_image.copy()
+        else:
+            active_overlay_image = QImage(
+                self._image.width(),
+                self._image.height(),
+                QImage.Format.Format_RGBA8888,
+            )
+            active_overlay_image.fill(QColor(0, 0, 0, 0))
+        self._active_overlay_item.set_image(active_overlay_image)
+        self._overlay_item.hide()
+        self._active_overlay_item.show()
+        self._active_path_item.hide()
+        self._paint_active_segment(point, point)
+
+    def append_active_hand(self, point: HandPoint) -> None:
+        if self._active_last_canvas is None:
+            return
+        previous = self._active_last_canvas
+        self._active_last_canvas = point
+        self._paint_active_segment(previous, point)
+
+    def cancel_active_hand(self) -> None:
+        self._active_last_canvas = None
+        self._active_path = QPainterPath()
+        self._active_path_has_segment = False
+        self._active_path_item.setPath(self._active_path)
+        self._active_path_item.hide()
+        self._active_overlay_item.clear()
+        self._overlay_item.show()
+
+    def viewport_to_canvas(self, viewport_point: QPointF) -> HandPoint | None:
+        if self._image.isNull() or self._full_size[0] <= 0 or self._full_size[1] <= 0:
+            return None
+        scene_point = self.mapToScene(viewport_point.toPoint())
+        item_point = self._item.mapFromScene(scene_point)
+        bounds = self._item.boundingRect()
+        if not bounds.contains(item_point):
+            return None
+        x = min(self._full_size[0] - 1e-6, max(0.0, item_point.x() * self._full_size[0] / bounds.width()))
+        y = min(self._full_size[1] - 1e-6, max(0.0, item_point.y() * self._full_size[1] / bounds.height()))
+        return HandPoint(x, y)
+
+    def geometry_generation(self) -> int | None:
+        return self._geometry_generation
+
+    def _update_viewport_cursor(self) -> None:
+        if self._picking or self._drawing_enabled:
+            cursor = Qt.CursorShape.CrossCursor
+        else:
+            cursor = Qt.CursorShape.ArrowCursor
+        self.viewport().setCursor(cursor)
+
+    def _update_brush_cursor(self, position: QPointF) -> None:
+        if not self._drawing_enabled:
+            self._cursor_item.hide()
+            return
+        point = self.viewport_to_canvas(position)
+        if point is None:
+            self._cursor_item.hide()
+            return
+        scene = self.mapToScene(position.toPoint())
+        display_width = self._item.boundingRect().width()
+        diameter = self._brush_width * display_width / max(1, self._full_size[0])
+        diameter = max(1.0, diameter)
+        self._cursor_item.setRect(scene.x() - diameter / 2, scene.y() - diameter / 2, diameter, diameter)
+        self._cursor_item.show()
+
+    def _begin_pointer(self, position: QPointF) -> bool:
+        if not self._drawing_enabled:
+            return False
+        point = self.viewport_to_canvas(position)
+        if point is None:
+            return False
+        self._pointer_active = True
+        self.hand_pressed.emit(point)
+        return True
+
+    def _move_pointer(self, position: QPointF) -> bool:
+        self._update_brush_cursor(position)
+        if not self._pointer_active:
+            return False
+        point = self.viewport_to_canvas(position)
+        if point is not None:
+            self.hand_moved.emit(point)
+        return True
+
+    def _end_pointer(self, position: QPointF) -> bool:
+        if not self._pointer_active:
+            return False
+        point = self.viewport_to_canvas(position)
+        if point is not None:
+            self.hand_moved.emit(point)
+        self._pointer_active = False
+        self.hand_released.emit()
+        return True
+
+    def _cancel_pointer(self) -> bool:
+        if not self._pointer_active:
+            return False
+        self._pointer_active = False
+        self.hand_cancelled.emit()
+        return True
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._begin_pointer(event.position()):
+            event.accept()
+            return
         if self._picking and not self._image.isNull():
-            point = self.mapToScene(event.position().toPoint())
+            scene_point = self.mapToScene(event.position().toPoint())
+            point = self._item.mapFromScene(scene_point)
             x, y = int(point.x()), int(point.y())
             if 0 <= x < self._image.width() and 0 <= y < self._image.height():
                 color = self._image.pixelColor(x, y)
@@ -429,13 +792,112 @@ class EditPreview(QGraphicsView):
                 return
         super().mousePressEvent(event)
 
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._pointer_active and not (event.buttons() & Qt.MouseButton.LeftButton):
+            self._cancel_pointer()
+            event.accept()
+            return
+        if self._move_pointer(event.position()):
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._end_pointer(event.position()):
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def tabletEvent(self, event: QTabletEvent) -> None:  # noqa: N802
+        handled = False
+        if event.type() == QEvent.Type.TabletPress:
+            handled = self._begin_pointer(event.position())
+        elif event.type() == QEvent.Type.TabletMove:
+            handled = self._move_pointer(event.position())
+        elif event.type() == QEvent.Type.TabletRelease:
+            handled = self._end_pointer(event.position())
+        if handled:
+            event.accept()
+            return
+        super().tabletEvent(event)
+
+    def viewportEvent(self, event) -> bool:  # noqa: N802
+        if (
+            event.type() == QEvent.Type.MouseMove
+            and self._pointer_active
+            and not (event.buttons() & Qt.MouseButton.LeftButton)
+        ):
+            self._cancel_pointer()
+            event.accept()
+            return True
+        if event.type() in (QEvent.Type.FocusOut, QEvent.Type.WindowDeactivate):
+            self._cancel_pointer()
+        elif (
+            event.type() == QEvent.Type.Leave
+            and self._pointer_active
+            and not (QGuiApplication.mouseButtons() & Qt.MouseButton.LeftButton)
+        ):
+            self._cancel_pointer()
+        return super().viewportEvent(event)
+
+    def eventFilter(self, watched: QObject, event) -> bool:  # noqa: N802
+        if watched is self.viewport():
+            if (
+                event.type() == QEvent.Type.MouseMove
+                and self._pointer_active
+                and not (event.buttons() & Qt.MouseButton.LeftButton)
+            ):
+                self._cancel_pointer()
+                event.accept()
+                return True
+            if event.type() in (QEvent.Type.FocusOut, QEvent.Type.WindowDeactivate):
+                self._cancel_pointer()
+            elif (
+                event.type() == QEvent.Type.Leave
+                and self._pointer_active
+                and not (QGuiApplication.mouseButtons() & Qt.MouseButton.LeftButton)
+            ):
+                self._cancel_pointer()
+        return super().eventFilter(watched, event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        if self._pointer_active and not (QGuiApplication.mouseButtons() & Qt.MouseButton.LeftButton):
+            self._cancel_pointer()
+        if not self._pointer_active:
+            self._cursor_item.hide()
+        super().leaveEvent(event)
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802
+        self._cancel_pointer()
+        super().focusOutEvent(event)
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        if event.type() == QEvent.Type.WindowDeactivate:
+            self._cancel_pointer()
+        super().changeEvent(event)
+
     def _fit(self) -> None:
         if not self._item.pixmap().isNull():
             self.fitInView(self._item, Qt.AspectRatioMode.KeepAspectRatio)
 
+    def _apply_zoom(self) -> None:
+        if self._item.pixmap().isNull():
+            return
+        if self._zoom_mode == "fit":
+            self._fit()
+            return
+        self.resetTransform()
+        full_width = max(1, self._full_size[0])
+        display_width = max(1, self._image.width())
+        scale = full_width / display_width
+        if self._zoom_mode == "200":
+            scale *= 2
+        self.scale(scale, scale)
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self._fit()
+        if self._zoom_mode == "fit":
+            self._fit()
 
 
 class EditDropZone(QWidget):
@@ -651,7 +1113,8 @@ class EditPreviewWorker(QObject):
                 image = load_normalized(source)
                 image.thumbnail((1400, 1400), Image.Resampling.LANCZOS)
             else:
-                image = render_path_preview(source, settings, 1400)
+                base_settings = replace(settings, hand_draw=HandDrawSettings())
+                image = render_path_preview(source, base_settings, 1400)
             payload = (
                 generation,
                 request_id,
@@ -725,6 +1188,15 @@ class QuickEditPage(QWidget):
         self._sticker_outline_color = QColor("#FFFFFF")
         self._line_art_color = QColor("#000000")
         self._line_art_background_color = QColor("#FFFFFF")
+        self._hand_draw_settings = HandDrawSettings()
+        self._hand_tool = HandTool.PEN
+        self._hand_color = QColor("#000000")
+        self._hand_size = 8
+        self._active_hand_points: list[HandPoint] = []
+        self._active_hand_generation: int | None = None
+        self._active_hand_tool = HandTool.PEN
+        self._active_hand_color = QColor("#000000")
+        self._active_hand_width = 8.0
         self._palette_values: tuple[tuple[int, int, int], ...] = ()
         self._palette_replacements: tuple[tuple[int, int, int], ...] = ()
         self._palette_mapping: tuple[int, ...] = ()
@@ -865,6 +1337,66 @@ class QuickEditPage(QWidget):
             text_content,
         )
         ll.addWidget(self.text_section)
+
+        hand_content = QWidget()
+        hand_layout = QVBoxLayout(hand_content)
+        hand_layout.setContentsMargins(6, 1, 3, 4)
+        hand_layout.setSpacing(4)
+        self.hand_mode_enabled = QCheckBox("プレビューへ手描きする")
+        self.hand_mode_enabled.setAccessibleName("手描きモード")
+        hand_layout.addWidget(self.hand_mode_enabled)
+        self.hand_details = QWidget()
+        hand_form = QFormLayout(self.hand_details)
+        self._configure_form(hand_form)
+        tool_row = QHBoxLayout()
+        tool_row.setContentsMargins(0, 0, 0, 0)
+        tool_row.setSpacing(4)
+        self.hand_tool_group = QButtonGroup(self)
+        self.hand_tool_group.setExclusive(True)
+        self.hand_pen_button = QPushButton("ペン")
+        self.hand_eraser_button = QPushButton("消しゴム")
+        for button, tool, tooltip in (
+            (self.hand_pen_button, HandTool.PEN, "選んだ色で描きます"),
+            (self.hand_eraser_button, HandTool.ERASER, "手描き部分だけを消します"),
+        ):
+            button.setCheckable(True)
+            button.setMinimumHeight(30)
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.setToolTip(tooltip)
+            button.setAccessibleName(button.text())
+            self.hand_tool_group.addButton(button)
+            tool_row.addWidget(button, 1)
+            button.clicked.connect(lambda _checked=False, selected=tool: self._select_hand_tool(selected))
+        self.hand_pen_button.setChecked(True)
+        self.hand_color_button = QPushButton()
+        self.hand_color_button.setProperty("showAlphaValue", True)
+        self.hand_color_button.setProperty("colorPurpose", "手描きの色を選びます")
+        self.hand_color_button.setAccessibleName("手描きの色")
+        self.hand_color_button.clicked.connect(self.choose_hand_color)
+        self.hand_size_spin = self._spin(1, 100, 8, " px")
+        self.hand_size_spin.setAccessibleName("手描きの太さ")
+        self.hand_visible_check = QCheckBox("手描きを表示")
+        self.hand_visible_check.setChecked(True)
+        self.hand_clear_button = QPushButton("手描きをすべて消す")
+        self.hand_clear_button.setToolTip("手描きレイヤーだけを消します")
+        self.hand_clear_button.clicked.connect(self.clear_hand_draw)
+        hand_form.addRow("道具", tool_row)
+        hand_form.addRow("色", self.hand_color_button)
+        hand_form.addRow("太さ", self.hand_size_spin)
+        hand_form.addRow("", self.hand_visible_check)
+        hand_form.addRow("", self.hand_clear_button)
+        hand_layout.addWidget(self.hand_details)
+        hand_content.setStyleSheet(
+            "QPushButton:checked { background: #315fbd; color: white; "
+            "border: 2px solid #173a82; font-weight: 700; }"
+        )
+        self.hand_section = CollapsibleSection(
+            "手描き",
+            "プレビューへ直接描き、加工結果の一番上へ重ねます",
+            hand_content,
+        )
+        ll.addWidget(self.hand_section)
 
         transparency_content = QWidget()
         transparency_layout = QVBoxLayout(transparency_content)
@@ -1159,6 +1691,17 @@ class QuickEditPage(QWidget):
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
         preview_head.addWidget(title)
         preview_head.addStretch()
+        self.preview_zoom_combo = QComboBox()
+        self.preview_zoom_combo.setAccessibleName("プレビュー倍率")
+        self.preview_zoom_combo.setToolTip("プレビューの表示倍率を選びます")
+        self.preview_zoom_combo.addItem("全体", "fit")
+        self.preview_zoom_combo.addItem("100%", "100")
+        self.preview_zoom_combo.addItem("200%", "200")
+        self.preview_zoom_combo.setMinimumWidth(72)
+        self.preview_zoom_combo.currentIndexChanged.connect(
+            lambda _index: self.drop_zone.preview.set_zoom_mode(self.preview_zoom_combo.currentData())
+        )
+        preview_head.addWidget(self.preview_zoom_combo)
         self.original_button = QPushButton("元画像")
         self.edited_button = QPushButton("加工後")
         self.original_button.clicked.connect(self.show_original)
@@ -1172,6 +1715,10 @@ class QuickEditPage(QWidget):
         self.drop_zone.choose_requested.connect(self.choose_image)
         self.drop_zone.path_dropped.connect(self._request_or_load_image)
         self.drop_zone.preview.color_picked.connect(self._color_picked)
+        self.drop_zone.preview.hand_pressed.connect(self._begin_hand_stroke)
+        self.drop_zone.preview.hand_moved.connect(self._append_hand_point)
+        self.drop_zone.preview.hand_released.connect(self._finish_hand_stroke)
+        self.drop_zone.preview.hand_cancelled.connect(self._cancel_hand_stroke)
         cl.addWidget(self.drop_zone, 1)
         self.preview_status = QLabel("画像を読み込むと、ここへ加工結果を表示します")
         self.preview_status.setWordWrap(True)
@@ -1272,6 +1819,7 @@ class QuickEditPage(QWidget):
         self.sections = [
             self.filter_section,
             self.text_section,
+            self.hand_section,
             self.transparency_section,
             self.canvas_section,
             self.material_section,
@@ -1286,6 +1834,7 @@ class QuickEditPage(QWidget):
         self._update_color_button(self.sticker_outline_color_button, self._sticker_outline_color)
         self._update_color_button(self.line_art_color_button, self._line_art_color)
         self._update_color_button(self.line_art_background_color_button, self._line_art_background_color)
+        self._update_color_button(self.hand_color_button, self._hand_color)
 
     @staticmethod
     def _configure_form(form: QFormLayout) -> None:
@@ -1327,6 +1876,9 @@ class QuickEditPage(QWidget):
         ):
             spin.valueChanged.connect(self._control_changed)
         self.text_enabled.toggled.connect(self._text_toggled)
+        self.hand_mode_enabled.toggled.connect(self._hand_mode_toggled)
+        self.hand_visible_check.toggled.connect(self._hand_visibility_changed)
+        self.hand_size_spin.valueChanged.connect(self._hand_size_changed)
         for check in (
             self.bold_check,
             self.outline_enabled,
@@ -1394,6 +1946,176 @@ class QuickEditPage(QWidget):
         self._update_visibility()
         self._update_actions()
 
+    @Slot(bool)
+    def _hand_mode_toggled(self, enabled: bool) -> None:
+        if not enabled:
+            self._cancel_hand_stroke()
+        self._update_visibility()
+        self._update_hand_drawing_state()
+
+    @Slot(bool)
+    def _hand_visibility_changed(self, visible: bool) -> None:
+        if self._applying:
+            return
+        self._cancel_hand_stroke()
+        self._commit_hand_draw(replace(self._hand_draw_settings, visible=visible))
+
+    @Slot(int)
+    def _hand_size_changed(self, size: int) -> None:
+        self._hand_size = size
+        self.drop_zone.preview.set_brush_width(size)
+
+    def _select_hand_tool(self, tool: HandTool) -> None:
+        self._hand_tool = tool
+
+    @Slot()
+    def choose_hand_color(self) -> None:
+        color = choose_color(self._hand_color, self, "手描きの色を選ぶ", show_alpha=True)
+        if color.isValid():
+            self._hand_color = color
+            self._update_color_button(self.hand_color_button, color)
+
+    def _final_canvas_size(self, settings: EditSettings | None = None) -> tuple[int, int]:
+        if not self.source_path or self._source_size == (0, 0):
+            return 0, 0
+        return output_dimensions(self._source_size, (settings or self.settings()).canvas)
+
+    @staticmethod
+    def _without_hand_draw(settings: EditSettings) -> EditSettings:
+        return replace(settings, hand_draw=HandDrawSettings())
+
+    def _preview_geometry_key(self):
+        if not self.source_path:
+            return None
+        return (
+            self._preview_generation,
+            self._without_hand_draw(self._effective_settings()),
+            False,
+        )
+
+    def _update_hand_drawing_state(self) -> None:
+        ready = (
+            self.source_path is not None
+            and self.hand_mode_enabled.isChecked()
+            and self._hand_draw_settings.visible
+            and not self._show_original
+            and not self.eyedropper_button.isChecked()
+            and self._thread is None
+            and self._palette_thread is None
+            and not self._processing_controls_locked
+            and self.drop_zone.preview.geometry_generation() == self._preview_geometry_key()
+        )
+        self.drop_zone.preview.set_brush_width(self._hand_size)
+        self.drop_zone.preview.set_drawing_enabled(ready)
+
+    def _transient_hand_stroke(self) -> HandStroke | None:
+        if not self._active_hand_points:
+            return None
+        return HandStroke(
+            tool=self._active_hand_tool,
+            points=tuple(self._active_hand_points),
+            color=(
+                self._active_hand_color.red(),
+                self._active_hand_color.green(),
+                self._active_hand_color.blue(),
+                self._active_hand_color.alpha(),
+            ),
+            width=self._active_hand_width,
+        )
+
+    def _refresh_hand_overlay(self) -> None:
+        geometry_current = self.drop_zone.preview.geometry_generation() == self._preview_geometry_key()
+        self.drop_zone.preview.set_hand_overlay(
+            self._hand_draw_settings,
+            visible=not self._show_original and geometry_current,
+        )
+        self._update_hand_drawing_state()
+
+    @Slot(object)
+    def _begin_hand_stroke(self, point: HandPoint) -> None:
+        if self.drop_zone.preview.geometry_generation() != self._preview_geometry_key():
+            return
+        self._active_hand_tool = self._hand_tool
+        self._active_hand_color = QColor(self._hand_color)
+        self._active_hand_width = float(self._hand_size)
+        self._active_hand_points = [point]
+        self._active_hand_generation = self._preview_generation
+        self.drop_zone.preview.begin_active_hand(
+            point,
+            self._active_hand_tool,
+            self._active_hand_color,
+            self._active_hand_width,
+        )
+
+    @Slot(object)
+    def _append_hand_point(self, point: HandPoint) -> None:
+        if not self._active_hand_points or self._active_hand_generation != self._preview_generation:
+            return
+        previous = self._active_hand_points[-1]
+        distance = math.hypot(point.x - previous.x, point.y - previous.y)
+        if distance <= 0:
+            return
+        if distance < max(0.5, self._active_hand_width * 0.08):
+            return
+        self._active_hand_points.append(point)
+        self.drop_zone.preview.append_active_hand(point)
+
+    @Slot()
+    def _finish_hand_stroke(self) -> None:
+        stroke = self._transient_hand_stroke()
+        generation = self._active_hand_generation
+        self._active_hand_points = []
+        self._active_hand_generation = None
+        if stroke is None or generation != self._preview_generation:
+            self.drop_zone.preview.cancel_active_hand()
+            self._refresh_hand_overlay()
+            return
+        width, height = self._final_canvas_size()
+        if width <= 0 or height <= 0:
+            self.drop_zone.preview.cancel_active_hand()
+            self._refresh_hand_overlay()
+            return
+        current = self._hand_draw_settings
+        if current.base_width != width or current.base_height != height:
+            current = scale_hand_draw(current, width, height)
+        self._commit_hand_draw(replace(current, strokes=current.strokes + (stroke,)))
+        self.drop_zone.preview.cancel_active_hand()
+
+    @Slot()
+    def _cancel_hand_stroke(self) -> None:
+        had_points = bool(self._active_hand_points)
+        self._active_hand_points = []
+        self._active_hand_generation = None
+        self.drop_zone.preview.cancel_active_hand()
+        if had_points:
+            self._refresh_hand_overlay()
+
+    def _commit_hand_draw(self, updated: HandDrawSettings) -> None:
+        if self._applying or updated == self._hand_draw_settings:
+            self._refresh_hand_overlay()
+            return
+        self._flush_text_history()
+        self._hand_draw_settings = updated
+        current = self.settings()
+        self._history = self._history[: self._history_index + 1]
+        if not self._history or current != self._history[-1]:
+            self._history.append(current)
+            if len(self._history) > 60:
+                self._history.pop(0)
+            self._history_index = len(self._history) - 1
+        self._show_original = False
+        self.saved_box.hide()
+        self.result_label.clear()
+        self._refresh_hand_overlay()
+        self._update_actions()
+
+    @Slot()
+    def clear_hand_draw(self) -> None:
+        if not self._hand_draw_settings.strokes:
+            return
+        self._cancel_hand_stroke()
+        self._commit_hand_draw(replace(self._hand_draw_settings, strokes=()))
+
     @Slot()
     def choose_image(self) -> None:
         name, _ = QFileDialog.getOpenFileName(self, "加工する画像を選ぶ", "", "画像 (*.png *.jpg *.jpeg *.webp)")
@@ -1447,6 +2169,7 @@ class QuickEditPage(QWidget):
             else:
                 QMessageBox.warning(self, "画像を開けません", "PNG / JPEG / WebP画像を選んでください。")
             return False
+        self._cancel_hand_stroke()
         self.finish_ime(clear_focus=True)
         self._clear_palette_preview_handoff(clear_refresh=True)
         self._preview_timer.stop()
@@ -1545,6 +2268,7 @@ class QuickEditPage(QWidget):
                 mapping_digest=self._palette_mapping_digest,
                 blend_mode=RecolorBlendMode(self.palette_blend_mode_combo.currentData()),
             ),
+            hand_draw=self._hand_draw_settings,
         )
 
     @staticmethod
@@ -1573,6 +2297,7 @@ class QuickEditPage(QWidget):
 
     def apply_settings(self, settings: EditSettings) -> None:
         settings = self._canonical_line_expression_settings(settings)
+        previous_settings = self.settings()
         was_applying = self._applying
         self._applying = True
         self.filter_combo.setCurrentIndex(self.filter_combo.findData(settings.filter_preset.value))
@@ -1616,6 +2341,8 @@ class QuickEditPage(QWidget):
         self._line_art_color = QColor(*settings.line_art.line_color)
         self.line_art_background_combo.setCurrentIndex(self.line_art_background_combo.findData(settings.line_art.background.value))
         self._line_art_background_color = QColor(*settings.line_art.custom_background)
+        self._hand_draw_settings = settings.hand_draw
+        self.hand_visible_check.setChecked(settings.hand_draw.visible)
         self.palette_enabled.setChecked(settings.palette.enabled)
         self.palette_quantize_enabled.setChecked(settings.palette.quantize_enabled)
         self.palette_count_combo.setCurrentIndex(self.palette_count_combo.findData(settings.palette.color_count))
@@ -1638,11 +2365,15 @@ class QuickEditPage(QWidget):
         self._update_color_button(self.sticker_outline_color_button, self._sticker_outline_color)
         self._update_color_button(self.line_art_color_button, self._line_art_color)
         self._update_color_button(self.line_art_background_color_button, self._line_art_background_color)
+        self._update_color_button(self.hand_color_button, self._hand_color)
         self._update_visibility()
         self._applying = was_applying
         if not self._applying:
             self._show_original = False
-            self.schedule_preview()
+            if self._without_hand_draw(previous_settings) != self._without_hand_draw(settings):
+                self.schedule_preview()
+            else:
+                self._refresh_hand_overlay()
             self._update_actions()
 
     def _palette_chip_style(self, color: tuple[int, int, int], *, clickable: bool) -> str:
@@ -2089,6 +2820,14 @@ class QuickEditPage(QWidget):
         self._canonicalize_line_expression_history()
         self._set_text_enabled_from_content()
         self._invalidate_palette_for_upstream_change(self.settings())
+        width, height = self._final_canvas_size()
+        if (
+            self._hand_draw_settings.strokes
+            and width > 0
+            and height > 0
+            and (self._hand_draw_settings.base_width, self._hand_draw_settings.base_height) != (width, height)
+        ):
+            self._hand_draw_settings = scale_hand_draw(self._hand_draw_settings, width, height)
         self._update_visibility()
         current = self.settings()
         if self._history_index < 0 or current != self._history[self._history_index]:
@@ -2144,6 +2883,9 @@ class QuickEditPage(QWidget):
             settings = replace(settings, sticker=replace(settings.sticker, enabled=False))
         return settings
 
+    def _base_preview_settings(self) -> EditSettings:
+        return self._without_hand_draw(self._effective_settings())
+
     def _update_sticker_prerequisite_ui(self) -> None:
         if not self.source_path:
             self.sticker_prereq_status.setText("画像を読み込むと、ステッカー向けのふち付きを確認できます。")
@@ -2167,6 +2909,14 @@ class QuickEditPage(QWidget):
         self.text_details.setVisible(True)
         self.outline_color_button.setEnabled(self.outline_enabled.isChecked())
         self.outline_width_spin.setEnabled(self.outline_enabled.isChecked())
+        hand_mode = self.hand_mode_enabled.isChecked()
+        self.hand_details.setVisible(hand_mode)
+        self.hand_pen_button.setEnabled(hand_mode and self._hand_draw_settings.visible)
+        self.hand_eraser_button.setEnabled(hand_mode and self._hand_draw_settings.visible)
+        self.hand_color_button.setEnabled(hand_mode and self._hand_draw_settings.visible)
+        self.hand_size_spin.setEnabled(hand_mode and self._hand_draw_settings.visible)
+        self.hand_visible_check.setEnabled(hand_mode)
+        self.hand_clear_button.setEnabled(hand_mode and bool(self._hand_draw_settings.strokes))
         self.transparency_details.setVisible(self.transparency_enabled.isChecked())
         self.custom_canvas.setVisible(self.canvas_preset_combo.currentData() == "custom")
         self.canvas_color_button.setVisible(
@@ -2195,6 +2945,7 @@ class QuickEditPage(QWidget):
                 True,
                 palette_requeue=self._processing_palette_requeue,
             )
+        self._refresh_hand_overlay()
 
     def schedule_preview(self) -> None:
         if self.source_path and self._palette_thread is None:
@@ -2244,7 +2995,7 @@ class QuickEditPage(QWidget):
             self._preview_request_id,
             self.source_path,
             identity,
-            self._effective_settings(),
+            self._base_preview_settings(),
             self._show_original,
         )
         suppress_activity = self._preview_refresh_without_activity
@@ -2281,7 +3032,7 @@ class QuickEditPage(QWidget):
         generation, _request_id, source, identity, settings, show_original = request
         if generation != self._preview_generation or self.source_path != source:
             return False
-        if settings != self._effective_settings() or show_original != self._show_original:
+        if settings != self._base_preview_settings() or show_original != self._show_original:
             return False
         try:
             return identity == self._palette_source_identity(source)
@@ -2319,7 +3070,10 @@ class QuickEditPage(QWidget):
         kind, payload = result
         if kind == "success" and self._preview_request_is_current(request):
             _generation, _request_id, _source, _identity, _settings, show_original, image, width, height = payload
-            self.drop_zone.preview.set_image(image)
+            full_size = self._source_size if show_original else output_dimensions(self._source_size, _settings.canvas)
+            geometry_key = (_generation, _settings, show_original)
+            self.drop_zone.preview.set_image(image, full_size, geometry_key)
+            self._refresh_hand_overlay()
             self.preview_status.setStyleSheet("color: #667085;")
             status = ("元画像" if show_original else "加工後") + f" · Preview {width} × {height}"
             if self._palette_needs_reextract:
@@ -2337,6 +3091,7 @@ class QuickEditPage(QWidget):
             self.preview_status.setText(message)
             if self._preview_activity_token is not None:
                 self.preview_activity.fail(self._preview_activity_token)
+            self._update_hand_drawing_state()
         if self._palette_terminal_preview_status is not None:
             message, style = self._palette_terminal_preview_status
             self.preview_status.setStyleSheet(style)
@@ -2358,6 +3113,8 @@ class QuickEditPage(QWidget):
 
     @Slot()
     def undo(self) -> None:
+        if self._active_hand_points:
+            return
         self._flush_text_history()
         self._canonicalize_line_expression_history()
         if self._history_index > 0:
@@ -2366,6 +3123,8 @@ class QuickEditPage(QWidget):
 
     @Slot()
     def redo(self) -> None:
+        if self._active_hand_points:
+            return
         self._flush_text_history()
         self._canonicalize_line_expression_history()
         if self._history_index + 1 < len(self._history):
@@ -2374,6 +3133,7 @@ class QuickEditPage(QWidget):
 
     @Slot()
     def reset_edits(self) -> None:
+        self._cancel_hand_stroke()
         self.cancel_palette_extraction()
         self._flush_text_history()
         self.finish_ime(clear_focus=True)
@@ -2389,13 +3149,16 @@ class QuickEditPage(QWidget):
     @Slot()
     def show_original(self) -> None:
         if self.source_path:
+            self._cancel_hand_stroke()
             self._show_original = True
+            self._refresh_hand_overlay()
             self.update_preview()
 
     @Slot()
     def show_edited(self) -> None:
         if self.source_path:
             self._show_original = False
+            self._refresh_hand_overlay()
             self.update_preview()
 
     def apply_text_preset(self, white_text: bool) -> None:
@@ -2477,6 +3240,7 @@ class QuickEditPage(QWidget):
     @Slot(bool)
     def _eyedropper_toggled(self, enabled: bool) -> None:
         self.drop_zone.preview.set_picking(enabled)
+        self._update_hand_drawing_state()
         self.eyedropper_button.setText("画像上の色をクリック" if enabled else "画像から色を選ぶ")
         if enabled:
             self.preview_status.setText("透明にしたい背景色を画像上でクリックしてください")
@@ -2680,6 +3444,14 @@ class QuickEditPage(QWidget):
             self.filter_combo,
             self.text_enabled,
             self.text_details,
+            self.hand_mode_enabled,
+            self.hand_details,
+            self.hand_pen_button,
+            self.hand_eraser_button,
+            self.hand_color_button,
+            self.hand_size_spin,
+            self.hand_visible_check,
+            self.hand_clear_button,
             self.transparency_enabled,
             self.transparency_details,
             self.canvas_preset_combo,
@@ -2725,6 +3497,7 @@ class QuickEditPage(QWidget):
             self.palette_extract_button.setEnabled(True)
         for section in self.sections:
             section.toggle.setEnabled(not processing)
+        self._update_hand_drawing_state()
 
     def _set_processing(self, processing: bool, *, palette_requeue: bool = False) -> None:
         self._processing_controls_locked = processing
@@ -2762,6 +3535,7 @@ class QuickEditPage(QWidget):
         return self._thread is None and self._palette_thread is None
 
     def cleanup(self) -> None:
+        self._cancel_hand_stroke()
         self._preview_generation += 1
         self._preview_pending_request = None
         self.preview_activity.invalidate()

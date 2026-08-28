@@ -7,6 +7,10 @@ from .models import (
     EditResult,
     EditSettings,
     FilterPreset,
+    HandDrawSettings,
+    HandPoint,
+    HandStroke,
+    HandTool,
     LineArtAmount,
     LineArtBackground,
     LineArtSettings,
@@ -32,6 +36,7 @@ from .palette import (
     rgba_digest,
 )
 from .sticker import apply_sticker
+from .hand_draw import compose_hand_draw, render_hand_overlay, scale_hand_draw
 
 __all__ = [
     "CanvasBackground",
@@ -41,6 +46,10 @@ __all__ = [
     "EditService",
     "EditSettings",
     "FilterPreset",
+    "HandDrawSettings",
+    "HandPoint",
+    "HandStroke",
+    "HandTool",
     "LineArtAmount",
     "LineArtBackground",
     "LineArtSettings",
@@ -63,4 +72,7 @@ __all__ = [
     "rgba_digest",
     "quantize_image",
     "apply_sticker",
+    "compose_hand_draw",
+    "render_hand_overlay",
+    "scale_hand_draw",
 ]

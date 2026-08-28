@@ -17,6 +17,7 @@ from .palette import (
     rgba_digest,
 )
 from .sticker import apply_sticker
+from .hand_draw import compose_hand_draw
 from .filters import apply_filter
 from .models import EditSettings, RecolorBlendMode
 
@@ -88,7 +89,8 @@ def render_edit(source: Image.Image, settings: EditSettings) -> Image.Image:
     line_art = apply_line_art(paletted, settings.line_art)
     composed = place_on_canvas(line_art, settings.canvas)
     sticker = apply_sticker(composed, settings.sticker)
-    return draw_text(sticker, settings.text)
+    text = draw_text(sticker, settings.text)
+    return compose_hand_draw(text, settings.hand_draw)
 
 
 def render_preview(

@@ -524,7 +524,7 @@ def test_material_ui_defaults_and_vertical_scroll(qt_app, width: int) -> None:
     page.resize(width, 680)
     page.show()
     qt_app.processEvents()
-    assert len(page.sections) == 5
+    assert len(page.sections) == 6
     assert page.settings().palette.color_count == 6
     assert page.settings().palette.blend_mode is RecolorBlendMode.SHARP
     assert not page.settings().sticker.enabled

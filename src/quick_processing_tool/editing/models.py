@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+import math
 
 
 class FilterPreset(str, Enum):
@@ -70,6 +71,11 @@ class RecolorBlendMode(str, Enum):
     SHARP = "sharp"
     SMOOTH = "smooth"
     PRESERVE_SHADING = "preserve_shading"
+
+
+class HandTool(str, Enum):
+    PEN = "pen"
+    ERASER = "eraser"
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +174,75 @@ class PaletteSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class HandPoint:
+    x: float
+    y: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.x, (int, float)) or isinstance(self.x, bool):
+            raise TypeError("Hand drawing point coordinates must be numbers")
+        if not isinstance(self.y, (int, float)) or isinstance(self.y, bool):
+            raise TypeError("Hand drawing point coordinates must be numbers")
+        if not math.isfinite(self.x) or not math.isfinite(self.y):
+            raise ValueError("Hand drawing points must be finite")
+        object.__setattr__(self, "x", float(self.x))
+        object.__setattr__(self, "y", float(self.y))
+
+
+@dataclass(frozen=True, slots=True)
+class HandStroke:
+    tool: HandTool = HandTool.PEN
+    points: tuple[HandPoint, ...] = ()
+    color: tuple[int, int, int, int] = (0, 0, 0, 255)
+    width: float = 8.0
+
+    def __post_init__(self) -> None:
+        try:
+            tool = HandTool(self.tool)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Unsupported hand drawing tool") from exc
+        points = tuple(self.points)
+        color = tuple(self.color)
+        if not points:
+            raise ValueError("A hand drawing stroke needs at least one point")
+        if any(not isinstance(point, HandPoint) for point in points):
+            raise TypeError("Hand drawing stroke points must be HandPoint values")
+        if not isinstance(self.width, (int, float)) or isinstance(self.width, bool):
+            raise TypeError("Hand drawing stroke width must be numeric")
+        if not math.isfinite(self.width) or self.width <= 0:
+            raise ValueError("Hand drawing stroke width must be positive")
+        if len(color) != 4 or any(type(channel) is not int or not 0 <= channel <= 255 for channel in color):
+            raise ValueError("Hand drawing color must be RGBA")
+        object.__setattr__(self, "tool", tool)
+        object.__setattr__(self, "points", points)
+        object.__setattr__(self, "color", color)
+        object.__setattr__(self, "width", float(self.width))
+
+
+@dataclass(frozen=True, slots=True)
+class HandDrawSettings:
+    visible: bool = True
+    strokes: tuple[HandStroke, ...] = ()
+    base_width: int = 0
+    base_height: int = 0
+
+    def __post_init__(self) -> None:
+        strokes = tuple(self.strokes)
+        if any(not isinstance(stroke, HandStroke) for stroke in strokes):
+            raise TypeError("Hand drawing settings require HandStroke values")
+        if type(self.base_width) is not int or type(self.base_height) is not int:
+            raise TypeError("Hand drawing canvas dimensions must be integers")
+        if self.base_width < 0 or self.base_height < 0:
+            raise ValueError("Hand drawing canvas dimensions cannot be negative")
+        if bool(self.base_width) != bool(self.base_height):
+            raise ValueError("Hand drawing canvas dimensions must both be set")
+        if strokes and (self.base_width <= 0 or self.base_height <= 0):
+            raise ValueError("Hand drawing strokes require positive canvas dimensions")
+        object.__setattr__(self, "visible", bool(self.visible))
+        object.__setattr__(self, "strokes", strokes)
+
+
+@dataclass(frozen=True, slots=True)
 class EditSettings:
     filter_preset: FilterPreset = FilterPreset.NONE
     transparency: TransparencySettings = field(default_factory=TransparencySettings)
@@ -176,6 +251,7 @@ class EditSettings:
     sticker: StickerSettings = field(default_factory=StickerSettings)
     line_art: LineArtSettings = field(default_factory=LineArtSettings)
     palette: PaletteSettings = field(default_factory=PaletteSettings)
+    hand_draw: HandDrawSettings = field(default_factory=HandDrawSettings)
 
 
 @dataclass(frozen=True, slots=True)
