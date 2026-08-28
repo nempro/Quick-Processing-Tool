@@ -140,6 +140,7 @@ def test_all_page_left_panes_have_no_horizontal_overflow(
         window.navigation.widget(0),
         window.thumbnail_page,
         window.sound_effect_page,
+        window.speech_bubble_page,
         window.edit_page,
         window.upscale_page,
     ]

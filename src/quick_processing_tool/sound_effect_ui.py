@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QObject, QRunnable, QStandardPaths, Qt, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QBrush, QColor, QPainter, QPixmap
+from PySide6.QtCore import QObject, QRunnable, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame,
     QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
@@ -118,6 +118,7 @@ class SoundEffectPage(QWidget):
         self._outline_color = QColor(255, 255, 255, 255)
         self._shadow_color = QColor(0, 0, 0, 160)
         self.preview_image: Image.Image | None = None
+        self.last_saved_path: Path | None = None
         self._auto_filename = "sound_effect"
         self._resetting = False
         self._render_generation = 0
@@ -217,6 +218,12 @@ class SoundEffectPage(QWidget):
         self.save_result = QLabel()
         self.save_result.setWordWrap(True)
         save_layout.addWidget(self.save_result)
+        self.open_image_button = QPushButton("画像を開く")
+        self.open_folder_button = QPushButton("保存先を開く")
+        self.open_image_button.hide()
+        self.open_folder_button.hide()
+        save_layout.addWidget(self.open_image_button)
+        save_layout.addWidget(self.open_folder_button)
         splitter.addWidget(save_panel)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([300, 600, 240])
@@ -301,6 +308,8 @@ class SoundEffectPage(QWidget):
         self.folder_button.clicked.connect(self.choose_output_folder)
         self.filename_edit.textChanged.connect(self._update_save_state)
         self.save_button.clicked.connect(self.save_png)
+        self.open_image_button.clicked.connect(self.open_saved_image)
+        self.open_folder_button.clicked.connect(self.open_saved_folder)
         self._preview_timer.timeout.connect(self._request_preview)
 
     @staticmethod
@@ -483,3 +492,16 @@ class SoundEffectPage(QWidget):
         self.save_result.setStyleSheet("color: #137333; font-weight: 700;")
         self.save_result.setText(f"✓ 保存しました\n{path.name}")
         self.save_result.setToolTip(str(path))
+        self.last_saved_path = path
+        self.open_image_button.show()
+        self.open_folder_button.show()
+
+    def open_saved_image(self) -> None:
+        path = self.last_saved_path
+        if path is None or not path.is_file() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            QMessageBox.warning(self, "画像を開けません", "PNGを保存してから、もう一度お試しください。")
+
+    def open_saved_folder(self) -> None:
+        folder = self.last_saved_path.parent if self.last_saved_path else None
+        if folder is None or not folder.is_dir() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+            QMessageBox.warning(self, "保存先を開けません", "PNGを保存してから、もう一度お試しください。")

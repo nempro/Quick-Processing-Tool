@@ -58,6 +58,7 @@ from .edit_ui import QuickEditPage
 from .upscale_ui import UpscalePage
 from .pixel_editor_ui import PixelEditorPage
 from .sound_effect_ui import SoundEffectPage
+from .speech_bubble_ui import SpeechBubblePage
 from .source_ui import CurrentSourceCard
 from .ui_styles import INPUT_CONTROL_STYLE
 from .preview_activity import PreviewActivityIndicator
@@ -562,6 +563,8 @@ class MainWindow(QMainWindow):
         self.thumbnail_tab = self.navigation.addTab(self.thumbnail_page, "文字サムネ")
         self.sound_effect_page = SoundEffectPage()
         self.sound_effect_tab = self.navigation.addTab(self.sound_effect_page, "擬音素材")
+        self.speech_bubble_page = SpeechBubblePage()
+        self.speech_bubble_tab = self.navigation.addTab(self.speech_bubble_page, "吹き出し素材")
         self.edit_page = QuickEditPage()
         self.edit_page.set_workspace_managed(True)
         self.edit_page.source_change_requested.connect(self.set_current_source)
@@ -1262,6 +1265,7 @@ class MainWindow(QMainWindow):
         self.drop_zone.setEnabled(False)
         self.navigation.setTabEnabled(self.thumbnail_tab, False)
         self.navigation.setTabEnabled(self.sound_effect_tab, False)
+        self.navigation.setTabEnabled(self.speech_bubble_tab, False)
         self.navigation.setTabEnabled(self.upscale_tab, False)
         self._thread = QThread(self)
         self._worker = ProcessingWorker(
@@ -1291,6 +1295,7 @@ class MainWindow(QMainWindow):
         self.drop_zone.setEnabled(True)
         self.navigation.setTabEnabled(self.thumbnail_tab, True)
         self.navigation.setTabEnabled(self.sound_effect_tab, True)
+        self.navigation.setTabEnabled(self.speech_bubble_tab, True)
         self.navigation.setTabEnabled(self.upscale_tab, True)
         self.navigation.setTabEnabled(self.pixel_tab, True)
         self._update_quick_actions()
@@ -1332,6 +1337,7 @@ class MainWindow(QMainWindow):
     def _thumbnail_processing_changed(self, processing: bool) -> None:
         self.navigation.setTabEnabled(self.quick_tab, not processing)
         self.navigation.setTabEnabled(self.sound_effect_tab, not processing)
+        self.navigation.setTabEnabled(self.speech_bubble_tab, not processing)
         self.navigation.setTabEnabled(self.upscale_tab, not processing)
         self.navigation.setTabEnabled(self.image_edit_tab, not processing)
         self.navigation.setTabEnabled(self.pixel_tab, not processing)
@@ -1342,6 +1348,7 @@ class MainWindow(QMainWindow):
         self.navigation.setTabEnabled(self.quick_tab, not processing)
         self.navigation.setTabEnabled(self.thumbnail_tab, not processing)
         self.navigation.setTabEnabled(self.sound_effect_tab, not processing)
+        self.navigation.setTabEnabled(self.speech_bubble_tab, not processing)
         self.navigation.setTabEnabled(self.image_edit_tab, not processing)
         self.navigation.setTabEnabled(self.pixel_tab, not processing)
         self._update_quick_actions()
@@ -1359,6 +1366,7 @@ class MainWindow(QMainWindow):
         self.navigation.setTabEnabled(self.quick_tab, not processing)
         self.navigation.setTabEnabled(self.thumbnail_tab, not processing)
         self.navigation.setTabEnabled(self.sound_effect_tab, not processing)
+        self.navigation.setTabEnabled(self.speech_bubble_tab, not processing)
         self.navigation.setTabEnabled(self.upscale_tab, not processing)
         self.navigation.setTabEnabled(self.image_edit_tab, True)
         self.navigation.setTabEnabled(self.pixel_tab, not processing)
@@ -1369,6 +1377,7 @@ class MainWindow(QMainWindow):
         self.navigation.setTabEnabled(self.quick_tab, not processing)
         self.navigation.setTabEnabled(self.thumbnail_tab, not processing)
         self.navigation.setTabEnabled(self.sound_effect_tab, not processing)
+        self.navigation.setTabEnabled(self.speech_bubble_tab, not processing)
         self.navigation.setTabEnabled(self.upscale_tab, not processing)
         self.navigation.setTabEnabled(self.image_edit_tab, not processing)
         self.navigation.setTabEnabled(self.pixel_tab, True)
@@ -1422,6 +1431,7 @@ class MainWindow(QMainWindow):
             or self._quick_preview_thread is not None
             or not self.thumbnail_page.can_close()
             or not self.sound_effect_page.can_close()
+            or not self.speech_bubble_page.can_close()
             or not self.edit_page.can_close()
             or not self.upscale_page.can_close()
             or not self.pixel_page.can_close()
