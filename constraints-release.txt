@@ -1,0 +1,17 @@
+altgraph==0.17.5
+colorama==0.4.6
+iniconfig==2.3.0
+packaging==26.3
+pefile==2024.8.26
+Pillow==12.3.0
+pluggy==1.6.0
+Pygments==2.21.0
+PyInstaller==6.22.2
+pyinstaller-hooks-contrib==2026.7
+PySide6==6.11.2
+PySide6-Addons==6.11.2
+PySide6-Essentials==6.11.2
+pytest==9.1.1
+pywin32-ctypes==0.2.3
+setuptools==84.0.0
+shiboken6==6.11.2

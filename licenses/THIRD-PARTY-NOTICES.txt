@@ -1,0 +1,47 @@
+Quick Processing Tool 0.2.0 - Third-party notices
+==================================================
+
+This Windows package contains software from the following projects. The full
+license texts named below are included in this directory.
+
+CPython 3.12.13
+  License: Python Software Foundation License Version 2 and bundled notices
+  File: CPython-LICENSE.txt
+  Source: https://www.python.org/
+
+PySide6 6.11.2, Qt 6.11.2, and shiboken6 6.11.2
+  License used for this distribution: GNU Lesser General Public License v3
+  Files: LGPL-3.0.txt and GPL-3.0.txt
+  Source: https://code.qt.io/cgit/pyside/pyside-setup.git/
+          https://code.qt.io/cgit/qt/
+  The Qt and shiboken shared libraries remain separate DLLs in the _internal
+  directory so users may replace them with compatible modified versions.
+  Qt modules contain permissively licensed third-party components. Qt's
+  version-specific attribution index, including component license texts, is:
+  https://doc.qt.io/qt-6/licenses-used-in-qt.html
+
+Pillow 12.3.0
+  License: MIT-CMU
+  File: Pillow-LICENSE.txt
+  Source: https://github.com/python-pillow/Pillow
+
+PyInstaller 6.22.2 bootloader
+  License: GNU General Public License v2 with a special exception permitting
+  redistribution of executables produced by PyInstaller
+  File: PyInstaller-COPYING.txt
+  Source: https://github.com/pyinstaller/pyinstaller
+
+Microsoft Visual C++ Runtime 14.44.35211
+  License: Microsoft proprietary redistributable runtime terms
+  Source and redistribution terms:
+  https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files
+  Runtime DLLs required by CPython/PySide6 remain separate in _internal.
+
+Optional high-quality upscaling runtime (not included in this ZIP)
+  The supplied installer downloads the official Real-ESRGAN NCNN Vulkan
+  v0.2.5.0 archive after verifying its SHA-256. Applicable upstream license
+  texts are under optional-runtime. Binary/model redistribution is deliberately
+  outside this package.
+
+Quick Processing Tool itself does not declare an open-source license in this
+repository. Contact the distributor for application licensing terms.

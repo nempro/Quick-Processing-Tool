@@ -204,6 +204,18 @@ def test_loaded_state_is_japanese_and_shows_output_forecast(
     assert window.copy_action.text() == "クリップボードにコピー"
 
 
+def test_clipboard_receives_decoded_image(
+    window: MainWindow, app: QApplication, tmp_path: Path
+) -> None:
+    source = make_image(tmp_path / "クリップボード.png", size=(37, 23))
+    window._set_clipboard(source.read_bytes())
+    app.processEvents()
+    copied = QApplication.clipboard().image()
+    assert not copied.isNull()
+    assert (copied.width(), copied.height()) == (37, 23)
+    assert window.statusBar().currentMessage() == "画像をクリップボードにコピーしました"
+
+
 def test_output_forecast_updates_for_resize_rotate_format_and_target(
     window: MainWindow, tmp_path: Path
 ) -> None:

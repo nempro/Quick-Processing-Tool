@@ -5,6 +5,7 @@ import os
 import queue
 import re
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -39,8 +40,16 @@ def default_runtime_dir() -> Path:
     configured = os.environ.get("QUICK_PROCESSING_TOOL_UPSCALER_DIR")
     if configured:
         return Path(configured).expanduser()
-    repository = Path(__file__).resolve().parents[3]
-    return repository / "runtime" / "upscaler" / "realesrgan-ncnn-vulkan"
+    application_root = (
+        Path(sys.executable).resolve().parent
+        if getattr(sys, "frozen", False)
+        else Path(__file__).resolve().parents[3]
+    )
+    portable = application_root / "runtime" / "upscaler" / "realesrgan-ncnn-vulkan"
+    if (portable / "realesrgan-ncnn-vulkan.exe").is_file():
+        return portable
+    local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home()))
+    return local_app_data / "QuickProcessingTool" / "runtime" / "upscaler" / "realesrgan-ncnn-vulkan"
 
 
 class RealESRGANNCNNBackend(UpscaleBackend):

@@ -19,7 +19,7 @@ from quick_processing_tool.upscale_ui import UpscalePage
 from quick_processing_tool.upscaler.backend import BackendAvailability, UpscaleBackend
 from quick_processing_tool.upscaler.errors import InputDecodeError, UpscaleCancelledError, UpscaleProcessingError
 from quick_processing_tool.upscaler.models import UpscaleMode, UpscaleOptions, UpscaleOutputFormat, UpscaleResult
-from quick_processing_tool.upscaler.real_esrgan import RealESRGANNCNNBackend
+from quick_processing_tool.upscaler.real_esrgan import RealESRGANNCNNBackend, default_runtime_dir
 from quick_processing_tool.upscaler.service import UpscaleService
 
 
@@ -59,6 +59,33 @@ class MockBackend(UpscaleBackend):
 def make_image(path: Path, mode: str = "RGBA") -> None:
     color = (20, 80, 160, 90) if mode == "RGBA" else (20, 80, 160)
     Image.new(mode, (13, 9), color).save(path)
+
+
+def test_default_runtime_dir_prefers_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    configured = tmp_path / "設定 Runtime"
+    monkeypatch.setenv("QUICK_PROCESSING_TOOL_UPSCALER_DIR", str(configured))
+    assert default_runtime_dir() == configured
+
+
+def test_frozen_runtime_dir_prefers_portable_then_user_install(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    executable = tmp_path / "配布 folder" / "Quick Processing Tool.exe"
+    portable = executable.parent / "runtime" / "upscaler" / "realesrgan-ncnn-vulkan"
+    user_data = tmp_path / "App Data"
+    monkeypatch.delenv("QUICK_PROCESSING_TOOL_UPSCALER_DIR", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(user_data))
+    monkeypatch.setattr("quick_processing_tool.upscaler.real_esrgan.sys.frozen", True, raising=False)
+    monkeypatch.setattr("quick_processing_tool.upscaler.real_esrgan.sys.executable", str(executable))
+
+    expected_user = user_data / "QuickProcessingTool" / "runtime" / "upscaler" / "realesrgan-ncnn-vulkan"
+    assert default_runtime_dir() == expected_user
+
+    portable.mkdir(parents=True)
+    (portable / "realesrgan-ncnn-vulkan.exe").write_bytes(b"runtime")
+    assert default_runtime_dir() == portable
 
 
 def test_real_backend_reports_missing_executable_and_models(tmp_path: Path) -> None:

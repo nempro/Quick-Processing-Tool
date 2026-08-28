@@ -2,12 +2,28 @@
 
 The high-quality upscaling tab uses the official Windows portable build of **Real-ESRGAN NCNN Vulkan** as an external process. The Python application, runtime executable, and model assets are deliberately separated.
 
+## Install for a release package
+
+From the extracted release folder, run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_upscaler_runtime.ps1
+```
+
+The default `User` scope installs below `%LOCALAPPDATA%\QuickProcessingTool\runtime`, so the application continues to work when its read-only or movable release folder is updated. Use `-InstallScope Portable` only when the runtime must travel inside the release folder.
+
 ## Install for development
 
 Run:
 
 ```powershell
 .\scripts\install_upscaler_runtime.ps1
+```
+
+For a repository-local runtime, use the portable scope:
+
+```powershell
+.\scripts\install_upscaler_runtime.ps1 -InstallScope Portable
 ```
 
 The script downloads the pinned official `v0.2.5.0` package, verifies SHA-256 `ABC02804E17982A3BE33675E4D471E91EA374E65B70167ABC09E31ACB412802D`, and expands it to:

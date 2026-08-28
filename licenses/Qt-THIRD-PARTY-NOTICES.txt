@@ -1,0 +1,58 @@
+Qt 6.11.2 third-party attribution inventory
+============================================
+
+Release artifact scope
+----------------------
+
+This package intentionally ships only Qt Core, Qt GUI, Qt Widgets, the Windows
+platform/style plug-ins, and JPEG/WebP image format plug-ins. Qt Virtual
+Keyboard, QML, Quick, PDF, SVG, Network, OpenGL software rendering, TLS, and
+their plug-ins are excluded by the build allowlist.
+
+The authoritative Qt 6.11.2 component notices and full per-component license
+statements are linked from:
+
+https://doc.qt.io/qt-6/licenses-used-in-qt.html
+
+The following conservative inventory mirrors the Qt 6.11.2 attribution groups
+for the shipped modules. A listed component may be compiled out on Windows;
+listing it here does not add code to the package.
+
+Qt Core
+-------
+
+- Apache Tika MIME definitions — Apache-2.0
+- BLAKE2 reference implementation — CC0-1.0 or Apache-2.0
+- zlib — Zlib
+- Robert Penner easing equations — BSD-3-Clause
+- double-conversion — BSD-3-Clause
+- MD4, MD5, SHA-1 — Public Domain
+- PCRE2 and its stack-less JIT — BSD-2-Clause / BSD-3-Clause with exception
+- SHA-3/Keccak and SipHash — CC0-1.0 / BSD-2-Clause
+- SHA-384 and SHA-512 — BSD-3-Clause
+- TinyCBOR — MIT
+- Unicode UCD and CLDR — Unicode data/software licenses
+- forkfd — MIT
+- tl::expected — CC0-1.0
+
+Qt GUI, Windows platform, and image plug-ins
+-------------------------------------------
+
+- Adobe Glyph List — BSD-3-Clause
+- D3D12 Memory Allocator and mipmap generator — MIT
+- Emoji Segmenter — Apache-2.0
+- FreeType 2 and rasterizer — FreeType Project License
+- HarfBuzz-NG — MIT
+- LibJPEG-turbo — Independent JPEG Group and BSD-3-Clause
+- LibPNG — Libpng License
+- MD4C — MIT
+- OpenGL/Vulkan headers and registry data — MIT / Apache-2.0
+- Pixman and WebGradients — MIT
+- Smooth Scaling Algorithm — BSD-2-Clause / Imlib2
+- Wintab API — LCS-Telegraphics License
+- sRGB ICC profile — International Color Consortium License
+- WebP/libwebp — BSD-3-Clause
+
+Qt and PySide/Shiboken themselves are distributed under the LGPLv3 route
+described in THIRD-PARTY-NOTICES.txt. Full LGPLv3 and GPLv3 texts are included
+beside this file.

@@ -1,10 +1,20 @@
+param(
+    [ValidateSet("User", "Portable")]
+    [string]$InstallScope = "User"
+)
+
 $ErrorActionPreference = "Stop"
 
 $runtimeVersion = "Real-ESRGAN portable v0.2.5.0 (2022-04-24)"
 $runtimeUrl = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip"
 $expectedSha256 = "ABC02804E17982A3BE33675E4D471E91EA374E65B70167ABC09E31ACB412802D"
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-$runtimeRoot = Join-Path $repositoryRoot "runtime\upscaler\realesrgan-ncnn-vulkan"
+$runtimeBase = if ($InstallScope -eq "Portable") {
+    $repositoryRoot
+} else {
+    Join-Path $env:LOCALAPPDATA "QuickProcessingTool"
+}
+$runtimeRoot = Join-Path $runtimeBase "runtime\upscaler\realesrgan-ncnn-vulkan"
 $temporaryZip = Join-Path ([IO.Path]::GetTempPath()) "quick-processing-tool-realesrgan-v0.2.5.0.zip"
 
 Write-Host "Downloading $runtimeVersion..."
