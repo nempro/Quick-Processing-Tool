@@ -1,6 +1,6 @@
 # Upscaler runtime
 
-Phase 3A uses the official Windows portable build of **Real-ESRGAN NCNN Vulkan** as an external process. The Python application, runtime executable, and model assets are deliberately separated.
+The high-quality upscaling tab uses the official Windows portable build of **Real-ESRGAN NCNN Vulkan** as an external process. The Python application, runtime executable, and model assets are deliberately separated.
 
 ## Install for development
 

@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
+from PySide6.QtCore import QMimeData, QPoint, QPointF, QThread, Qt, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import QApplication, QFileDialog, QSplitter, QToolButton, QWidget
 
@@ -78,6 +78,32 @@ def test_empty_state_explains_all_three_entry_requirements(window: MainWindow) -
     assert window.drop_zone._stack.currentWidget() is window.drop_zone.overlay
     assert not window.export_action.isEnabled()
     assert not window.copy_action.isEnabled()
+
+
+def test_quick_processing_locks_edit_and_pixel_tabs(
+    window: MainWindow,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = make_image(tmp_path / "source.png")
+    monkeypatch.setattr(QThread, "start", lambda _thread: None)
+    window._start_worker([source], copy_mode=False, row_indices=[0])
+    assert not window.navigation.isTabEnabled(window.image_edit_tab)
+    assert not window.navigation.isTabEnabled(window.pixel_tab)
+    window._clear_worker_refs()
+    assert window.navigation.isTabEnabled(window.image_edit_tab)
+    assert window.navigation.isTabEnabled(window.pixel_tab)
+
+
+def test_custom_output_folder_keeps_full_path_in_tooltip(
+    window: MainWindow,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = tmp_path.joinpath(*(["very-long-folder-name"] * 5))
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_args: str(folder))
+    window.choose_folder()
+    assert window.folder_button.toolTip() == str(folder)
 
 
 def test_three_column_layout_keeps_loaded_images_panel_visible(

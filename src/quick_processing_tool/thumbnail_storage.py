@@ -519,7 +519,7 @@ class ThumbnailTemplateStore:
         if checked.casefold() in {
             item.name.casefold() for item in self.canvas_presets()
         }:
-            raise ThumbnailStorageError("同じ名前のサイズPresetが既にあります。")
+            raise ThumbnailStorageError("同じ名前のサイズプリセットが既にあります。")
         preset = CanvasPreset(checked, width, height)
         self._user_presets.append(preset)
         try:
@@ -539,7 +539,7 @@ class ThumbnailTemplateStore:
                     self._user_presets.insert(index, removed)
                     raise
                 return
-        raise ThumbnailStorageError("標準サイズPresetは削除できません。")
+        raise ThumbnailStorageError("標準サイズプリセットは削除できません。")
 
     def is_user_preset(self, name: str) -> bool:
         return any(item.name == name for item in self._user_presets)

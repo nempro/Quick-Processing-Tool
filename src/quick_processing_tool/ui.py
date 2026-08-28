@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QStackedLayout,
@@ -606,7 +607,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self._settings_panel())
 
         center = QWidget()
-        center.setMinimumWidth(400)
+        center.setMinimumWidth(240)
         center_layout = QVBoxLayout(center)
         center_layout.setContentsMargins(8, 8, 8, 8)
         self.quick_preview_activity = PreviewActivityIndicator()
@@ -629,7 +630,7 @@ class MainWindow(QMainWindow):
 
         batch_box = QWidget()
         batch_box.setObjectName("loaded_images_panel")
-        batch_box.setMinimumWidth(240)
+        batch_box.setMinimumWidth(180)
         batch_layout = QVBoxLayout(batch_box)
         batch_layout.setContentsMargins(8, 8, 8, 8)
         self.files_heading = QLabel("読み込んだ画像　0枚")
@@ -652,11 +653,12 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
-        splitter.setSizes([300, 620, 260])
+        splitter.setSizes([240, 620, 240])
         return splitter
 
     def _settings_panel(self) -> QWidget:
         content = QWidget()
+        content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout = QVBoxLayout(content)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.setSpacing(10)
@@ -825,7 +827,7 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(content)
-        scroll.setMinimumWidth(285)
+        scroll.setMinimumWidth(220)
         scroll.setMaximumWidth(340)
         self._destination_changed()
         self._settings_changed()
@@ -1215,6 +1217,7 @@ class MainWindow(QMainWindow):
             self.folder_button.setText(
                 self.custom_folder.name or str(self.custom_folder)
             )
+            self.folder_button.setToolTip(str(self.custom_folder))
 
     @Slot()
     def export_all(self) -> None:
@@ -1274,6 +1277,8 @@ class MainWindow(QMainWindow):
         self.navigation.setTabEnabled(self.sound_effect_tab, False)
         self.navigation.setTabEnabled(self.speech_bubble_tab, False)
         self.navigation.setTabEnabled(self.upscale_tab, False)
+        self.navigation.setTabEnabled(self.image_edit_tab, False)
+        self.navigation.setTabEnabled(self.pixel_tab, False)
         self._thread = QThread(self)
         self._worker = ProcessingWorker(
             paths,
@@ -1304,6 +1309,7 @@ class MainWindow(QMainWindow):
         self.navigation.setTabEnabled(self.sound_effect_tab, True)
         self.navigation.setTabEnabled(self.speech_bubble_tab, True)
         self.navigation.setTabEnabled(self.upscale_tab, True)
+        self.navigation.setTabEnabled(self.image_edit_tab, True)
         self.navigation.setTabEnabled(self.pixel_tab, True)
         self._update_quick_actions()
 

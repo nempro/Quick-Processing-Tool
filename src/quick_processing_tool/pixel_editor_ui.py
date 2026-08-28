@@ -34,6 +34,19 @@ def _qimage(image: Image.Image) -> QImage:
 SUPPORTED_DROP_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 INVALID_IMAGE_MESSAGE = "PNG / JPEG / WebP画像を選んでください。"
 
+PIXEL_STYLE = INPUT_CONTROL_STYLE + """
+QPushButton { min-height: 28px; background: #f5f7fa; color: #182230;
+    border: 1px solid #7b899a; border-radius: 6px; padding: 4px 8px; }
+QPushButton:hover { background: #e5edf6; border-color: #405b79; }
+QPushButton:focus { background: white; border: 2px solid #2457b2; padding: 3px 7px; }
+QPushButton:disabled { background: #f3f4f6; color: #9aa1aa; border-color: #d4d8de; }
+QPushButton#pixelSave { min-height: 44px; background: #315fbd; color: white;
+    border-color: #315fbd; border-radius: 8px; font-size: 14px; font-weight: 700; }
+QPushButton#pixelSave:hover { background: #284fa1; }
+QPushButton#pixelSave:focus { border: 2px solid #173a82; padding: 3px 7px; }
+QPushButton#pixelSave:disabled { background: #d9dee6; color: #8f98a6; border-color: #d9dee6; }
+"""
+
 
 class PixelImportWorker(QObject):
     succeeded = Signal(object)
@@ -325,7 +338,9 @@ class PixelEditorPage(QWidget):
 
     def _build_ui(self):
         self.setAcceptDrops(True)
+        self.setStyleSheet(PIXEL_STYLE)
         splitter = QSplitter(Qt.Horizontal, self)
+        splitter.setObjectName("pixel_workspace")
         splitter.setChildrenCollapsible(False)
 
         left = QScrollArea()
@@ -333,6 +348,7 @@ class PixelEditorPage(QWidget):
         left.setWidgetResizable(True)
         left.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         left_widget = QWidget()
+        left_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(8, 8, 8, 8)
 
@@ -552,7 +568,7 @@ class PixelEditorPage(QWidget):
         vl.setContentsMargins(7, 7, 7, 7)
         vl.setSpacing(5)
         self.zoom_combo = QComboBox()
-        self.zoom_combo.addItems(["Fit", "2x", "4x", "8x", "16x"])
+        self.zoom_combo.addItems(["全体表示", "2倍", "4倍", "8倍", "16倍"])
         self.zoom_combo.setCurrentIndex(2)
         self.zoom_combo.currentIndexChanged.connect(self._zoom_changed)
         view_row = QHBoxLayout()
@@ -673,6 +689,7 @@ class PixelEditorPage(QWidget):
         self.save_hint_label.setStyleSheet("color: #667085;")
         rl.addWidget(self.save_hint_label)
         self.save_button = QPushButton("PNGで保存")
+        self.save_button.setObjectName("pixelSave")
         self.save_button.clicked.connect(self.save)
         rl.addWidget(self.save_button)
         self.saved_label = QLabel()
@@ -1293,7 +1310,7 @@ class PixelEditorPage(QWidget):
             result = save_png(self.canvas, self.output_folder, self.source_path, custom_stem=normalized)
             self._last_saved_result = result
             self.saved_label.setStyleSheet("color: #137333; font-weight: 700;")
-            self.saved_label.setText(f"✓ PNGを保存しました\n{result.output_path.name}\n{result.width} × {result.height} / {result.size_bytes:,} bytes")
+            self.saved_label.setText(f"✓ PNGを保存しました\n{result.output_path.name}\n{result.width} × {result.height} / {result.size_bytes:,} バイト")
             self._update_save_ui()
             self._update_document_summary()
         except PixelExportError as exc:

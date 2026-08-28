@@ -733,7 +733,7 @@ def test_palette_terminal_handoff_cannot_leak_across_source_replacement(
         assert page.source_path == second_source.resolve()
         assert _preview_pixel(page)[:3] == (0, 0, 255)
         assert "古い代表色エラー" not in page.preview_status.text()
-        assert page.preview_status.text().startswith("加工後 · Preview")
+        assert page.preview_status.text().startswith("加工後 · プレビュー")
         assert not page._palette_preview_refresh_pending
         assert page._palette_terminal_preview_status is None
         assert not page._palette_terminal_activity_pending

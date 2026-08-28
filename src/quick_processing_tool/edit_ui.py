@@ -922,7 +922,7 @@ class EditDropZone(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setAcceptDrops(True)
-        self.setMinimumSize(380, 340)
+        self.setMinimumSize(240, 340)
         self._empty = True
         self._stack = QStackedLayout(self)
         self._stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
@@ -1245,6 +1245,7 @@ class QuickEditPage(QWidget):
     def _build_ui(self) -> None:
         self.setStyleSheet(EDIT_STYLE)
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setObjectName("edit_workspace")
 
         self.settings_scroll = QScrollArea()
         self.settings_scroll.setWidgetResizable(True)
@@ -1803,7 +1804,7 @@ class QuickEditPage(QWidget):
         splitter.addWidget(center)
 
         right = QWidget()
-        right.setMinimumWidth(270)
+        right.setMinimumWidth(220)
         right.setMaximumWidth(360)
         rl = QVBoxLayout(right)
         rl.setContentsMargins(8, 12, 12, 12)
@@ -3163,7 +3164,7 @@ class QuickEditPage(QWidget):
             self.drop_zone.preview.set_image(image, full_size, geometry_key)
             self._refresh_hand_overlay()
             self.preview_status.setStyleSheet("color: #667085;")
-            status = ("元画像" if show_original else "加工後") + f" · Preview {width} × {height}"
+            status = ("元画像" if show_original else "加工後") + f" · プレビュー {width} × {height}"
             if self._palette_needs_reextract:
                 status += " · 代表色を再抽出してください"
             self.preview_status.setText(status)
@@ -3523,7 +3524,7 @@ class QuickEditPage(QWidget):
         self.saved_path.set_path(result.output_path)
         self.saved_box.show()
         self._update_save_panel()
-        alpha_text = "Alpha保持" if result.has_alpha else "不透明"
+        alpha_text = "透明部分を保持" if result.has_alpha else "不透明"
         self.output_info.setText(
             f"加工後（保存済み）\n{result.width} × {result.height} / {result.output_format}\n"
             f"{self._human_bytes(result.size_bytes)} / {alpha_text}"

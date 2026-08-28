@@ -57,6 +57,16 @@ def test_pixel_page_japanese_controls_defaults_and_state(qt_app: QApplication) -
     assert page.canvas_view.tool == PixelTool.ERASER
     page.grid_check.setChecked(False)
     assert not page.canvas_view.grid_enabled
+    assert page.zoom_combo.currentText() == "4倍"
+    assert page.save_button.objectName() == "pixelSave"
+    for selector in (
+        "QPushButton:hover",
+        "QPushButton:focus",
+        "QPushButton:disabled",
+        "QPushButton#pixelSave:hover",
+        "QPushButton#pixelSave:disabled",
+    ):
+        assert selector in page.styleSheet()
 
 
 @pytest.mark.parametrize("size", [(900, 620), (1180, 760), (1440, 900)])
@@ -120,6 +130,8 @@ def test_save_result_open_folder_and_exact_parent_tracking(
     assert page._last_saved_result.output_path.parent == tmp_path
     assert "PNGを保存しました" in page.saved_label.text()
     assert "完成.png" in page.saved_label.text()
+    assert "バイト" in page.saved_label.text()
+    assert "bytes" not in page.saved_label.text()
     assert page.open_folder_button.isEnabled()
     page.open_saved_folder()
     assert opened

@@ -146,3 +146,26 @@ def test_empty_text_disables_save_and_tab_is_independent(qt_app: QApplication) -
     assert "擬音素材" in labels
     assert window.navigation.widget(labels.index("擬音素材")) is window.sound_effect_page
     window.close()
+
+
+def test_sound_ui_states_are_complete_and_paths_elide(qt_app: QApplication, tmp_path: Path) -> None:
+    page = SoundEffectPage()
+    style = page.styleSheet()
+    for selector in (
+        "QPlainTextEdit:hover",
+        "QPlainTextEdit:focus",
+        "QPlainTextEdit:disabled",
+        "QPushButton:hover",
+        "QPushButton:focus",
+        "QPushButton:disabled",
+        "QPushButton#soundSave:hover",
+    ):
+        assert selector in style
+    long_folder = tmp_path.joinpath(*(["very-long-folder-name"] * 6))
+    page.output_folder = long_folder
+    page.folder_label.resize(120, 28)
+    page._update_save_state()
+    assert page.folder_label.toolTip() == str(long_folder)
+    assert "…" in page.folder_label.text()
+    assert page.zoom_combo.currentText() == "全体表示"
+    page.close()

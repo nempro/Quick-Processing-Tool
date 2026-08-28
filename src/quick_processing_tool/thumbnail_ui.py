@@ -345,10 +345,11 @@ class ThumbnailWorker(QObject):
             except Exception as exc:  # One title must not stop the remaining batch.
                 failed += 1
                 LOGGER.exception("Thumbnail generation failed: %s", record.title)
+                reason = str(exc).strip()
                 message = (
-                    str(exc)
+                    reason
                     if isinstance(exc, ProcessingError)
-                    else "サムネイル生成に失敗しました。"
+                    else f"サムネイル生成に失敗しました: {reason or type(exc).__name__}"
                 )
                 self.item_status.emit(row, "Error", message)
             self.progress.emit(round((row + 1) * 100 / total))
@@ -415,7 +416,7 @@ class ThumbnailPage(QWidget):
         settings_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        settings_scroll.setMinimumWidth(280)
+        settings_scroll.setMinimumWidth(220)
         settings_scroll.setMaximumWidth(560)
         settings_content = QWidget()
         self.settings_content = settings_content
@@ -631,14 +632,8 @@ class ThumbnailPage(QWidget):
         self.quality_spin = self._spin(1, 100, 90)
         self.export_form.addRow("保存形式", self.format_combo)
         self.export_form.addRow("JPEG品質", self.quality_spin)
-        self.folder_label = QLabel(str(self.output_folder))
-        self.folder_label.setWordWrap(True)
-        self.folder_label.setMinimumWidth(0)
-        self.folder_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored,
-            QSizePolicy.Policy.Preferred,
-        )
-        self.folder_label.setToolTip(str(self.output_folder))
+        self.folder_label = ElidedPathLabel()
+        self.folder_label.set_path(self.output_folder)
         self.folder_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -653,7 +648,7 @@ class ThumbnailPage(QWidget):
         splitter.addWidget(settings_scroll)
 
         center = QWidget()
-        center.setMinimumWidth(360)
+        center.setMinimumWidth(240)
         center_layout = QVBoxLayout(center)
         center_layout.setContentsMargins(8, 8, 8, 8)
         preview_heading = QLabel("プレビュー")
@@ -693,7 +688,7 @@ class ThumbnailPage(QWidget):
 
         batch = QWidget()
         batch.setObjectName("thumbnail_titles_panel")
-        batch.setMinimumWidth(250)
+        batch.setMinimumWidth(180)
         batch_layout = QVBoxLayout(batch)
         batch_layout.setContentsMargins(8, 8, 8, 8)
         batch_layout.setSpacing(8)
@@ -1117,8 +1112,8 @@ class ThumbnailPage(QWidget):
     def save_canvas_preset(self) -> None:
         name, accepted = QInputDialog.getText(
             self,
-            "サイズPresetとして保存",
-            "Preset名",
+            "サイズプリセットとして保存",
+            "プリセット名",
             QLineEdit.EchoMode.Normal,
         )
         if not accepted:
@@ -1376,8 +1371,7 @@ class ThumbnailPage(QWidget):
         )
         if folder:
             self.output_folder = Path(folder)
-            self.folder_label.setText(str(self.output_folder))
-            self.folder_label.setToolTip(str(self.output_folder))
+            self.folder_label.set_path(self.output_folder)
             try:
                 self.template_store.set_last_output_folder(self.output_folder)
             except ThumbnailStorageError as exc:

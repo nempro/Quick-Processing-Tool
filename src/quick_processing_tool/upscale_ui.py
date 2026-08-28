@@ -117,7 +117,7 @@ class UpscaleDropZone(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setAcceptDrops(True)
-        self.setMinimumSize(360, 320)
+        self.setMinimumSize(240, 320)
         self._empty = True
         self._stack = QStackedLayout(self)
         self._stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
@@ -303,7 +303,7 @@ class UpscalePage(QWidget):
         splitter.setObjectName("upscaleWorkspace")
 
         left = QWidget()
-        left.setMinimumWidth(250); left.setMaximumWidth(330)
+        left.setMinimumWidth(210); left.setMaximumWidth(330)
         ll = QVBoxLayout(left); ll.setContentsMargins(12, 12, 8, 12)
         heading = QLabel("高画質化設定")
         heading.setStyleSheet("font-size: 18px; font-weight: 700;")
@@ -364,7 +364,7 @@ class UpscalePage(QWidget):
         self.drop_zone = UpscaleDropZone()
         self.drop_zone.choose_requested.connect(self.choose_images); self.drop_zone.paths_dropped.connect(self.load_paths)
         cl.addWidget(self.drop_zone, 1); splitter.addWidget(center)
-        right = QWidget(); right.setMinimumWidth(300); right.setMaximumWidth(430)
+        right = QWidget(); right.setMinimumWidth(220); right.setMaximumWidth(430)
         rl = QVBoxLayout(right); rl.setContentsMargins(8, 12, 12, 12)
         queue_head = QHBoxLayout()
         self.queue_title = QLabel("高画質化する画像　0枚")

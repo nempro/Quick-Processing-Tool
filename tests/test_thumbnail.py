@@ -488,6 +488,23 @@ def test_thumbnail_batch_continues_after_layout_failure(tmp_path: Path) -> None:
     assert len(list(tmp_path.glob("*.jpg"))) == 2
 
 
+def test_thumbnail_worker_preserves_unexpected_save_error_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "quick_processing_tool.thumbnail_ui.write_thumbnail_output",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("空き容量がありません")),
+    )
+    details: list[str] = []
+    worker = ThumbnailWorker([TitleRecord(1, "保存テスト")], settings(), tmp_path)
+    worker.item_status.connect(
+        lambda _row, status, detail: details.append(detail) if status == "Error" else None
+    )
+    worker.run()
+    assert details == ["サムネイル生成に失敗しました: 空き容量がありません"]
+
+
 def test_thumbnail_page_counts_titles_and_has_navigation() -> None:
     page = ThumbnailPage()
     page.titles_edit.setPlainText("最初のタイトル\n\n 次のタイトル \n最後のタイトル")
@@ -552,12 +569,12 @@ def test_thumbnail_layout_has_no_horizontal_scroll_and_balanced_columns() -> Non
     assert ratios[1] == pytest.approx(0.43, abs=0.02)
     assert ratios[2] == pytest.approx(0.27, abs=0.02)
 
-    page.resize(900, 700)
+    page.resize(720, 700)
     app.processEvents()
     narrow_sizes = page.workspace_splitter.sizes()
-    assert narrow_sizes[0] >= 280
-    assert narrow_sizes[1] >= 360
-    assert narrow_sizes[2] >= 250
+    assert narrow_sizes[0] >= 220
+    assert narrow_sizes[1] >= 240
+    assert narrow_sizes[2] >= 180
     assert page.settings_scroll.horizontalScrollBar().maximum() == 0
     assert page.settings_content.width() <= page.settings_scroll.viewport().width()
 

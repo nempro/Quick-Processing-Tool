@@ -9,12 +9,12 @@ from PySide6.QtGui import QBrush, QColor, QCursor, QDesktopServices, QPainter, Q
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGraphicsEllipseItem,
     QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSpinBox, QSplitter,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QSplitter,
     QVBoxLayout, QWidget,
 )
 
 from .color_picker import choose_color
-from .edit_ui import FontPickerButton, IMEPlainTextEdit
+from .edit_ui import ElidedPathLabel, FontPickerButton, IMEPlainTextEdit
 from .editing.text import pil_to_qimage
 from .font_catalog import FontCatalog
 from .naming import normalize_filename_stem
@@ -28,10 +28,18 @@ from .ui_styles import INPUT_CONTROL_STYLE
 BUBBLE_STYLE = INPUT_CONTROL_STYLE + """
 QPlainTextEdit { background: #dce5ef; color: #182230; border: 1px solid #6f8094;
     border-radius: 6px; padding: 7px; selection-background-color: #315fbd; }
+QPlainTextEdit:hover { background: #cfdeec; border-color: #405b79; }
+QPlainTextEdit:focus { background: white; border: 2px solid #2457b2; padding: 6px; }
+QPlainTextEdit:disabled { background: #f3f4f6; color: #9aa1aa; border-color: #d4d8de; }
 QPushButton { min-height: 28px; background: #f5f7fa; color: #182230;
     border: 1px solid #7b899a; border-radius: 6px; padding: 4px 8px; }
+QPushButton:hover { background: #e5edf6; border-color: #405b79; }
+QPushButton:focus { background: white; border: 2px solid #2457b2; padding: 3px 7px; }
+QPushButton:disabled { background: #f3f4f6; color: #9aa1aa; border-color: #d4d8de; }
 QPushButton#bubbleSave { min-height: 44px; background: #315fbd; color: white;
     border-color: #315fbd; border-radius: 8px; font-size: 14px; font-weight: 700; }
+QPushButton#bubbleSave:hover { background: #284fa1; }
+QPushButton#bubbleSave:focus { border: 2px solid #173a82; padding: 3px 7px; }
 QPushButton#bubbleSave:disabled { background: #d9dee6; color: #8f98a6; border-color: #d9dee6; }
 QGroupBox { font-weight: 700; margin-top: 8px; padding-top: 8px; }
 """
@@ -208,9 +216,10 @@ class SpeechBubblePage(QWidget):
         self.settings_scroll = QScrollArea()
         self.settings_scroll.setWidgetResizable(True)
         self.settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.settings_scroll.setMinimumWidth(260)
+        self.settings_scroll.setMinimumWidth(210)
         self.settings_scroll.setMaximumWidth(340)
         host = QWidget()
+        host.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         left = QVBoxLayout(host)
         left.setContentsMargins(8, 4, 8, 8)
         left.addWidget(self._text_group())
@@ -223,26 +232,28 @@ class SpeechBubblePage(QWidget):
         splitter.addWidget(self.settings_scroll)
 
         center = QWidget()
-        center.setMinimumWidth(260)
+        center.setMinimumWidth(220)
         center_layout = QVBoxLayout(center)
         center_layout.setContentsMargins(8, 4, 8, 8)
         toolbar = QHBoxLayout()
-        toolbar.addWidget(QLabel("Preview · Tailの●をドラッグ"))
+        toolbar.addWidget(QLabel("プレビュー · しっぽの青い●をドラッグ"))
         toolbar.addStretch(1)
         self.zoom_combo = QComboBox()
-        self.zoom_combo.addItems(["Fit", "100%", "200%"])
+        self.zoom_combo.addItem("全体表示", "Fit")
+        self.zoom_combo.addItem("100%", "100%")
+        self.zoom_combo.addItem("200%", "200%")
         toolbar.addWidget(self.zoom_combo)
         center_layout.addLayout(toolbar)
         self.preview = BubblePreview()
         self.preview.setMinimumHeight(320)
         center_layout.addWidget(self.preview, 1)
-        self.preview_status = QLabel("セリフを入力するとPreviewを表示します。")
+        self.preview_status = QLabel("セリフを入力するとプレビューを表示します。")
         self.preview_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         center_layout.addWidget(self.preview_status)
         splitter.addWidget(center)
 
         save_panel = QFrame()
-        save_panel.setMinimumWidth(200)
+        save_panel.setMinimumWidth(180)
         save_panel.setMaximumWidth(270)
         save = QVBoxLayout(save_panel)
         save.addWidget(QLabel("保存"))
@@ -251,10 +262,9 @@ class SpeechBubblePage(QWidget):
         save.addWidget(self.filename_edit)
         self.folder_button = QPushButton("保存先を選ぶ…")
         save.addWidget(self.folder_button)
-        self.folder_label = QLabel()
-        self.folder_label.setWordWrap(True)
+        self.folder_label = ElidedPathLabel()
         save.addWidget(self.folder_label)
-        self.output_info = QLabel("RGBA / 透明背景\n—")
+        self.output_info = QLabel("透明背景（RGBA）\n—")
         self.output_info.setWordWrap(True)
         save.addWidget(self.output_info)
         save.addStretch(1)
@@ -326,7 +336,7 @@ class SpeechBubblePage(QWidget):
         form.addRow(self.tail_enabled)
         form.addRow("方向", self.tail_preset_combo)
         self.tail_preset_label = form.labelForField(self.tail_preset_combo)
-        self.tail_note = QLabel("Previewの青い●をドラッグして先端を調整できます。")
+        self.tail_note = QLabel("プレビューの青い●をドラッグして先端を調整できます。")
         self.tail_note.setWordWrap(True)
         form.addRow(self.tail_note)
         return self.tail_group
@@ -345,7 +355,9 @@ class SpeechBubblePage(QWidget):
         self.text_color_button.clicked.connect(lambda: self._choose_color("文字色", "_text_color"))
         self.fill_color_button.clicked.connect(lambda: self._choose_color("塗り色", "_fill_color"))
         self.stroke_color_button.clicked.connect(lambda: self._choose_color("枠線色", "_stroke_color"))
-        self.zoom_combo.currentTextChanged.connect(self.preview.apply_zoom)
+        self.zoom_combo.currentIndexChanged.connect(
+            lambda _index: self.preview.apply_zoom(self.zoom_combo.currentData())
+        )
         self.preview.tip_dragged.connect(self._tail_dragged)
         self.reset_button.clicked.connect(self.reset_settings)
         self.folder_button.clicked.connect(self.choose_output_folder)
@@ -389,13 +401,13 @@ class SpeechBubblePage(QWidget):
         except Exception as exc:
             self.preview_result = None
             self.preview.set_result(None, None)
-            self.preview_status.setText(f"Previewを作成できませんでした: {exc}")
+            self.preview_status.setText(f"プレビューを作成できませんでした: {exc}")
         else:
             self.preview_result = result
             if result is None:
                 self.preview.set_result(None, None)
-                self.preview_status.setText("セリフを入力するとPreviewを表示します。")
-                self.output_info.setText("RGBA / 透明背景\n—")
+                self.preview_status.setText("セリフを入力するとプレビューを表示します。")
+                self.output_info.setText("透明背景（RGBA）\n—")
             else:
                 self.preview.set_result(
                     result.image,
@@ -407,8 +419,8 @@ class SpeechBubblePage(QWidget):
                 elif self.bubble_enabled.isChecked():
                     self.preview_status.setText("しっぽなしの吹き出しを表示しています。")
                 else:
-                    self.preview_status.setText("文字だけを透明Canvasへ表示しています。")
-                self.output_info.setText(f"RGBA / 透明背景\n{result.image.width} × {result.image.height} px")
+                    self.preview_status.setText("文字だけを透明キャンバスへ表示しています。")
+                self.output_info.setText(f"透明背景（RGBA）\n{result.image.width} × {result.image.height} px")
         self._update_save_state()
 
     def _tail_dragged(self, point: QPointF) -> None:
@@ -439,7 +451,7 @@ class SpeechBubblePage(QWidget):
                     body_center=result.geometry.body_center,
                     preserve_view=True,
                 )
-                self.output_info.setText(f"RGBA / 透明背景\n{result.image.width} × {result.image.height} px")
+                self.output_info.setText(f"透明背景（RGBA）\n{result.image.width} × {result.image.height} px")
                 self._update_save_state()
         else:
             self.update_preview()
@@ -518,7 +530,7 @@ class SpeechBubblePage(QWidget):
             self._update_save_state()
 
     def _update_save_state(self, *_args) -> None:
-        self.folder_label.setText(str(self.output_folder))
+        self.folder_label.set_path(self.output_folder)
         stem = normalize_filename_stem(self.filename_edit.text(), strip_extensions=(".png",))
         self.save_button.setEnabled(self.preview_result is not None and bool(stem) and self.output_folder.is_dir())
 
@@ -537,6 +549,7 @@ class SpeechBubblePage(QWidget):
             return
         self.last_saved_path = path
         self.save_result.setText(f"✓ 保存しました\n{path.name}")
+        self.save_result.setToolTip(str(path))
         self.open_image_button.show()
         self.open_folder_button.show()
 

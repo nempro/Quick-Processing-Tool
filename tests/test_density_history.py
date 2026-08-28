@@ -11,7 +11,7 @@ import pytest
 from PIL import Image
 from PySide6.QtGui import QColor
 from PySide6.QtCore import QPoint
-from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
+from PySide6.QtWidgets import QApplication, QScrollArea, QSplitter, QWidget
 
 import quick_processing_tool.edit_ui as edit_ui_module
 from quick_processing_tool.edit_ui import QuickEditPage
@@ -508,7 +508,7 @@ def test_compact_edit_inspector_states_reduce_height_without_overflow(
         window.close()
 
 
-@pytest.mark.parametrize("width", [900, 1180, 1440])
+@pytest.mark.parametrize("width", [720, 900, 1180, 1440])
 def test_all_implemented_settings_panes_have_no_horizontal_overflow(
     app: QApplication, width: int
 ) -> None:
@@ -522,6 +522,8 @@ def test_all_implemented_settings_panes_have_no_horizontal_overflow(
             window.image_edit_tab,
             window.upscale_tab,
             window.pixel_tab,
+            window.sound_effect_tab,
+            window.speech_bubble_tab,
         ):
             window.navigation.setCurrentIndex(tab)
             app.processEvents()
@@ -545,5 +547,45 @@ def test_all_implemented_settings_panes_have_no_horizontal_overflow(
                             left + child.width(),
                             content.width(),
                         )
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("width", [720, 900, 1180, 1440])
+def test_all_three_column_workspaces_stay_inside_page_without_overlap(
+    app: QApplication, width: int
+) -> None:
+    window = MainWindow()
+    workspaces = (
+        (window.quick_tab, "quick_workspace"),
+        (window.thumbnail_tab, "thumbnail_workspace"),
+        (window.image_edit_tab, "edit_workspace"),
+        (window.upscale_tab, "upscaleWorkspace"),
+        (window.pixel_tab, "pixel_workspace"),
+        (window.sound_effect_tab, "sound_effect_workspace"),
+        (window.speech_bubble_tab, "speech_bubble_workspace"),
+    )
+    try:
+        window.resize(width, 760)
+        window.show()
+        for tab, name in workspaces:
+            window.navigation.setCurrentIndex(tab)
+            app.processEvents()
+            page = window.navigation.currentWidget()
+            splitter = page if isinstance(page, QSplitter) and page.objectName() == name else page.findChild(QSplitter, name)
+            assert splitter is not None, name
+            assert splitter.width() <= page.width(), (name, splitter.width(), page.width())
+            columns = [splitter.widget(index) for index in range(splitter.count())]
+            assert len(columns) == 3
+            assert all(column.width() >= 170 for column in columns), (
+                name,
+                [column.width() for column in columns],
+            )
+            for left, right in zip(columns, columns[1:]):
+                assert left.geometry().right() < right.geometry().left(), (
+                    name,
+                    left.geometry(),
+                    right.geometry(),
+                )
     finally:
         window.close()

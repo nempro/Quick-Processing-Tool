@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from .color_picker import choose_color
-from .edit_ui import FontPickerButton, IMEPlainTextEdit
+from .edit_ui import ElidedPathLabel, FontPickerButton, IMEPlainTextEdit
 from .editing.text import pil_to_qimage
 from .font_catalog import FontCatalog
 from .naming import normalize_filename_stem
@@ -24,12 +24,19 @@ from .ui_styles import INPUT_CONTROL_STYLE
 SOUND_EFFECT_STYLE = INPUT_CONTROL_STYLE + """
 QPlainTextEdit { background: #dce5ef; color: #182230; border: 1px solid #6f8094;
     border-radius: 6px; padding: 7px; selection-background-color: #315fbd; }
+QPlainTextEdit:hover { background: #cfdeec; border-color: #405b79; }
 QPlainTextEdit:focus { background: white; border: 2px solid #2457b2; padding: 6px; }
+QPlainTextEdit:disabled { background: #f3f4f6; color: #9aa1aa; border-color: #d4d8de; }
 QPushButton { min-height: 28px; background: #f5f7fa; color: #182230;
     border: 1px solid #7b899a; border-radius: 6px; padding: 4px 8px; }
+QPushButton:hover { background: #e5edf6; border-color: #405b79; }
+QPushButton:focus { background: white; border: 2px solid #2457b2; padding: 3px 7px; }
+QPushButton:disabled { background: #f3f4f6; color: #9aa1aa; border-color: #d4d8de; }
 QPushButton:checked { background: #315fbd; color: white; border-color: #244b99; font-weight: 700; }
 QPushButton#soundSave { min-height: 44px; background: #315fbd; color: white;
     border-color: #315fbd; border-radius: 8px; font-size: 14px; font-weight: 700; }
+QPushButton#soundSave:hover { background: #284fa1; }
+QPushButton#soundSave:focus { border: 2px solid #173a82; padding: 3px 7px; }
 QPushButton#soundSave:disabled { background: #d9dee6; color: #8f98a6; border-color: #d9dee6; }
 QGroupBox { font-weight: 700; margin-top: 8px; padding-top: 8px; }
 """
@@ -150,9 +157,10 @@ class SoundEffectPage(QWidget):
         self.settings_scroll = QScrollArea()
         self.settings_scroll.setWidgetResizable(True)
         self.settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.settings_scroll.setMinimumWidth(260)
+        self.settings_scroll.setMinimumWidth(210)
         self.settings_scroll.setMaximumWidth(340)
         host = QWidget()
+        host.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         settings_layout = QVBoxLayout(host)
         settings_layout.setContentsMargins(8, 4, 8, 8)
         settings_layout.addWidget(self._text_group())
@@ -165,17 +173,19 @@ class SoundEffectPage(QWidget):
         splitter.addWidget(self.settings_scroll)
 
         center = QWidget()
-        center.setMinimumWidth(260)
+        center.setMinimumWidth(220)
         center_layout = QVBoxLayout(center)
         center_layout.setContentsMargins(8, 4, 8, 8)
         toolbar = QHBoxLayout()
-        title = QLabel("Preview · 透明PNG")
+        title = QLabel("プレビュー · 透明PNG")
         title.setStyleSheet("font-size: 15px; font-weight: 700; color: #182230;")
         toolbar.addWidget(title)
         toolbar.addStretch(1)
-        toolbar.addWidget(QLabel("Zoom"))
+        toolbar.addWidget(QLabel("表示倍率"))
         self.zoom_combo = QComboBox()
-        self.zoom_combo.addItems(["Fit", "100%", "200%"])
+        self.zoom_combo.addItem("全体表示", "Fit")
+        self.zoom_combo.addItem("100%", "100%")
+        self.zoom_combo.addItem("200%", "200%")
         toolbar.addWidget(self.zoom_combo)
         center_layout.addLayout(toolbar)
         self.preview = SoundPreview()
@@ -190,7 +200,7 @@ class SoundEffectPage(QWidget):
 
         save_panel = QFrame()
         save_panel.setObjectName("sound_save_panel")
-        save_panel.setMinimumWidth(200)
+        save_panel.setMinimumWidth(180)
         save_panel.setMaximumWidth(270)
         save_layout = QVBoxLayout(save_panel)
         save_layout.setContentsMargins(10, 4, 10, 8)
@@ -203,11 +213,10 @@ class SoundEffectPage(QWidget):
         save_layout.addWidget(self.filename_edit)
         self.folder_button = QPushButton("保存先を選ぶ…")
         save_layout.addWidget(self.folder_button)
-        self.folder_label = QLabel()
-        self.folder_label.setWordWrap(True)
+        self.folder_label = ElidedPathLabel()
         self.folder_label.setStyleSheet("color: #667085;")
         save_layout.addWidget(self.folder_label)
-        self.output_info = QLabel("RGBA / 透明背景\n—")
+        self.output_info = QLabel("透明背景（RGBA）\n—")
         self.output_info.setWordWrap(True)
         self.output_info.setStyleSheet("padding: 9px; background: #eef2f7; border-radius: 7px;")
         save_layout.addWidget(self.output_info)
@@ -303,7 +312,9 @@ class SoundEffectPage(QWidget):
         self.text_color_button.clicked.connect(lambda: self._choose_color("文字色", "_text_color"))
         self.outline_color_button.clicked.connect(lambda: self._choose_color("縁取り色", "_outline_color"))
         self.shadow_color_button.clicked.connect(lambda: self._choose_color("影色", "_shadow_color"))
-        self.zoom_combo.currentTextChanged.connect(self.preview.apply_zoom)
+        self.zoom_combo.currentIndexChanged.connect(
+            lambda _index: self.preview.apply_zoom(self.zoom_combo.currentData())
+        )
         self.reset_button.clicked.connect(self.reset_settings)
         self.folder_button.clicked.connect(self.choose_output_folder)
         self.filename_edit.textChanged.connect(self._update_save_state)
@@ -357,7 +368,7 @@ class SoundEffectPage(QWidget):
             return
         if self._render_active:
             self._pending_render = request
-            self.preview_status.setText("Previewを更新しています…")
+            self.preview_status.setText("プレビューを更新しています…")
             self._update_save_state()
             return
         self._start_render(request)
@@ -368,7 +379,7 @@ class SoundEffectPage(QWidget):
         worker = SoundRenderWorker(generation, settings)
         self._render_worker = worker
         worker.signals.finished.connect(self._render_finished)
-        self.preview_status.setText("Previewを更新しています…")
+        self.preview_status.setText("プレビューを更新しています…")
         QThreadPool.globalInstance().start(worker)
 
     @Slot(int, object, object, str)
@@ -399,17 +410,17 @@ class SoundEffectPage(QWidget):
         self.preview.set_image(image)
         self._preview_current = not error
         if error:
-            self.preview_status.setText(f"Previewを作成できませんでした: {error}")
+            self.preview_status.setText(f"プレビューを作成できませんでした: {error}")
             self.preview_status.setStyleSheet("color: #c62828; font-weight: 700;")
-            self.output_info.setText("RGBA / 透明背景\n—")
+            self.output_info.setText("透明背景（RGBA）\n—")
         elif image is None:
             self.preview_status.setStyleSheet("color: #667085; padding: 4px;")
             self.preview_status.setText("文字を入力すると、ここに透明素材を表示します。")
-            self.output_info.setText("RGBA / 透明背景\n—")
+            self.output_info.setText("透明背景（RGBA）\n—")
         else:
             self.preview_status.setStyleSheet("color: #667085; padding: 4px;")
-            self.preview_status.setText("Checkerboardは透明部分です。")
-            self.output_info.setText(f"RGBA / 透明背景\n{image.width} × {image.height} px")
+            self.preview_status.setText("市松模様は透明部分です。")
+            self.output_info.setText(f"透明背景（RGBA）\n{image.width} × {image.height} px")
         self._update_save_state()
 
     def _choose_color(self, title: str, attribute: str) -> None:
@@ -465,8 +476,7 @@ class SoundEffectPage(QWidget):
             self._update_save_state()
 
     def _update_save_state(self, *_args) -> None:
-        self.folder_label.setText(str(self.output_folder))
-        self.folder_label.setToolTip(str(self.output_folder))
+        self.folder_label.set_path(self.output_folder)
         stem = normalize_filename_stem(self.filename_edit.text(), strip_extensions=(".png",))
         self.save_button.setEnabled(self._preview_current and self.preview_image is not None and bool(stem) and self.output_folder.is_dir())
 

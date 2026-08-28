@@ -289,3 +289,32 @@ def test_bubble_and_sound_open_exact_duplicate_saved_path(qt_app: QApplication, 
     sound.open_saved_folder()
     assert opened[-2:] == [tmp_path / "sound_2.png", tmp_path]
     sound.close()
+
+
+def test_bubble_ui_states_and_full_saved_paths(qt_app: QApplication, tmp_path: Path) -> None:
+    page = SpeechBubblePage()
+    style = page.styleSheet()
+    for selector in (
+        "QPlainTextEdit:hover",
+        "QPlainTextEdit:focus",
+        "QPlainTextEdit:disabled",
+        "QPushButton:hover",
+        "QPushButton:focus",
+        "QPushButton:disabled",
+        "QPushButton#bubbleSave:hover",
+    ):
+        assert selector in style
+    long_folder = tmp_path.joinpath(*(["very-long-folder-name"] * 6))
+    page.output_folder = long_folder
+    page.folder_label.resize(120, 28)
+    page._update_save_state()
+    assert page.folder_label.toolTip() == str(long_folder)
+    assert "…" in page.folder_label.text()
+    page.output_folder = tmp_path
+    page.text_edit.setPlainText("保存先")
+    page.filename_edit.setText("bubble_path")
+    page.save_png()
+    assert page.last_saved_path is not None
+    assert page.save_result.toolTip() == str(page.last_saved_path)
+    assert page.zoom_combo.currentText() == "全体表示"
+    page.close()
