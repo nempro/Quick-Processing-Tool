@@ -140,6 +140,21 @@ $manifest = [ordered]@{
 }
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $releaseRoot "RELEASE-MANIFEST.json") -Encoding utf8
 
+# Production packages must contain only the product launcher. Development
+# spikes and smoke-test apphosts are never valid release payloads.
+$releaseExecutables = @(Get-ChildItem -LiteralPath $releaseRoot -Recurse -File -Filter "*.exe")
+if ($releaseExecutables.Count -ne 1 -or $releaseExecutables[0].Name -cne "Quick Processing Tool.exe") {
+    $names = ($releaseExecutables | ForEach-Object { $_.FullName.Substring($releaseRoot.Length + 1) }) -join ", "
+    throw "Unexpected executable in the production package: $names"
+}
+$developmentPayload = @(Get-ChildItem -LiteralPath $releaseRoot -Recurse -File | Where-Object {
+    $_.Name -match "(?i)VectorTrace|Spike|Smoke"
+})
+if ($developmentPayload.Count -gt 0) {
+    $names = ($developmentPayload | ForEach-Object { $_.FullName.Substring($releaseRoot.Length + 1) }) -join ", "
+    throw "Development spike/smoke payload found in the production package: $names"
+}
+
 Compress-Archive -Path (Join-Path $releaseRoot "*") -DestinationPath $zipPath -CompressionLevel Optimal
 $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash
 "$hash  $(Split-Path -Leaf $zipPath)" | Set-Content -LiteralPath "$zipPath.sha256" -Encoding ascii

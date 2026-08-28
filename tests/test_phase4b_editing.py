@@ -6,7 +6,7 @@ from quick_processing_tool.editing.renderer import render_edit, render_preview
 from quick_processing_tool.editing.palette import rgba_digest
 from PIL import ImageDraw
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
@@ -1371,3 +1371,65 @@ def test_edit_service_custom_stem_duplicate_and_actual_result_filename(tmp_path:
     assert result1.output_path.name == "こんにちは.png"
     assert result2.output_path.name == "こんにちは_2.png"
     assert result1.output_path.is_file() and result2.output_path.is_file()
+
+
+@pytest.mark.parametrize("width", [720, 900, 1180, 1440])
+def test_edit_saved_result_panel_stays_ordered_and_elides_long_paths(
+    qt_app, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, width: int
+) -> None:
+    from quick_processing_tool.edit_ui import QuickEditPage
+    from quick_processing_tool.editing.models import EditResult
+
+    source = tmp_path / "保存確認.png"
+    Image.new("RGBA", (32, 24), (20, 40, 60, 180)).save(source)
+    output_folder = tmp_path / ("長い保存先_" + "あ" * 48)
+    output_folder.mkdir()
+    output = output_folder / ("長い実保存ファイル名_" + "い" * 48 + "_edited.png")
+    Image.new("RGBA", (32, 24), (20, 40, 60, 180)).save(output)
+
+    page = QuickEditPage()
+    try:
+        page.resize(width, 760)
+        page.show()
+        assert page.load_image(source)
+        _wait_for_edit_preview_idle(qt_app, page)
+        page._on_saved(EditResult(output, 32, 24, output.stat().st_size, "PNG", True))
+        qt_app.processEvents()
+
+        assert page.result_label.text() == "✓ 保存しました"
+        assert page.saved_filename.toolTip() == str(output)
+        assert page.saved_path.toolTip() == str(output)
+        assert page.saved_filename.text() != output.name
+        assert page.saved_path.text() != str(output)
+        assert page.open_image_button.isEnabled()
+        assert page.open_folder_button.isEnabled()
+        opened: list[Path] = []
+        monkeypatch.setattr(
+            "quick_processing_tool.edit_ui.QDesktopServices.openUrl",
+            lambda url: opened.append(Path(url.toLocalFile())) or True,
+        )
+        page.open_saved_image()
+        page.open_saved_folder()
+        assert opened == [output, output_folder]
+
+        def bounds(widget):
+            top_left = widget.mapTo(page.save_panel, QPoint(0, 0))
+            return top_left.x(), top_left.y(), widget.width(), widget.height()
+
+        ordered = [
+            bounds(page.save_button),
+            bounds(page.result_label),
+            bounds(page.saved_filename),
+            bounds(page.saved_path),
+        ]
+        for previous, current in zip(ordered, ordered[1:]):
+            assert previous[1] + previous[3] <= current[1], (width, previous, current)
+        image_button = bounds(page.open_image_button)
+        folder_button = bounds(page.open_folder_button)
+        assert image_button[0] + image_button[2] <= folder_button[0]
+        for rect in (*ordered, image_button, folder_button):
+            assert rect[0] >= 0 and rect[0] + rect[2] <= page.save_panel.width()
+            assert rect[1] >= 0 and rect[1] + rect[3] <= page.save_panel.height()
+    finally:
+        _wait_for_edit_preview_idle(qt_app, page)
+        page.close()

@@ -78,6 +78,8 @@ def test_hand_section_is_compact_ordered_and_processing_safe(qt_app, tmp_path: P
         page.hand_opacity_spin,
         page.hand_visible_check,
         page.hand_clear_button,
+        page.preview_undo_button,
+        page.preview_redo_button,
     ):
         assert not widget.isEnabled()
     assert not page.drop_zone.preview._drawing_enabled
@@ -600,7 +602,39 @@ def test_source_same_preserves_replace_resets_and_failed_replace_is_atomic(qt_ap
     page.close()
 
 
-@pytest.mark.parametrize("width,minimum_preview", [(900, 380), (1180, 560), (1440, 701)])
+def test_preview_history_buttons_share_history_and_stay_outside_canvas(qt_app, tmp_path: Path) -> None:
+    page, _source = _loaded_page(qt_app, tmp_path)
+    assert page.preview_history_bar.isVisible()
+    assert page.preview_undo_button.text() == "↶"
+    assert page.preview_redo_button.text() == "↷"
+    assert not page.preview_undo_button.isEnabled()
+    assert not page.preview_redo_button.isEnabled()
+    assert page.preview_history_bar.parentWidget() is page.drop_zone.parentWidget()
+    assert page.preview_history_bar.geometry().top() >= page.drop_zone.geometry().bottom()
+
+    bar_position = page.preview_history_bar.pos()
+    for mode in ("fit", "100", "200"):
+        page.preview_zoom_combo.setCurrentIndex(page.preview_zoom_combo.findData(mode))
+        qt_app.processEvents()
+        assert page.preview_history_bar.pos() == bar_position
+
+    page._begin_hand_stroke(HandPoint(12, 12))
+    page._finish_hand_stroke()
+    assert page.undo_button.isEnabled() and page.preview_undo_button.isEnabled()
+    page.preview_undo_button.click()
+    assert page.settings().hand_draw.strokes == ()
+    assert page.redo_button.isEnabled() and page.preview_redo_button.isEnabled()
+    page.preview_redo_button.click()
+    assert len(page.settings().hand_draw.strokes) == 1
+
+    page.hand_mode_enabled.setChecked(False)
+    assert page.preview_history_bar.isHidden()
+    page.hand_mode_enabled.setChecked(True)
+    assert page.preview_history_bar.isVisible()
+    page.close()
+
+
+@pytest.mark.parametrize("width,minimum_preview", [(720, 240), (900, 380), (1180, 560), (1440, 701)])
 def test_hand_layout_has_no_horizontal_scroll_or_preview_regression(qt_app, width: int, minimum_preview: int) -> None:
     page = QuickEditPage()
     page.resize(width, 760)
@@ -613,4 +647,6 @@ def test_hand_layout_has_no_horizontal_scroll_or_preview_regression(qt_app, widt
     assert page.drop_zone.width() >= minimum_preview
     assert page.hand_pen_button.width() >= 30
     assert page.hand_eraser_button.width() >= 30
+    assert page.preview_history_bar.width() == page.drop_zone.width()
+    assert page.preview_undo_button.geometry().right() < page.preview_redo_button.geometry().left()
     page.close()

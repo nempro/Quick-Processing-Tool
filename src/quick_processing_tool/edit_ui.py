@@ -1797,6 +1797,36 @@ class QuickEditPage(QWidget):
         self.drop_zone.preview.hand_released.connect(self._finish_hand_stroke)
         self.drop_zone.preview.hand_cancelled.connect(self._cancel_hand_stroke)
         cl.addWidget(self.drop_zone, 1)
+        self.preview_history_bar = QWidget()
+        self.preview_history_bar.setObjectName("previewHandHistory")
+        preview_history_layout = QHBoxLayout(self.preview_history_bar)
+        preview_history_layout.setContentsMargins(0, 0, 0, 0)
+        preview_history_layout.setSpacing(4)
+        preview_history_layout.addStretch()
+        self.preview_undo_button = QToolButton()
+        self.preview_redo_button = QToolButton()
+        for button, text, tooltip, accessible_name in (
+            (self.preview_undo_button, "↶", "直前の操作を元に戻します", "プレビュー付近で元に戻す"),
+            (self.preview_redo_button, "↷", "元に戻した操作をやり直します", "プレビュー付近でやり直す"),
+        ):
+            button.setText(text)
+            button.setToolTip(tooltip)
+            button.setAccessibleName(accessible_name)
+            button.setFixedSize(34, 30)
+            button.setStyleSheet(
+                "QToolButton { background: #e8eef5; color: #182230; border: 1px solid #9aabba; "
+                "border-radius: 6px; font-size: 18px; font-weight: 700; padding: 0; }"
+                "QToolButton:hover { background: #dbe6f1; border-color: #405b79; }"
+                "QToolButton:focus { border: 2px solid #2457b2; }"
+                "QToolButton:disabled { background: #f3f4f6; color: #9aa1aa; border-color: #d4d8de; }"
+            )
+            preview_history_layout.addWidget(button)
+        self.preview_undo_button.setObjectName("previewUndo")
+        self.preview_redo_button.setObjectName("previewRedo")
+        self.preview_undo_button.clicked.connect(self.undo)
+        self.preview_redo_button.clicked.connect(self.redo)
+        self.preview_history_bar.hide()
+        cl.addWidget(self.preview_history_bar)
         self.preview_status = QLabel("画像を読み込むと、ここへ加工結果を表示します")
         self.preview_status.setWordWrap(True)
         self.preview_status.setStyleSheet("color: #667085;")
@@ -1804,6 +1834,8 @@ class QuickEditPage(QWidget):
         splitter.addWidget(center)
 
         right = QWidget()
+        right.setObjectName("editSavePanel")
+        self.save_panel = right
         right.setMinimumWidth(220)
         right.setMaximumWidth(360)
         rl = QVBoxLayout(right)
@@ -1875,12 +1907,31 @@ class QuickEditPage(QWidget):
         self.saved_box = QWidget()
         saved_layout = QVBoxLayout(self.saved_box)
         saved_layout.setContentsMargins(0, 4, 0, 0)
-        saved_layout.addWidget(QLabel("実際の保存先"))
+        saved_layout.setSpacing(4)
+        self.saved_filename = ElidedPathLabel()
+        self.saved_filename.setObjectName("editSavedFilename")
+        self.saved_filename.setAccessibleName("実保存ファイル名")
+        self.saved_filename.setStyleSheet("color: #182230; font-weight: 700;")
+        saved_layout.addWidget(self.saved_filename)
         self.saved_path = ElidedPathLabel()
+        self.saved_path.setObjectName("editSavedPath")
+        self.saved_path.setAccessibleName("実保存パス")
+        self.saved_path.setStyleSheet("color: #667085; font-size: 11px;")
         saved_layout.addWidget(self.saved_path)
+        saved_actions = QHBoxLayout()
+        saved_actions.setContentsMargins(0, 0, 0, 0)
+        saved_actions.setSpacing(4)
+        self.open_image_button = QPushButton("画像を開く")
+        self.open_image_button.setMinimumWidth(0)
+        self.open_image_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.open_image_button.clicked.connect(self.open_saved_image)
         self.open_folder_button = QPushButton("保存先を開く")
+        self.open_folder_button.setMinimumWidth(0)
+        self.open_folder_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.open_folder_button.clicked.connect(self.open_saved_folder)
-        saved_layout.addWidget(self.open_folder_button)
+        saved_actions.addWidget(self.open_image_button, 1)
+        saved_actions.addWidget(self.open_folder_button, 1)
+        saved_layout.addLayout(saved_actions)
         self.saved_box.hide()
         rl.addWidget(self.saved_box)
         rl.addStretch()
@@ -2082,6 +2133,7 @@ class QuickEditPage(QWidget):
         )
 
     def _update_hand_drawing_state(self) -> None:
+        self.preview_history_bar.setVisible(self.hand_mode_enabled.isChecked())
         ready = (
             self.source_path is not None
             and self.hand_mode_enabled.isChecked()
@@ -3520,7 +3572,8 @@ class QuickEditPage(QWidget):
     def _on_saved(self, result: EditResult) -> None:
         self._last_output = result.output_path
         self.result_label.setStyleSheet("color: #137333; font-weight: 700;")
-        self.result_label.setText(f"✓ 加工した画像を保存しました\n{result.output_path.name}")
+        self.result_label.setText("✓ 保存しました")
+        self.saved_filename.set_value(result.output_path.name, str(result.output_path))
         self.saved_path.set_path(result.output_path)
         self.saved_box.show()
         self._update_save_panel()
@@ -3589,6 +3642,8 @@ class QuickEditPage(QWidget):
             self.edited_button,
             self.undo_button,
             self.redo_button,
+            self.preview_undo_button,
+            self.preview_redo_button,
             self.reset_button,
             self.format_combo,
             self.quality_spin,
@@ -3596,6 +3651,7 @@ class QuickEditPage(QWidget):
             self.filename_edit,
             self.folder_button,
             self.save_button,
+            self.open_image_button,
             self.open_folder_button,
         ):
             widget.setEnabled(not processing)
@@ -3619,15 +3675,28 @@ class QuickEditPage(QWidget):
         loaded = self.source_path is not None
         idle = self._thread is None and self._palette_thread is None
         save_ready = loaded and idle and self._has_valid_output_folder() and bool(self._normalized_output_stem())
-        self.undo_button.setEnabled(loaded and idle and self._history_index > 0)
-        self.redo_button.setEnabled(loaded and idle and self._history_index + 1 < len(self._history))
+        can_undo = loaded and idle and self._history_index > 0
+        can_redo = loaded and idle and self._history_index + 1 < len(self._history)
+        self.undo_button.setEnabled(can_undo)
+        self.redo_button.setEnabled(can_redo)
+        self.preview_undo_button.setEnabled(can_undo)
+        self.preview_redo_button.setEnabled(can_redo)
         self.reset_button.setEnabled(loaded and idle and self.settings() != EditSettings())
         self.save_button.setEnabled(save_ready)
         self.folder_button.setEnabled(loaded and idle)
-        self.open_folder_button.setEnabled(idle and self._last_output is not None and self._last_output.parent.is_dir())
+        saved_file_ready = idle and self._last_output is not None and self._last_output.is_file()
+        saved_folder_ready = idle and self._last_output is not None and self._last_output.parent.is_dir()
+        self.open_image_button.setEnabled(saved_file_ready)
+        self.open_folder_button.setEnabled(saved_folder_ready)
         self.original_button.setEnabled(loaded and idle and not self._show_original)
         self.edited_button.setEnabled(loaded and idle and self._show_original)
         self.current_source_card.change_button.setEnabled(idle)
+
+    @Slot()
+    def open_saved_image(self) -> None:
+        path = self._last_output
+        if not path or not path.is_file() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            QMessageBox.warning(self, "画像を開けません", "保存した画像を開けませんでした。")
 
     @Slot()
     def open_saved_folder(self) -> None:
