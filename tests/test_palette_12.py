@@ -161,10 +161,7 @@ def test_palette_count_options_default_and_model_contract(app: QApplication) -> 
         ] == [5, 6, 8, 12]
         assert page.palette_count_combo.currentData() == 6
         assert page.settings().palette.color_count == 6
-        assert page.palette_intro_label.text() == (
-            "5 / 6 / 8 / 12色から選べます。"
-            "色数を増やすと、近い色を細かく分けられます。"
-        )
+        assert page.palette_intro_label.text() == "色数を増やすと近い色を細かく分けられます"
         page._set_processing(True)
         assert not page.palette_count_combo.isEnabled()
         assert not page.palette_extract_button.isEnabled()

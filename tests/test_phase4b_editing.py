@@ -105,7 +105,7 @@ def test_line_expression_ui_labels_tooltips_data_and_details_contract(qt_app) ->
     qt_app.processEvents()
     assert page.line_art_group.title() == "輪郭・線表現"
     assert page.line_art_enabled.text() == "線で表現する"
-    assert page.line_art_description.text() == "画像を線主体の表現へ変えます"
+    assert page.line_art_description.text() == "線主体の表現へ変えます"
     assert not hasattr(page, "line_art_amount_combo")
     assert page.line_art_color_button.toolTip().startswith("輪郭・線表現に使う線の色を選びます\n現在:")
     assert page.line_art_background_color_button.toolTip().startswith("輪郭・線表現の背景色を選びます\n現在:")
@@ -126,6 +126,82 @@ def test_line_expression_ui_labels_tooltips_data_and_details_contract(qt_app) ->
     passthrough = Image.new("RGBA", (7, 5), (20, 40, 60, 120))
     assert apply_line_art(passthrough, LineArtSettings()).tobytes() == passthrough.tobytes()
     page.close()
+
+
+def test_edit_inspector_descriptions_and_conditional_groups_are_compact(
+    qt_app, tmp_path: Path
+) -> None:
+    from quick_processing_tool.edit_ui import QuickEditPage
+
+    source = tmp_path / "compact-inspector.png"
+    Image.new("RGB", (32, 24), "white").save(source)
+    page = QuickEditPage()
+    try:
+        assert page.load_image(source)
+        page.show()
+        _wait_for_edit_preview_idle(qt_app, page)
+        expected_descriptions = {
+            page.filter_section: "",
+            page.text_section: "",
+            page.hand_section: "",
+            page.transparency_section: "近い色もまとめて透明にします",
+            page.canvas_section: "",
+            page.material_section: "",
+        }
+        assert len(page.sections) == 6
+        for section, text in expected_descriptions.items():
+            section.set_expanded(False)
+            assert section.description.text() == text
+            assert section.description.isHidden()
+            section.set_expanded(True)
+            assert section.description.isVisible() is bool(text)
+            section.set_expanded(False)
+
+        page.hand_section.set_expanded(True)
+        assert page.hand_mode_enabled.text() == "ON"
+        assert page.hand_mode_enabled.accessibleName() == "手書きの描画モード"
+        assert page.hand_details.isHidden()
+        page.hand_mode_enabled.setChecked(True)
+        assert page.hand_details.isVisible()
+        assert page.hand_visible_check.text() == "表示"
+        assert "プレビューと保存画像" in page.hand_visible_check.toolTip()
+
+        page.transparency_section.set_expanded(True)
+        assert page.transparency_details.isHidden()
+        page.transparency_enabled.setChecked(True)
+        assert page.transparency_details.isVisible()
+
+        page.material_section.set_expanded(True)
+        assert page.sticker_details.isHidden()
+        page.sticker_enabled.setChecked(True)
+        assert page.sticker_details.isVisible()
+        assert page.sticker_prereq_status.text() == ""
+        assert page.sticker_prereq_button.isHidden()
+        page.transparency_enabled.setChecked(False)
+        assert page.sticker_prereq_status.text() == "背景透過が必要です"
+        assert page.sticker_prereq_button.text() == "背景透過を開く →"
+        assert page.sticker_prereq_button.isVisible()
+
+        assert page.line_art_details.isHidden()
+        page.line_art_enabled.setChecked(True)
+        assert page.line_art_details.isVisible()
+        assert page.line_art_description.text() == "線主体の表現へ変えます"
+
+        assert page.palette_results_widget.isHidden()
+        assert page.palette_count_combo.isVisible()
+        assert page.palette_extract_button.isVisible()
+        colors = tuple((index * 19, index * 13, index * 7) for index in range(12))
+        page._palette_values = colors
+        page._palette_replacements = colors
+        page._rebuild_palette_chips()
+        assert page.palette_results_widget.isVisible()
+        assert len(page._palette_reset_buttons) == 12
+        assert page.palette_send_button.height() <= 36
+        assert page.sticker_prereq_button.minimumHeight() >= 30
+        assert page.hand_clear_button.height() <= 36
+    finally:
+        _wait_for_edit_preview_idle(qt_app, page)
+        page.close()
 
 
 @pytest.mark.parametrize(
@@ -530,12 +606,13 @@ def test_material_ui_defaults_and_vertical_scroll(qt_app, width: int) -> None:
     assert not page.settings().sticker.enabled
     assert not page.settings().line_art.enabled
     assert page.palette_extract_button.text() == "色を取り出す"
-    assert page.palette_quantize_enabled.text() == "6色に整理する"
-    assert page.palette_blend_mode_combo.currentText() == "くっきり"
+    assert page.palette_quantize_enabled.text() == "6色に整理"
+    assert page.palette_blend_mode_combo.currentText() == "鮮明"
     assert page.palette_blend_description_label.text() == "色面をはっきり分けます"
-    assert [page.palette_blend_mode_combo.itemText(i) for i in range(page.palette_blend_mode_combo.count())] == ["くっきり", "なめらか", "陰影を残す"]
+    assert [page.palette_blend_mode_combo.itemText(i) for i in range(page.palette_blend_mode_combo.count())] == ["鮮明", "滑らか", "陰影"]
     assert not page.palette_quantize_enabled.isEnabled()
-    assert page.palette_quantize_guide_label.text() == "先に色を取り出してください"
+    assert page.palette_quantize_guide_label.text() == ""
+    assert page.palette_results_widget.isHidden()
     assert not page.palette_send_button.isVisible()
     assert not page.palette_open_button.isVisible()
     assert page.settings_scroll.horizontalScrollBar().maximum() == 0
@@ -543,8 +620,9 @@ def test_material_ui_defaults_and_vertical_scroll(qt_app, width: int) -> None:
     qt_app.processEvents()
     viewport = page.settings_scroll.viewport()
     assert page.settings_scroll.horizontalScrollBar().maximum() == 0
-    assert page.palette_blend_mode_combo.width() <= viewport.width()
-    assert page.palette_blend_description_label.width() <= viewport.width()
+    assert page.palette_count_combo.width() <= viewport.width()
+    assert not page.palette_blend_mode_combo.isVisible()
+    assert not page.palette_blend_description_label.isVisible()
     page.material_section.toggle.click()
     qt_app.processEvents()
     assert page.settings_scroll.horizontalScrollBar().maximum() == 0
@@ -922,6 +1000,7 @@ def test_transparency_slider_spin_sync_and_sticker_navigation_does_not_auto_enab
     page.show()
     page.transparency_section.toggle.setChecked(False)
     page.transparency_enabled.setChecked(False)
+    page.sticker_enabled.setChecked(True)
     qt_app.processEvents()
 
     page.tolerance_slider.setValue(42)
@@ -1102,7 +1181,7 @@ def test_palette_rows_reset_and_handoff_use_recolored_values(qt_app, tmp_path: P
     assert page.palette_instruction_label.text() == "抽出した色をクリックして、好きな配色へ変更できます。"
     assert page.palette_blend_description_label.text() == "元画像の明るさを残して色を変えます"
     assert page.palette_chips_layout.count() >= len(mapping.palette) * 3
-    assert page.palette_quantize_enabled.text() == "6色に整理する"
+    assert page.palette_quantize_enabled.text() == "6色に整理"
     assert page.palette_send_button.isEnabled()
     assert page.palette_send_button.text() == "ドット絵へ送る"
     assert page.palette_send_button.toolTip() == "現在の配色をドット絵パレットへ送る"

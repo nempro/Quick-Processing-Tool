@@ -75,6 +75,7 @@ def test_hand_section_is_compact_ordered_and_processing_safe(qt_app, tmp_path: P
         page.hand_eraser_button,
         page.hand_color_button,
         page.hand_size_spin,
+        page.hand_opacity_spin,
         page.hand_visible_check,
         page.hand_clear_button,
     ):
@@ -342,7 +343,9 @@ def test_hand_color_is_alpha_aware_preference_and_original_hides_layer(
     )
     page.choose_hand_color()
     assert page._hand_color.getRgb() == (10, 20, 30, 40)
-    assert page.hand_color_button.text() == "#280A141E"
+    assert page.hand_color_button.text() == "#0A141E"
+    assert page.hand_opacity_spin.value() == 16
+    assert "不透明度 16%" in page.hand_color_button.toolTip()
     assert tuple(page._history) == history_before
 
     page._begin_hand_stroke(HandPoint(20, 20))
@@ -357,6 +360,123 @@ def test_hand_color_is_alpha_aware_preference_and_original_hides_layer(
     page.show_edited()
     _wait(qt_app, lambda: page._preview_thread is None)
     assert not page.drop_zone.preview._overlay_item.pixmap().isNull()
+    page.close()
+
+
+def test_hand_opacity_percent_mapping_and_picker_exact_alpha_contract(
+    qt_app, tmp_path: Path, monkeypatch
+) -> None:
+    page, _source = _loaded_page(qt_app, tmp_path)
+    assert page.hand_opacity_spin.minimum() == 0
+    assert page.hand_opacity_spin.maximum() == 100
+    assert page.hand_opacity_spin.value() == 100
+    history_before = tuple(page._history)
+
+    for percent, alpha in ((25, 64), (50, 128), (100, 255), (0, 0)):
+        page.hand_opacity_spin.setValue(percent)
+        assert page._hand_color.alpha() == alpha
+        assert tuple(page._history) == history_before
+
+    page.hand_opacity_spin.setValue(25)
+    picker_initial_alphas: list[int] = []
+
+    def accept_alpha_127(initial, *_args, **_kwargs):
+        picker_initial_alphas.append(initial.alpha())
+        return QColor(10, 20, 30, 127)
+
+    monkeypatch.setattr(edit_ui, "choose_color", accept_alpha_127)
+    page.choose_hand_color()
+    assert picker_initial_alphas == [64]
+    assert page._hand_color.getRgb() == (10, 20, 30, 127)
+    assert page.hand_opacity_spin.value() == 50
+    assert page.hand_color_button.text() == "#0A141E"
+    assert "rgba(" not in page.hand_color_button.styleSheet().lower()
+    assert "#0a141e" in page.hand_color_button.styleSheet().lower()
+    assert "#0A141E" in page.hand_color_button.accessibleName()
+    assert "不透明度 50%" in page.hand_color_button.accessibleName()
+
+    def cancel_picker(initial, *_args, **_kwargs):
+        picker_initial_alphas.append(initial.alpha())
+        return QColor()
+
+    monkeypatch.setattr(edit_ui, "choose_color", cancel_picker)
+    page.choose_hand_color()
+    assert picker_initial_alphas == [64, 127]
+    assert page._hand_color.getRgb() == (10, 20, 30, 127)
+    assert page.hand_opacity_spin.value() == 50
+    assert tuple(page._history) == history_before
+    page.close()
+
+
+def test_hand_opacity_applies_only_to_new_strokes_and_preferences_survive_reset_source(
+    qt_app, tmp_path: Path
+) -> None:
+    page, _source = _loaded_page(qt_app, tmp_path)
+    page._begin_hand_stroke(HandPoint(8, 8))
+    page._finish_hand_stroke()
+    first = page.settings().hand_draw.strokes[0]
+    assert first.color[3] == 255
+
+    history_before_preference = len(page._history)
+    page.hand_opacity_spin.setValue(25)
+    assert len(page._history) == history_before_preference
+    page._begin_hand_stroke(HandPoint(18, 8))
+    assert page._active_hand_color.alpha() == 64
+    page.hand_opacity_spin.setValue(50)
+    page._finish_hand_stroke()
+    assert page.settings().hand_draw.strokes[0] == first
+    assert page.settings().hand_draw.strokes[1].color[3] == 64
+
+    page._begin_hand_stroke(HandPoint(28, 8))
+    page._finish_hand_stroke()
+    assert page.settings().hand_draw.strokes[2].color[3] == 128
+    page.hand_opacity_spin.setValue(0)
+    page._begin_hand_stroke(HandPoint(38, 8))
+    page._finish_hand_stroke()
+    assert page.settings().hand_draw.strokes[3].color[3] == 0
+
+    page.reset_edits()
+    assert page.settings().hand_draw.strokes == ()
+    assert page.hand_opacity_spin.value() == 0
+    assert page._hand_color.alpha() == 0
+    replacement = tmp_path / "opacity-preference-source.png"
+    Image.new("RGB", (32, 24), "blue").save(replacement)
+    assert page.load_image(replacement)
+    _wait(qt_app, lambda: page._preview_thread is None)
+    assert page.hand_opacity_spin.value() == 0
+    assert page._hand_color.alpha() == 0
+    page.close()
+
+
+def test_hand_layer_visibility_and_clear_remain_available_with_draw_mode_off(
+    qt_app, tmp_path: Path
+) -> None:
+    page, _source = _loaded_page(qt_app, tmp_path)
+    page._begin_hand_stroke(HandPoint(12, 12))
+    page._finish_hand_stroke()
+    strokes = page.settings().hand_draw.strokes
+    page.hand_mode_enabled.setChecked(False)
+    qt_app.processEvents()
+
+    assert not page.hand_details.isVisible()
+    assert page.hand_visible_check.isEnabled()
+    assert page.hand_clear_button.isEnabled()
+
+    history_before_visibility = len(page._history)
+    page.hand_visible_check.click()
+    assert not page.settings().hand_draw.visible
+    assert page.settings().hand_draw.strokes == strokes
+    assert len(page._history) == history_before_visibility + 1
+    page.undo()
+    assert page.settings().hand_draw.visible
+    assert page.settings().hand_draw.strokes == strokes
+
+    history_before_clear = page._history_index
+    page.hand_clear_button.click()
+    assert page.settings().hand_draw.strokes == ()
+    assert page._history_index == history_before_clear + 1
+    page.undo()
+    assert page.settings().hand_draw.strokes == strokes
     page.close()
 
 

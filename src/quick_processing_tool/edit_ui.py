@@ -358,12 +358,24 @@ class ElidedPathLabel(QLabel):
 class CollapsibleSection(QWidget):
     expanded = Signal(bool)
 
-    def __init__(self, title: str, description: str, content: QWidget, open_by_default: bool = False) -> None:
+    def __init__(
+        self,
+        title: str,
+        description: str = "",
+        content: QWidget | None = None,
+        open_by_default: bool = False,
+    ) -> None:
         super().__init__()
+        if content is None:
+            raise ValueError("CollapsibleSection content is required")
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 2, 0, 0)
-        layout.setSpacing(3)
+        layout.setContentsMargins(0, 1, 0, 0)
+        layout.setSpacing(2)
         self.toggle = QToolButton()
+        self.toggle.setMinimumWidth(0)
+        self.toggle.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.toggle.setText(title)
         self.toggle.setCheckable(True)
         self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
@@ -376,8 +388,10 @@ class CollapsibleSection(QWidget):
         )
         self.description = QLabel(description)
         self.description.setWordWrap(True)
-        self.description.setStyleSheet("color: #667085; padding: 0 8px 3px 24px;")
+        self.description.setStyleSheet("color: #667085; padding: 0 8px 2px 24px;")
         self.content = content
+        self.content.setMinimumWidth(0)
+        self.content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.content.setProperty("editAccordionContent", True)
         self.content.setStyleSheet(
             "QPushButton { min-height: 20px; padding: 4px 7px; }"
@@ -394,6 +408,7 @@ class CollapsibleSection(QWidget):
     @Slot(bool)
     def set_expanded(self, expanded: bool) -> None:
         self.toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.description.setVisible(expanded and bool(self.description.text().strip()))
         self.content.setVisible(expanded)
         self.expanded.emit(expanded)
 
@@ -1242,7 +1257,7 @@ class QuickEditPage(QWidget):
         left.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         ll = QVBoxLayout(left)
         ll.setContentsMargins(4, 8, 4, 8)
-        ll.setSpacing(4)
+        ll.setSpacing(3)
         heading = QLabel("何をしますか？")
         heading.setStyleSheet("font-size: 18px; font-weight: 700; color: #182230;")
         ll.addWidget(heading)
@@ -1274,10 +1289,11 @@ class QuickEditPage(QWidget):
         filter_form.addRow("雰囲気", self.filter_combo)
         self.filter_section = CollapsibleSection(
             "フィルター",
-            "選ぶだけで画像の雰囲気を変えます",
+            "",
             filter_content,
             True,
         )
+        self.filter_section.toggle.setToolTip("画像の色合いや雰囲気を選びます")
         ll.addWidget(self.filter_section)
 
         text_content = QWidget()
@@ -1333,18 +1349,25 @@ class QuickEditPage(QWidget):
         text_layout.addWidget(self.text_details)
         self.text_section = CollapsibleSection(
             "文字を入れる",
-            "入力すると、そのまま反映されます。空にすると文字を外します",
+            "",
             text_content,
         )
+        self.text_section.toggle.setToolTip("文字を入力すると加工結果へ反映します")
         ll.addWidget(self.text_section)
 
         hand_content = QWidget()
         hand_layout = QVBoxLayout(hand_content)
-        hand_layout.setContentsMargins(6, 1, 3, 4)
-        hand_layout.setSpacing(4)
-        self.hand_mode_enabled = QCheckBox("プレビューへ手描きする")
-        self.hand_mode_enabled.setAccessibleName("手描きモード")
-        hand_layout.addWidget(self.hand_mode_enabled)
+        hand_layout.setContentsMargins(5, 1, 3, 1)
+        hand_layout.setSpacing(3)
+        hand_mode_row = QHBoxLayout()
+        hand_mode_row.setContentsMargins(0, 0, 0, 0)
+        hand_mode_row.setSpacing(6)
+        hand_mode_row.addWidget(QLabel("描画モード"))
+        hand_mode_row.addStretch()
+        self.hand_mode_enabled = QCheckBox("ON")
+        self.hand_mode_enabled.setToolTip("プレビュー上へペンや消しゴムで描ける状態にします")
+        self.hand_mode_enabled.setAccessibleName("手書きの描画モード")
+        hand_mode_row.addWidget(self.hand_mode_enabled)
         self.hand_details = QWidget()
         hand_form = QFormLayout(self.hand_details)
         self._configure_form(hand_form)
@@ -1357,7 +1380,7 @@ class QuickEditPage(QWidget):
         self.hand_eraser_button = QPushButton("消しゴム")
         for button, tool, tooltip in (
             (self.hand_pen_button, HandTool.PEN, "選んだ色で描きます"),
-            (self.hand_eraser_button, HandTool.ERASER, "手描き部分だけを消します"),
+            (self.hand_eraser_button, HandTool.ERASER, "手書き部分だけを消します"),
         ):
             button.setCheckable(True)
             button.setMinimumHeight(30)
@@ -1370,37 +1393,48 @@ class QuickEditPage(QWidget):
             button.clicked.connect(lambda _checked=False, selected=tool: self._select_hand_tool(selected))
         self.hand_pen_button.setChecked(True)
         self.hand_color_button = QPushButton()
-        self.hand_color_button.setProperty("showAlphaValue", True)
-        self.hand_color_button.setProperty("colorPurpose", "手描きの色を選びます")
-        self.hand_color_button.setAccessibleName("手描きの色")
+        self.hand_color_button.setProperty("showAlphaValue", False)
+        self.hand_color_button.setProperty("colorPurpose", "手書きの色を選びます")
         self.hand_color_button.clicked.connect(self.choose_hand_color)
         self.hand_size_spin = self._spin(1, 100, 8, " px")
-        self.hand_size_spin.setAccessibleName("手描きの太さ")
-        self.hand_visible_check = QCheckBox("手描きを表示")
+        self.hand_size_spin.setAccessibleName("手書きの太さ")
+        self.hand_opacity_spin = self._spin(0, 100, 100, "%")
+        self.hand_opacity_spin.setAccessibleName("手書きの不透明度")
+        self.hand_opacity_spin.setToolTip("これから描く線の不透明度を設定します")
+        self.hand_visible_check = QCheckBox("表示")
         self.hand_visible_check.setChecked(True)
-        self.hand_clear_button = QPushButton("手描きをすべて消す")
-        self.hand_clear_button.setToolTip("手描きレイヤーだけを消します")
+        self.hand_visible_check.setToolTip("手書きレイヤーをプレビューと保存画像へ表示します")
+        self.hand_visible_check.setAccessibleName("手書きレイヤーをプレビューと保存画像へ表示")
+        self.hand_clear_button = QPushButton("全消去")
+        self.hand_clear_button.setToolTip("手書きをすべて消す")
+        self.hand_clear_button.setAccessibleName("手書きレイヤーをすべて消す")
+        self.hand_clear_button.setMinimumWidth(0)
+        self.hand_clear_button.setMinimumHeight(30)
+        self.hand_clear_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.hand_clear_button.clicked.connect(self.clear_hand_draw)
+        hand_mode_row.addWidget(self.hand_visible_check)
+        hand_mode_row.addWidget(self.hand_clear_button, 1)
+        hand_layout.addLayout(hand_mode_row)
         hand_form.addRow("道具", tool_row)
         hand_form.addRow("色", self.hand_color_button)
         hand_form.addRow("太さ", self.hand_size_spin)
-        hand_form.addRow("", self.hand_visible_check)
-        hand_form.addRow("", self.hand_clear_button)
+        hand_form.addRow("不透明度", self.hand_opacity_spin)
         hand_layout.addWidget(self.hand_details)
         hand_content.setStyleSheet(
             "QPushButton:checked { background: #315fbd; color: white; "
             "border: 2px solid #173a82; font-weight: 700; }"
         )
         self.hand_section = CollapsibleSection(
-            "手描き",
-            "プレビューへ直接描き、加工結果の一番上へ重ねます",
+            "手書き",
+            "",
             hand_content,
         )
+        self.hand_section.toggle.setToolTip("プレビューへ直接描き、加工結果の一番上へ重ねます")
         ll.addWidget(self.hand_section)
 
         transparency_content = QWidget()
         transparency_layout = QVBoxLayout(transparency_content)
-        transparency_layout.setContentsMargins(6, 1, 3, 4)
+        transparency_layout.setContentsMargins(6, 1, 3, 1)
         transparency_layout.setSpacing(4)
         self.transparency_enabled = QCheckBox("背景を透明にする")
         transparency_layout.addWidget(self.transparency_enabled)
@@ -1409,7 +1443,9 @@ class QuickEditPage(QWidget):
         self._configure_form(transparency_form)
         self.target_color_button = QPushButton()
         self.target_color_button.clicked.connect(self.choose_target_color)
-        self.eyedropper_button = QPushButton("画像から色を選ぶ")
+        self.eyedropper_button = QPushButton("画像から選ぶ")
+        self.eyedropper_button.setToolTip("画像から透明にしたい背景色を選びます")
+        self.eyedropper_button.setAccessibleName("画像から透明にしたい背景色を選ぶ")
         self.eyedropper_button.setCheckable(True)
         self.eyedropper_button.toggled.connect(self._eyedropper_toggled)
         self.tolerance_slider = QSlider(Qt.Orientation.Horizontal)
@@ -1428,14 +1464,22 @@ class QuickEditPage(QWidget):
         softness_row = QHBoxLayout()
         softness_row.addWidget(self.softness_slider, 1)
         softness_row.addWidget(self.softness_spin)
-        transparency_form.addRow("抜きたい背景色", self.target_color_button)
-        transparency_form.addRow("", self.eyedropper_button)
+        target_color_row = QHBoxLayout()
+        target_color_row.setContentsMargins(0, 0, 0, 0)
+        target_color_row.setSpacing(4)
+        self.target_color_button.setMinimumWidth(0)
+        self.target_color_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.eyedropper_button.setMinimumWidth(0)
+        self.eyedropper_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        target_color_row.addWidget(self.target_color_button, 1)
+        target_color_row.addWidget(self.eyedropper_button, 1)
+        transparency_form.addRow("抜きたい背景色", target_color_row)
         transparency_form.addRow("色の許容範囲", tolerance_row)
         transparency_form.addRow("境界をなじませる", softness_row)
         transparency_layout.addWidget(self.transparency_details)
         self.transparency_section = CollapsibleSection(
             "背景を透明にする",
-            "単色背景を選び、近い色まで透明にします",
+            "近い色もまとめて透明にします",
             transparency_content,
         )
         ll.addWidget(self.transparency_section)
@@ -1486,27 +1530,35 @@ class QuickEditPage(QWidget):
         canvas_form.addRow("背景の指定色", self.canvas_color_button)
         self.canvas_section = CollapsibleSection(
             "キャンバスを整える",
-            "縦横比を保ったまま中央へ配置します",
+            "",
             canvas_content,
         )
+        self.canvas_section.toggle.setToolTip("サイズ、配置、余白、背景を設定します")
         ll.addWidget(self.canvas_section)
 
         material_content = QWidget()
         material_layout = QVBoxLayout(material_content)
-        material_layout.setContentsMargins(6, 1, 3, 4)
-        material_layout.setSpacing(5)
+        material_layout.setContentsMargins(5, 1, 3, 1)
+        material_layout.setSpacing(4)
         sticker_group = QGroupBox("ステッカー")
         sticker_layout = QVBoxLayout(sticker_group)
-        self.sticker_explanation_label = QLabel("切り抜き画像をふち付きにします。\n背景を透明にしてから使うときれいです。")
-        self.sticker_explanation_label.setWordWrap(True)
-        self.sticker_explanation_label.setStyleSheet("color: #667085;")
-        sticker_layout.addWidget(self.sticker_explanation_label)
+        sticker_layout.setContentsMargins(5, 4, 5, 4)
+        sticker_layout.setSpacing(3)
+        sticker_group.setToolTip("透明部分のある画像へフチや影を付けます")
+        self.sticker_explanation_label = QLabel()
+        self.sticker_explanation_label.hide()
+        self.sticker_enabled = QCheckBox("ステッカーにする")
+        sticker_layout.addWidget(self.sticker_enabled)
+        self.sticker_details = QWidget()
+        sticker_details_layout = QVBoxLayout(self.sticker_details)
+        sticker_details_layout.setContentsMargins(0, 0, 0, 0)
+        sticker_details_layout.setSpacing(3)
         self.sticker_prereq_status = QLabel()
         self.sticker_prereq_status.setWordWrap(True)
         self.sticker_prereq_status.setStyleSheet("color: #9a6700;")
-        sticker_layout.addWidget(self.sticker_prereq_status)
+        sticker_details_layout.addWidget(self.sticker_prereq_status)
         self.sticker_prereq_button = QToolButton()
-        self.sticker_prereq_button.setText("背景を透明にする設定を開く →")
+        self.sticker_prereq_button.setText("背景透過を開く →")
         self.sticker_prereq_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.sticker_prereq_button.setToolTip("背景を透明にする設定へ移動します")
         self.sticker_prereq_button.setAccessibleName("背景を透明にする設定を開く")
@@ -1520,27 +1572,26 @@ class QuickEditPage(QWidget):
         self.sticker_prereq_button.setMinimumWidth(0)
         self.sticker_prereq_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.sticker_prereq_button.clicked.connect(self.open_transparency_settings)
-        sticker_layout.addWidget(self.sticker_prereq_button)
+        sticker_details_layout.addWidget(self.sticker_prereq_button)
         sticker_form = QFormLayout()
         self._configure_form(sticker_form)
-        self.sticker_enabled = QCheckBox("ステッカーにする")
         self.sticker_outline_width_spin = self._spin(1, 50, 8, " px")
         self.sticker_outline_color_button = QPushButton()
         self.sticker_outline_color_button.setProperty("showAlphaValue", True)
         self.sticker_outline_color_button.clicked.connect(self.choose_sticker_color)
         self.sticker_shadow_enabled = QCheckBox("影を付ける")
-        sticker_form.addRow("", self.sticker_enabled)
         sticker_form.addRow("フチ色", self.sticker_outline_color_button)
         sticker_form.addRow("フチ太さ", self.sticker_outline_width_spin)
         sticker_form.addRow("", self.sticker_shadow_enabled)
-        sticker_layout.addLayout(sticker_form)
+        sticker_details_layout.addLayout(sticker_form)
+        sticker_layout.addWidget(self.sticker_details)
         material_layout.addWidget(sticker_group)
         line_group = QGroupBox("輪郭・線表現")
         self.line_art_group = line_group
         line_layout = QVBoxLayout(line_group)
-        line_layout.setContentsMargins(7, 7, 7, 7)
+        line_layout.setContentsMargins(5, 4, 5, 4)
         line_layout.setSpacing(4)
-        self.line_art_description = QLabel("画像を線主体の表現へ変えます")
+        self.line_art_description = QLabel("線主体の表現へ変えます")
         self.line_art_description.setWordWrap(True)
         self.line_art_description.setStyleSheet("color: #667085;")
         line_layout.addWidget(self.line_art_description)
@@ -1577,7 +1628,11 @@ class QuickEditPage(QWidget):
         line_layout.addWidget(self.line_art_details)
         material_layout.addWidget(line_group)
         palette_group = QGroupBox("色を整理・変える")
+        palette_group.setMinimumWidth(0)
+        palette_group.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         palette_layout = QVBoxLayout(palette_group)
+        palette_layout.setContentsMargins(5, 4, 5, 4)
+        palette_layout.setSpacing(3)
         self.palette_enabled = QCheckBox("代表色を抽出")
         self.palette_enabled.setVisible(False)
         palette_row = QHBoxLayout()
@@ -1590,37 +1645,56 @@ class QuickEditPage(QWidget):
         palette_row.addWidget(self.palette_count_combo, 1)
         palette_row.addWidget(self.palette_extract_button, 1)
         self.palette_intro_label = QLabel(
-            "5 / 6 / 8 / 12色から選べます。色数を増やすと、近い色を細かく分けられます。"
+            "色数を増やすと近い色を細かく分けられます"
         )
         self.palette_intro_label.setWordWrap(True)
         self.palette_intro_label.setStyleSheet("color: #667085;")
         palette_layout.addWidget(self.palette_intro_label)
         palette_layout.addLayout(palette_row)
+        self.palette_results_widget = QWidget()
+        self.palette_results_widget.setMinimumWidth(0)
+        self.palette_results_widget.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        palette_results_layout = QVBoxLayout(self.palette_results_widget)
+        palette_results_layout.setContentsMargins(0, 0, 0, 0)
+        palette_results_layout.setSpacing(2)
         self.palette_quantize_enabled = QCheckBox()
-        palette_layout.addWidget(self.palette_quantize_enabled)
         self.palette_quantize_guide_label = QLabel()
         self.palette_quantize_guide_label.setWordWrap(True)
         self.palette_quantize_guide_label.setStyleSheet("color: #9a6700;")
-        palette_layout.addWidget(self.palette_quantize_guide_label)
+        palette_results_layout.addWidget(self.palette_quantize_guide_label)
         blend_row = QHBoxLayout()
-        blend_row.addWidget(QLabel("色のなじみ"))
+        blend_row.setContentsMargins(0, 0, 0, 0)
+        blend_row.setSpacing(4)
         self.palette_blend_mode_combo = QComboBox()
+        compact_blend_labels = {
+            RecolorBlendMode.SHARP: "鮮明",
+            RecolorBlendMode.SMOOTH: "滑らか",
+            RecolorBlendMode.PRESERVE_SHADING: "陰影",
+        }
         for mode in (RecolorBlendMode.SHARP, RecolorBlendMode.SMOOTH, RecolorBlendMode.PRESERVE_SHADING):
-            self.palette_blend_mode_combo.addItem(RECOLOR_BLEND_LABELS[mode], mode.value)
+            self.palette_blend_mode_combo.addItem(compact_blend_labels[mode], mode.value)
         self.palette_blend_mode_combo.setToolTip("くっきり\n色面をはっきり分けます\n\nなめらか\n色の境目を自然につなぎます\n\n陰影を残す\n元画像の明るさを残して色を変えます")
+        self.palette_blend_mode_combo.setAccessibleName("色のなじみ")
+        self.palette_quantize_enabled.setMinimumWidth(0)
+        self.palette_quantize_enabled.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.palette_blend_mode_combo.setMinimumWidth(0)
+        self.palette_blend_mode_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        blend_row.addWidget(self.palette_quantize_enabled, 1)
         blend_row.addWidget(self.palette_blend_mode_combo, 1)
-        palette_layout.addLayout(blend_row)
+        palette_results_layout.addLayout(blend_row)
         self.palette_blend_description_label = QLabel()
         self.palette_blend_description_label.setWordWrap(True)
         self.palette_blend_description_label.setStyleSheet("color: #667085;")
-        palette_layout.addWidget(self.palette_blend_description_label)
+        palette_results_layout.addWidget(self.palette_blend_description_label)
         self.palette_current_label = QLabel("現在の配色")
         self.palette_current_label.setStyleSheet("font-size: 15px; font-weight: 700; color: #182230;")
-        palette_layout.addWidget(self.palette_current_label)
+        palette_results_layout.addWidget(self.palette_current_label)
         self.palette_instruction_label = QLabel("抽出した色をクリックして、好きな配色へ変更できます。")
         self.palette_instruction_label.setWordWrap(True)
         self.palette_instruction_label.setStyleSheet("color: #667085;")
-        palette_layout.addWidget(self.palette_instruction_label)
+        palette_results_layout.addWidget(self.palette_instruction_label)
         self.palette_columns_widget = QWidget()
         palette_columns_layout = QGridLayout(self.palette_columns_widget)
         palette_columns_layout.setContentsMargins(0, 0, 0, 0)
@@ -1628,21 +1702,21 @@ class QuickEditPage(QWidget):
         palette_columns_layout.addWidget(QLabel("元の色"), 0, 0)
         palette_columns_layout.addWidget(QLabel(""), 0, 1)
         palette_columns_layout.addWidget(QLabel("変更後"), 0, 2)
-        palette_layout.addWidget(self.palette_columns_widget)
+        palette_results_layout.addWidget(self.palette_columns_widget)
         self.palette_chips_widget = QWidget()
         self.palette_chips_layout = QGridLayout(self.palette_chips_widget)
-        self.palette_chips_layout.setContentsMargins(0, 2, 0, 2)
+        self.palette_chips_layout.setContentsMargins(0, 0, 0, 0)
         self.palette_chips_layout.setHorizontalSpacing(2)
-        self.palette_chips_layout.setVerticalSpacing(3)
-        palette_layout.addWidget(self.palette_chips_widget)
+        self.palette_chips_layout.setVerticalSpacing(0)
+        palette_results_layout.addWidget(self.palette_chips_widget)
         self.palette_reset_button = QPushButton("元の配色に戻す")
         self.palette_reset_button.setMinimumWidth(0)
         self.palette_reset_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.palette_reset_button.clicked.connect(self.reset_palette)
-        palette_layout.addWidget(self.palette_reset_button)
+        palette_results_layout.addWidget(self.palette_reset_button)
         self.palette_other_uses_label = QLabel("ほかで使う")
         self.palette_other_uses_label.setStyleSheet("color: #667085; font-size: 12px; font-weight: 700;")
-        palette_layout.addWidget(self.palette_other_uses_label)
+        palette_results_layout.addWidget(self.palette_other_uses_label)
         palette_actions_row = QHBoxLayout()
         self.palette_send_button = QPushButton("ドット絵へ送る")
         self.palette_send_button.setToolTip("現在の配色をドット絵パレットへ送る")
@@ -1651,7 +1725,7 @@ class QuickEditPage(QWidget):
         self.palette_send_button.clicked.connect(self.send_palette_to_pixel)
         palette_actions_row.addWidget(self.palette_send_button, 1)
         self.palette_open_button = QToolButton()
-        self.palette_open_button.setText("ドット絵を開く →")
+        self.palette_open_button.setText("ドット絵へ")
         self.palette_open_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.palette_open_button.setToolTip("ドット絵画面へ移動します")
         self.palette_open_button.setAccessibleName("ドット絵を開く")
@@ -1671,13 +1745,15 @@ class QuickEditPage(QWidget):
             "QToolButton:hover { color: #173a82; text-decoration: underline; }"
             "QToolButton:focus { border: 1px solid #2457b2; border-radius: 4px; }"
         )
-        palette_layout.addLayout(palette_actions_row)
+        palette_results_layout.addLayout(palette_actions_row)
+        palette_layout.addWidget(self.palette_results_widget)
         self.palette_feedback_label = QLabel()
         self.palette_feedback_label.setWordWrap(True)
         self.palette_feedback_label.setStyleSheet("color: #137333; font-weight: 700;")
         palette_layout.addWidget(self.palette_feedback_label)
         material_layout.addWidget(palette_group)
-        self.material_section = CollapsibleSection("素材化", "ステッカー、輪郭・線表現、代表色を目的別に作ります", material_content)
+        self.material_section = CollapsibleSection("素材化", "", material_content)
+        self.material_section.toggle.setToolTip("ステッカー、輪郭・線表現、代表色を設定します")
         ll.addWidget(self.material_section)
         ll.addStretch()
         self.settings_scroll.setWidget(left)
@@ -1834,11 +1910,13 @@ class QuickEditPage(QWidget):
         self._update_color_button(self.sticker_outline_color_button, self._sticker_outline_color)
         self._update_color_button(self.line_art_color_button, self._line_art_color)
         self._update_color_button(self.line_art_background_color_button, self._line_art_background_color)
-        self._update_color_button(self.hand_color_button, self._hand_color)
+        self._update_hand_color_button()
 
     @staticmethod
     def _configure_form(form: QFormLayout) -> None:
-        form.setContentsMargins(4, 3, 4, 4)
+        form.setContentsMargins(3, 1, 3, 2)
+        form.setHorizontalSpacing(4)
+        form.setVerticalSpacing(2)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
@@ -1879,6 +1957,7 @@ class QuickEditPage(QWidget):
         self.hand_mode_enabled.toggled.connect(self._hand_mode_toggled)
         self.hand_visible_check.toggled.connect(self._hand_visibility_changed)
         self.hand_size_spin.valueChanged.connect(self._hand_size_changed)
+        self.hand_opacity_spin.valueChanged.connect(self._hand_opacity_changed)
         for check in (
             self.bold_check,
             self.outline_enabled,
@@ -1965,15 +2044,23 @@ class QuickEditPage(QWidget):
         self._hand_size = size
         self.drop_zone.preview.set_brush_width(size)
 
+    @Slot(int)
+    def _hand_opacity_changed(self, percent: int) -> None:
+        self._hand_color.setAlpha(round(percent * 255 / 100))
+        self._update_hand_color_button()
+
     def _select_hand_tool(self, tool: HandTool) -> None:
         self._hand_tool = tool
 
     @Slot()
     def choose_hand_color(self) -> None:
-        color = choose_color(self._hand_color, self, "手描きの色を選ぶ", show_alpha=True)
+        color = choose_color(self._hand_color, self, "手書きの色を選ぶ", show_alpha=True)
         if color.isValid():
             self._hand_color = color
-            self._update_color_button(self.hand_color_button, color)
+            blocked = self.hand_opacity_spin.blockSignals(True)
+            self.hand_opacity_spin.setValue(round(color.alpha() * 100 / 255))
+            self.hand_opacity_spin.blockSignals(blocked)
+            self._update_hand_color_button()
 
     def _final_canvas_size(self, settings: EditSettings | None = None) -> tuple[int, int]:
         if not self.source_path or self._source_size == (0, 0):
@@ -2365,7 +2452,7 @@ class QuickEditPage(QWidget):
         self._update_color_button(self.sticker_outline_color_button, self._sticker_outline_color)
         self._update_color_button(self.line_art_color_button, self._line_art_color)
         self._update_color_button(self.line_art_background_color_button, self._line_art_background_color)
-        self._update_color_button(self.hand_color_button, self._hand_color)
+        self._update_hand_color_button()
         self._update_visibility()
         self._applying = was_applying
         if not self._applying:
@@ -2393,7 +2480,7 @@ class QuickEditPage(QWidget):
 
     def _update_palette_quantize_text(self) -> None:
         count = int(self.palette_count_combo.currentData())
-        self.palette_quantize_enabled.setText(f"{count}色に整理する")
+        self.palette_quantize_enabled.setText(f"{count}色に整理")
 
     def _update_palette_blend_description(self) -> None:
         mode = RecolorBlendMode(self.palette_blend_mode_combo.currentData())
@@ -2452,20 +2539,20 @@ class QuickEditPage(QWidget):
         self._update_palette_blend_description()
         has_palette = bool(self._palette_values)
         self.palette_intro_label.setVisible(not has_palette)
-        self.palette_current_label.setVisible(has_palette)
-        self.palette_instruction_label.setVisible(has_palette)
+        self.palette_results_widget.setVisible(has_palette)
+        self.palette_current_label.setVisible(False)
+        self.palette_instruction_label.setVisible(False)
         self.palette_columns_widget.setVisible(False)
         self.palette_reset_button.setVisible(has_palette)
         self.palette_reset_button.setEnabled(has_palette and self._palette_replacements != self._palette_values)
-        self.palette_other_uses_label.setVisible(has_palette)
+        self.palette_other_uses_label.setVisible(False)
         self.palette_send_button.setVisible(has_palette)
         self.palette_send_button.setEnabled(has_palette)
         self.palette_open_button.setVisible(has_palette)
         self.palette_open_button.setEnabled(has_palette)
         self.palette_quantize_enabled.setEnabled(has_palette)
-        status_text = ""
-        if not has_palette:
-            status_text = self._palette_status_message or "先に色を取り出してください"
+        self.palette_blend_description_label.setVisible(False)
+        status_text = self._palette_status_message if not has_palette else ""
         self.palette_quantize_guide_label.setText(status_text)
         self.palette_quantize_guide_label.setVisible(bool(status_text))
 
@@ -2888,22 +2975,20 @@ class QuickEditPage(QWidget):
 
     def _update_sticker_prerequisite_ui(self) -> None:
         if not self.source_path:
-            self.sticker_prereq_status.setText("画像を読み込むと、ステッカー向けのふち付きを確認できます。")
+            self.sticker_prereq_status.setText("画像を読み込むと設定できます")
             self.sticker_prereq_status.setStyleSheet("color: #667085;")
+            self.sticker_prereq_status.setVisible(self.sticker_enabled.isChecked())
             self.sticker_prereq_button.setVisible(False)
             return
         if self._sticker_ready_for_preview():
-            if self._source_alpha_min < 255:
-                message = "元画像に透明部分があります。そのままステッカー仕上げを確認できます。"
-            else:
-                message = "背景を透明にする設定が有効です。ステッカー仕上げをそのまま確認できます。"
-            self.sticker_prereq_status.setText(message)
-            self.sticker_prereq_status.setStyleSheet("color: #137333;")
+            self.sticker_prereq_status.clear()
+            self.sticker_prereq_status.setVisible(False)
             self.sticker_prereq_button.setVisible(False)
             return
-        self.sticker_prereq_status.setText("先に背景を透明にすると、ステッカー向けのふちがきれいに付きます。")
+        self.sticker_prereq_status.setText("背景透過が必要です")
         self.sticker_prereq_status.setStyleSheet("color: #9a6700;")
-        self.sticker_prereq_button.setVisible(True)
+        self.sticker_prereq_status.setVisible(self.sticker_enabled.isChecked())
+        self.sticker_prereq_button.setVisible(self.sticker_enabled.isChecked())
 
     def _update_visibility(self) -> None:
         self.text_details.setVisible(True)
@@ -2915,14 +3000,17 @@ class QuickEditPage(QWidget):
         self.hand_eraser_button.setEnabled(hand_mode and self._hand_draw_settings.visible)
         self.hand_color_button.setEnabled(hand_mode and self._hand_draw_settings.visible)
         self.hand_size_spin.setEnabled(hand_mode and self._hand_draw_settings.visible)
-        self.hand_visible_check.setEnabled(hand_mode)
-        self.hand_clear_button.setEnabled(hand_mode and bool(self._hand_draw_settings.strokes))
+        self.hand_opacity_spin.setEnabled(hand_mode and self._hand_draw_settings.visible)
+        has_hand_layer = self.source_path is not None and bool(self._hand_draw_settings.strokes)
+        self.hand_visible_check.setEnabled(has_hand_layer)
+        self.hand_clear_button.setEnabled(has_hand_layer)
         self.transparency_details.setVisible(self.transparency_enabled.isChecked())
         self.custom_canvas.setVisible(self.canvas_preset_combo.currentData() == "custom")
         self.canvas_color_button.setVisible(
             self.canvas_background_combo.currentData() == CanvasBackground.CUSTOM.value
         )
         sticker_ready = self._sticker_ready_for_preview()
+        self.sticker_details.setVisible(self.sticker_enabled.isChecked())
         self.sticker_outline_width_spin.setEnabled(self.sticker_enabled.isChecked() and sticker_ready)
         self.sticker_outline_color_button.setEnabled(self.sticker_enabled.isChecked() and sticker_ready)
         self.sticker_shadow_enabled.setEnabled(self.sticker_enabled.isChecked() and sticker_ready)
@@ -3227,21 +3315,37 @@ class QuickEditPage(QWidget):
             display = color.name().upper()
             background = color.name()
         button.setText(display)
+        button.setMinimumWidth(0)
+        button.setMinimumHeight(30)
+        button.setMaximumHeight(36)
+        button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         purpose = button.property("colorPurpose")
         button.setToolTip(f"{purpose}\n現在: {display}" if purpose else display)
         button.setStyleSheet(
             f"QPushButton {{ background: {background}; color: {contrast}; border: 1px solid #65768a;"
-            "border-radius: 6px; min-height: 30px; font-weight: 700; }"
+            "border-radius: 6px; min-height: 24px; padding: 2px 4px; font-weight: 700; }"
             "QPushButton:hover { border: 2px solid #2457b2; }"
             "QPushButton:focus { border: 2px solid #173a82; }"
             "QPushButton:disabled { background: #f3f4f6; color: #9aa1aa; border-color: #d4d8de; }"
+        )
+
+    def _update_hand_color_button(self) -> None:
+        rgb = QColor(self._hand_color.red(), self._hand_color.green(), self._hand_color.blue())
+        self._update_color_button(self.hand_color_button, rgb)
+        display = rgb.name().upper()
+        opacity = self.hand_opacity_spin.value()
+        self.hand_color_button.setToolTip(
+            f"手書きの色を選びます\n現在: {display} / 不透明度 {opacity}%"
+        )
+        self.hand_color_button.setAccessibleName(
+            f"手書きの色 {display}、不透明度 {opacity}%"
         )
 
     @Slot(bool)
     def _eyedropper_toggled(self, enabled: bool) -> None:
         self.drop_zone.preview.set_picking(enabled)
         self._update_hand_drawing_state()
-        self.eyedropper_button.setText("画像上の色をクリック" if enabled else "画像から色を選ぶ")
+        self.eyedropper_button.setText("画像上で選ぶ" if enabled else "画像から選ぶ")
         if enabled:
             self.preview_status.setText("透明にしたい背景色を画像上でクリックしてください")
 
@@ -3450,6 +3554,7 @@ class QuickEditPage(QWidget):
             self.hand_eraser_button,
             self.hand_color_button,
             self.hand_size_spin,
+            self.hand_opacity_spin,
             self.hand_visible_check,
             self.hand_clear_button,
             self.transparency_enabled,
@@ -3461,6 +3566,7 @@ class QuickEditPage(QWidget):
             self.canvas_background_combo,
             self.canvas_color_button,
             self.sticker_enabled,
+            self.sticker_details,
             self.sticker_prereq_button,
             self.sticker_outline_width_spin,
             self.sticker_outline_color_button,

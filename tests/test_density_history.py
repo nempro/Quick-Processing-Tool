@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
 import quick_processing_tool.edit_ui as edit_ui_module
 from quick_processing_tool.edit_ui import QuickEditPage
 from quick_processing_tool.editing import (
+    CanvasBackground,
     EditSettings,
     FilterPreset,
     LineArtBackground,
@@ -338,6 +339,172 @@ def test_line_expression_off_on_custom_layout_has_no_overflow_or_preview_regress
         deadline = time.monotonic() + 3.0
         while window.edit_page._preview_thread is not None and time.monotonic() < deadline:
             app.processEvents()
+        window.close()
+
+
+@pytest.mark.parametrize("width", [900, 1180, 1440])
+def test_compact_edit_inspector_states_reduce_height_without_overflow(
+    app: QApplication, tmp_path: Path, width: int
+) -> None:
+    source = tmp_path / f"compact-edit-{width}.png"
+    Image.new("RGB", (120, 90), "white").save(source)
+    window = MainWindow()
+    try:
+        window.resize(width, 760)
+        window.set_current_source(source)
+        window.navigation.setCurrentIndex(window.image_edit_tab)
+        window.show()
+        app.processEvents()
+        page = window.edit_page
+        deadline = time.monotonic() + 3.0
+        while page._preview_thread is not None and time.monotonic() < deadline:
+            app.processEvents()
+        assert page._preview_thread is None
+        page.schedule_preview = lambda: None
+        baselines = {
+            900: {"hand": 845, "transparency": 861, "material": 1260, "palette12": 1345, "combined": 1745},
+            1180: {"hand": 803, "transparency": 783, "material": 1190, "palette12": 1275, "combined": 1639},
+            1440: {"hand": 803, "transparency": 783, "material": 1176, "palette12": 1275, "combined": 1639},
+        }[width]
+        colors = tuple((index * 19, index * 13, index * 7) for index in range(12))
+
+        def configure(state: str) -> None:
+            page._applying = True
+            for section in page.sections:
+                section.set_expanded(False)
+            page.hand_mode_enabled.setChecked(False)
+            page.transparency_enabled.setChecked(False)
+            page.sticker_enabled.setChecked(False)
+            page.line_art_enabled.setChecked(False)
+            page._palette_values = ()
+            page._palette_replacements = ()
+            page._rebuild_palette_chips()
+            page.palette_count_combo.setCurrentIndex(
+                page.palette_count_combo.findData(6)
+            )
+            if state in {"hand", "combined"}:
+                page.hand_section.set_expanded(True)
+                page.hand_mode_enabled.setChecked(True)
+            if state in {"transparency", "combined"}:
+                page.transparency_section.set_expanded(True)
+                page.transparency_enabled.setChecked(True)
+            if state in {"material", "palette12", "combined"}:
+                page.material_section.set_expanded(True)
+            if state in {"palette12", "combined"}:
+                page.palette_count_combo.setCurrentIndex(
+                    page.palette_count_combo.findData(12)
+                )
+                page._palette_values = colors
+                page._palette_replacements = colors
+                page._rebuild_palette_chips()
+            page._applying = False
+            page._update_visibility()
+            app.processEvents()
+
+        measured: dict[str, int] = {}
+        for state in ("hand", "transparency", "material", "palette12", "combined"):
+            configure(state)
+            content = page.settings_scroll.widget()
+            viewport = page.settings_scroll.viewport()
+            measured[state] = content.sizeHint().height()
+            wide_children = [
+                (
+                    type(child).__name__,
+                    getattr(child, "text", lambda: "")(),
+                    child.minimumSizeHint().width(),
+                    child.sizeHint().width(),
+                )
+                for child in content.findChildren(QWidget)
+                if child.isVisibleTo(content) and child.minimumSizeHint().width() > 180
+            ]
+            assert page.settings_scroll.horizontalScrollBar().maximum() == 0, (
+                state,
+                page.settings_scroll.horizontalScrollBar().maximum(),
+                content.width(),
+                viewport.width(),
+                wide_children,
+            )
+            assert content.width() <= viewport.width()
+            assert page.drop_zone.preview.width() >= {900: 380, 1180: 560, 1440: 701}[width]
+            for child in content.findChildren(QWidget):
+                if not child.isVisibleTo(content) or child.width() <= 0:
+                    continue
+                left = child.mapTo(content, QPoint(0, 0)).x()
+                assert left >= -2
+                assert left + child.width() <= content.width() + 2
+        assert all(measured[state] < baselines[state] for state in measured), (
+            measured,
+            baselines,
+        )
+        configure("hand")
+        for widget in (
+            page.hand_pen_button,
+            page.hand_eraser_button,
+            page.hand_color_button,
+            page.hand_size_spin,
+            page.hand_opacity_spin,
+            page.hand_clear_button,
+        ):
+            assert widget.isVisibleTo(page.settings_scroll.widget())
+            assert widget.height() >= 30, (widget.text(), widget.height())
+        assert page.hand_visible_check.isVisibleTo(page.settings_scroll.widget())
+        mode_label = next(
+            label
+            for label in page.hand_section.findChildren(QWidget)
+            if getattr(label, "text", lambda: "")() == "描画モード"
+        )
+        for widget in (mode_label, page.hand_clear_button):
+            assert widget.width() >= widget.minimumSizeHint().width()
+
+        configure("transparency")
+        assert page.eyedropper_button.text() == "画像から選ぶ"
+        assert page.eyedropper_button.width() >= page.eyedropper_button.minimumSizeHint().width()
+
+        configure("palette12")
+        assert page.palette_quantize_enabled.text() == "12色に整理"
+        for widget in (
+            page.palette_quantize_enabled,
+            page.palette_blend_mode_combo,
+            page.palette_open_button,
+        ):
+            assert widget.width() >= widget.minimumSizeHint().width(), (
+                getattr(widget, "text", lambda: widget.currentText())(),
+                widget.width(),
+                widget.minimumSizeHint().width(),
+            )
+
+        for section in (
+            page.text_section,
+            page.hand_section,
+            page.transparency_section,
+            page.canvas_section,
+            page.material_section,
+        ):
+            section.set_expanded(True)
+        page.hand_mode_enabled.setChecked(True)
+        page.transparency_enabled.setChecked(True)
+        page.sticker_enabled.setChecked(True)
+        page.line_art_enabled.setChecked(True)
+        page.canvas_background_combo.setCurrentIndex(
+            page.canvas_background_combo.findData(CanvasBackground.CUSTOM.value)
+        )
+        page.line_art_background_combo.setCurrentIndex(
+            page.line_art_background_combo.findData(LineArtBackground.CUSTOM.value)
+        )
+        page._update_visibility()
+        app.processEvents()
+        for button in (
+            page.text_color_button,
+            page.outline_color_button,
+            page.hand_color_button,
+            page.target_color_button,
+            page.canvas_color_button,
+            page.sticker_outline_color_button,
+            page.line_art_color_button,
+            page.line_art_background_color_button,
+        ):
+            assert 30 <= button.height() <= 36
+    finally:
         window.close()
 
 

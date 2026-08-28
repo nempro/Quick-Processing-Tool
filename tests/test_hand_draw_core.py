@@ -171,6 +171,28 @@ def test_small_preview_matches_final_renderer_and_downsample_keeps_position() ->
     assert preview.getpixel((15, 5))[0] > 200
 
 
+def test_25_percent_hand_alpha_matches_preview_and_png_export(tmp_path) -> None:
+    source_path = tmp_path / "opacity-parity.png"
+    source = Image.new("RGBA", (32, 24), (0, 0, 0, 0))
+    source.save(source_path)
+    settings = EditSettings(
+        hand_draw=HandDrawSettings(
+            strokes=(_stroke((16, 12), color=(220, 40, 90, 64), width=8),),
+            base_width=32,
+            base_height=24,
+        )
+    )
+    final = render_edit(source, settings)
+    preview = render_preview(source, settings, 1400)
+    assert preview.tobytes() == final.tobytes()
+    assert final.getpixel((16, 12))[3] == pytest.approx(64, abs=1)
+
+    result = EditService().export(source_path, tmp_path, settings, EditOutputFormat.PNG)
+    with Image.open(result.output_path) as reopened:
+        reopened.load()
+        assert reopened.convert("RGBA").getpixel((16, 12)) == final.getpixel((16, 12))
+
+
 def test_hand_draw_is_topmost_after_text_and_canvas(app: QApplication) -> None:
     del app
     source = Image.new("RGBA", (256, 160), (255, 255, 255, 255))
