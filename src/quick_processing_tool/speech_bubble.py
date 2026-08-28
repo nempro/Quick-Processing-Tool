@@ -45,6 +45,7 @@ class SpeechBubbleSettings:
     font_family: str = "Yu Gothic UI"
     font_size: int = 48
     text_color: tuple[int, int, int, int] = (0, 0, 0, 255)
+    bubble_enabled: bool = True
     shape: BubbleShape = BubbleShape.ELLIPSE
     fill_color: tuple[int, int, int, int] = (255, 255, 255, 255)
     stroke_color: tuple[int, int, int, int] = (0, 0, 0, 255)
@@ -149,6 +150,35 @@ def render_speech_bubble(settings: SpeechBubbleSettings) -> BubbleRenderResult |
     if not settings.text.strip():
         return None
     text_path, text_bounds = _text_path(settings)
+    if not settings.bubble_enabled:
+        bounds = text_bounds.adjusted(-2.0, -2.0, 2.0, 2.0)
+        outer = 12.0
+        width = max(1, math.ceil(bounds.width() + outer * 2))
+        height = max(1, math.ceil(bounds.height() + outer * 2))
+        if width > MAX_CANVAS_DIMENSION or height > MAX_CANVAS_DIMENSION or width * height > MAX_CANVAS_PIXELS:
+            raise ValueError("セリフが大きすぎます。文字サイズを小さくしてください。")
+        dx, dy = outer - bounds.left(), outer - bounds.top()
+        text_path.translate(dx, dy)
+        text_rect = text_bounds.translated(dx, dy)
+        qimage = QImage(width, height, QImage.Format.Format_RGBA8888)
+        qimage.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(qimage)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(QColor(*settings.text_color)))
+            painter.drawPath(text_path)
+        finally:
+            painter.end()
+        image = qimage_to_pil(qimage)
+        geometry = BubbleGeometry(
+            (text_rect.x(), text_rect.y(), text_rect.width(), text_rect.height()),
+            (text_rect.center().x(), text_rect.center().y()),
+            None,
+        )
+        return BubbleRenderResult(image, geometry)
+
     body_width = max(100.0, text_bounds.width() + settings.padding * 2)
     body_height = max(72.0, text_bounds.height() + settings.padding * 2)
     if settings.shape is BubbleShape.ELLIPSE:

@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PIL import Image, ImageChops
 from PySide6.QtCore import QPointF
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
 from quick_processing_tool.sound_effect_ui import SoundEffectPage
@@ -43,6 +44,17 @@ def test_style_padding_and_tail_off_affect_geometry(qt_app: QApplication) -> Non
     assert roomy.image.width > compact.image.width and roomy.image.height > compact.image.height
 
 
+def test_bubble_off_exports_text_only_on_transparent_canvas(qt_app: QApplication) -> None:
+    enabled = render_speech_bubble(SpeechBubbleSettings(text="えっ！？", text_color=(210, 30, 70, 255)))
+    text_only = render_speech_bubble(SpeechBubbleSettings(text="えっ！？", text_color=(210, 30, 70, 255), bubble_enabled=False))
+    assert enabled is not None and text_only is not None
+    assert text_only.geometry.tail_tip is None
+    assert text_only.image.width < enabled.image.width
+    assert text_only.image.height < enabled.image.height
+    assert text_only.image.getchannel("A").getbbox() is not None
+    assert text_only.image.getpixel((0, 0)) == (0, 0, 0, 0)
+
+
 @pytest.mark.parametrize("preset", list(TailPreset))
 def test_tail_presets_point_to_expected_quadrant_without_clipping(qt_app: QApplication, preset: TailPreset) -> None:
     result = render_speech_bubble(SpeechBubbleSettings(text="えっ！？", tail_preset=preset))
@@ -72,6 +84,24 @@ def test_tail_union_has_no_internal_base_line(qt_app: QApplication) -> None:
     sample_y = round(y + height * 0.84)
     red, green, blue, alpha = result.image.getpixel((sample_x, sample_y))
     assert (red, green, blue, alpha) == (255, 255, 255, 255)
+
+
+@pytest.mark.parametrize("percent, expected_alpha", [(100, 255), (70, 178), (50, 128), (25, 64), (0, 0)])
+def test_fill_opacity_is_uniform_across_body_tail_join(qt_app: QApplication, percent: int, expected_alpha: int) -> None:
+    result = render_speech_bubble(SpeechBubbleSettings(
+        text="透明", fill_color=(255, 255, 255, expected_alpha), stroke_color=(0, 0, 0, 255),
+        stroke_width=4, tail_preset=TailPreset.RIGHT_BOTTOM,
+    ))
+    assert result is not None and result.geometry.tail_tip is not None
+    x, y, width, height = result.geometry.body_rect
+    join = result.image.getpixel((round(x + width * 0.70), round(y + height * 0.84)))
+    assert join[3] == expected_alpha
+    assert join[:3] == ((0, 0, 0) if expected_alpha == 0 else (255, 255, 255))
+    base_x, base_y = x + width * 0.70, y + height * 0.84
+    tip_x, tip_y = result.geometry.tail_tip
+    tail = result.image.getpixel((round((base_x + tip_x) / 2), round((base_y + tip_y) / 2)))
+    assert tail[3] == expected_alpha
+    assert tail[:3] == ((0, 0, 0) if expected_alpha == 0 else (255, 255, 255))
 
 
 def test_transparent_pixels_are_rgb_zero(qt_app: QApplication) -> None:
@@ -164,6 +194,65 @@ def test_tail_off_hides_preset_details(qt_app: QApplication) -> None:
     assert not page.tail_preset_combo.isHidden()
     assert not page.tail_preset_label.isHidden()
     assert not page.tail_note.isHidden()
+    page.close()
+
+
+def test_bubble_toggle_hides_details_and_preserves_settings(qt_app: QApplication) -> None:
+    page = SpeechBubblePage()
+    page.text_edit.setPlainText("保持")
+    page.shape_combo.setCurrentIndex(page.shape_combo.findData(BubbleShape.ROUNDED.value))
+    page._fill_color.setRgb(20, 80, 160, 178)
+    page.fill_opacity_spin.setValue(70)
+    page._stroke_color.setRgb(10, 30, 200, 255)
+    page.tail_preset_combo.setCurrentIndex(page.tail_preset_combo.findData(TailPreset.LEFT_TOP.value))
+    page._tail_tip = (-1.4, -1.8)
+    page.bubble_enabled.setChecked(False)
+    page.update_preview()
+    assert page.bubble_details.isHidden()
+    assert page.tail_group.isHidden()
+    assert page.preview_result is not None and page.preview_result.geometry.tail_tip is None
+    assert not page.settings().bubble_enabled
+    page.bubble_enabled.setChecked(True)
+    assert not page.bubble_details.isHidden()
+    assert not page.tail_group.isHidden()
+    settings = page.settings()
+    assert settings.shape is BubbleShape.ROUNDED
+    assert settings.fill_color == (20, 80, 160, 178)
+    assert settings.stroke_color == (10, 30, 200, 255)
+    assert settings.tail_preset is TailPreset.LEFT_TOP
+    assert settings.tail_tip == (-1.4, -1.8)
+    page.close()
+
+
+def test_fill_opacity_ui_and_picker_alpha_stay_in_sync(qt_app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    page = SpeechBubblePage()
+    page.fill_opacity_spin.setValue(70)
+    assert page._fill_color.alpha() == 178
+    monkeypatch.setattr("quick_processing_tool.speech_bubble_ui.choose_color", lambda *_args, **_kwargs: QColor(12, 34, 56, 127))
+    page._choose_color("塗り色", "_fill_color")
+    assert page.fill_opacity_spin.value() == 50
+    assert page._fill_color.alpha() == 127
+    assert page.fill_color_button.text() == "#0C2238"
+    page.fill_opacity_spin.setValue(49)
+    page.fill_opacity_spin.setValue(50)
+    assert page._fill_color.alpha() == 128
+    page.close()
+
+
+def test_fill_opacity_preview_export_parity(qt_app: QApplication, tmp_path: Path) -> None:
+    page = SpeechBubblePage()
+    page.output_folder = tmp_path
+    page.text_edit.setPlainText("半透明")
+    page.fill_opacity_spin.setValue(70)
+    page.update_preview()
+    assert page.preview_result is not None
+    expected = page.preview_result.image.copy()
+    page.filename_edit.setText("opacity")
+    page.save_png()
+    assert page.last_saved_path is not None
+    with Image.open(page.last_saved_path) as reopened:
+        reopened.load()
+        assert ImageChops.difference(reopened.convert("RGBA"), expected).getbbox() is None
     page.close()
 
 

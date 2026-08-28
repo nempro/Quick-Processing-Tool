@@ -291,19 +291,29 @@ class SpeechBubblePage(QWidget):
 
     def _bubble_group(self) -> QGroupBox:
         group = QGroupBox("吹き出し")
-        form = QFormLayout(group)
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(8, 8, 8, 8)
+        self.bubble_enabled = QCheckBox("吹き出しを描く")
+        layout.addWidget(self.bubble_enabled)
+        self.bubble_details = QWidget()
+        form = QFormLayout(self.bubble_details)
+        form.setContentsMargins(0, 0, 0, 0)
         self.shape_combo = QComboBox()
         for shape, label in SHAPE_LABELS.items():
             self.shape_combo.addItem(label, shape)
         self.fill_color_button = QPushButton()
+        self.fill_opacity_spin = self._spin(0, 100, "%")
+        self.fill_opacity_spin.setAccessibleName("吹き出し塗りの不透明度")
         self.stroke_color_button = QPushButton()
         self.stroke_width_spin = self._spin(1, 20, " px")
         self.padding_spin = self._spin(4, 100, " px")
         form.addRow("形", self.shape_combo)
         form.addRow("塗り", self.fill_color_button)
+        form.addRow("不透明度", self.fill_opacity_spin)
         form.addRow("枠線", self.stroke_color_button)
         form.addRow("太さ", self.stroke_width_spin)
         form.addRow("内側余白", self.padding_spin)
+        layout.addWidget(self.bubble_details)
         return group
 
     def _tail_group(self) -> QGroupBox:
@@ -325,9 +335,11 @@ class SpeechBubblePage(QWidget):
         self.text_edit.textChanged.connect(self._text_changed)
         self.font_button.family_changed.connect(self._schedule)
         self.font_size_spin.valueChanged.connect(self._schedule)
+        self.bubble_enabled.toggled.connect(self._bubble_enabled_changed)
         self.shape_combo.currentIndexChanged.connect(self._schedule)
         for spin in (self.stroke_width_spin, self.padding_spin):
             spin.valueChanged.connect(self._schedule)
+        self.fill_opacity_spin.valueChanged.connect(self._fill_opacity_changed)
         self.tail_enabled.toggled.connect(self._tail_enabled_changed)
         self.tail_preset_combo.currentIndexChanged.connect(self._preset_changed)
         self.text_color_button.clicked.connect(lambda: self._choose_color("文字色", "_text_color"))
@@ -349,7 +361,8 @@ class SpeechBubblePage(QWidget):
     def settings(self) -> SpeechBubbleSettings:
         return SpeechBubbleSettings(
             text=self.text_edit.toPlainText(), font_family=self.font_button.family(), font_size=self.font_size_spin.value(),
-            text_color=self._rgba(self._text_color), shape=BubbleShape(self.shape_combo.currentData()), fill_color=self._rgba(self._fill_color),
+            text_color=self._rgba(self._text_color), bubble_enabled=self.bubble_enabled.isChecked(),
+            shape=BubbleShape(self.shape_combo.currentData()), fill_color=self._rgba(self._fill_color),
             stroke_color=self._rgba(self._stroke_color), stroke_width=self.stroke_width_spin.value(), padding=self.padding_spin.value(),
             tail_enabled=self.tail_enabled.isChecked(), tail_preset=TailPreset(self.tail_preset_combo.currentData()), tail_tip=self._tail_tip,
         )
@@ -389,12 +402,17 @@ class SpeechBubblePage(QWidget):
                     result.geometry.tail_tip,
                     body_center=result.geometry.body_center,
                 )
-                self.preview_status.setText("青い●は操作用です。PNGには含まれません。")
+                if result.geometry.tail_tip is not None:
+                    self.preview_status.setText("青い●は操作用です。PNGには含まれません。")
+                elif self.bubble_enabled.isChecked():
+                    self.preview_status.setText("しっぽなしの吹き出しを表示しています。")
+                else:
+                    self.preview_status.setText("文字だけを透明Canvasへ表示しています。")
                 self.output_info.setText(f"RGBA / 透明背景\n{result.image.width} × {result.image.height} px")
         self._update_save_state()
 
     def _tail_dragged(self, point: QPointF) -> None:
-        if self.preview_result is None or not self.tail_enabled.isChecked():
+        if self.preview_result is None or not self.bubble_enabled.isChecked() or not self.tail_enabled.isChecked():
             return
         geometry: BubbleGeometry = self.preview_result.geometry
         _x, _y, width, height = geometry.body_rect
@@ -438,16 +456,31 @@ class SpeechBubblePage(QWidget):
         self.tail_note.setVisible(enabled)
         self._schedule()
 
+    def _bubble_enabled_changed(self, enabled: bool) -> None:
+        self.bubble_details.setVisible(enabled)
+        self.tail_group.setVisible(enabled)
+        self._schedule()
+
+    def _fill_opacity_changed(self, percent: int) -> None:
+        self._fill_color.setAlpha(round(percent * 255 / 100))
+        self._update_color_buttons()
+        self._schedule()
+
     def _choose_color(self, title: str, attribute: str) -> None:
         color = choose_color(getattr(self, attribute), self, title, show_alpha=True)
         if color.isValid():
             setattr(self, attribute, color)
+            if attribute == "_fill_color":
+                blocked = self.fill_opacity_spin.blockSignals(True)
+                self.fill_opacity_spin.setValue(round(color.alpha() * 100 / 255))
+                self.fill_opacity_spin.blockSignals(blocked)
             self._update_color_buttons()
             self._schedule()
 
     def _update_color_buttons(self) -> None:
         for button, color in ((self.text_color_button, self._text_color), (self.fill_color_button, self._fill_color), (self.stroke_color_button, self._stroke_color)):
-            button.setText(f"#{color.red():02X}{color.green():02X}{color.blue():02X}  A{color.alpha()}")
+            alpha = "" if button is self.fill_color_button else f"  A{color.alpha()}"
+            button.setText(f"#{color.red():02X}{color.green():02X}{color.blue():02X}{alpha}")
             button.setStyleSheet(f"background: rgba({color.red()}, {color.green()}, {color.blue()}, {color.alpha()});")
 
     def reset_settings(self) -> None:
@@ -457,8 +490,10 @@ class SpeechBubblePage(QWidget):
         self.font_button.set_family(defaults.font_family)
         self.font_size_spin.setValue(defaults.font_size)
         self._text_color = QColor(*defaults.text_color)
+        self.bubble_enabled.setChecked(True)
         self.shape_combo.setCurrentIndex(self.shape_combo.findData(defaults.shape.value))
         self._fill_color = QColor(*defaults.fill_color)
+        self.fill_opacity_spin.setValue(100)
         self._stroke_color = QColor(*defaults.stroke_color)
         self.stroke_width_spin.setValue(defaults.stroke_width)
         self.padding_spin.setValue(defaults.padding)
@@ -467,6 +502,8 @@ class SpeechBubblePage(QWidget):
         self._tail_tip = None
         self.text_edit.setPlainText(text)
         self._resetting = False
+        self.bubble_details.show()
+        self.tail_group.show()
         self.tail_preset_combo.show()
         if self.tail_preset_label is not None:
             self.tail_preset_label.show()

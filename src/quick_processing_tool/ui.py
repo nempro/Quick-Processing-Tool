@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
 from PySide6.QtCore import QEvent, QObject, Qt, QThread, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QDragEnterEvent, QDropEvent, QImage, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QCursor, QDragEnterEvent, QDropEvent, QGuiApplication, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -62,6 +62,7 @@ from .speech_bubble_ui import SpeechBubblePage
 from .source_ui import CurrentSourceCard
 from .ui_styles import INPUT_CONTROL_STYLE
 from .preview_activity import PreviewActivityIndicator
+from .window_geometry import adaptive_minimum_size, centered_window_geometry
 
 
 LOGGER = logging.getLogger(__name__)
@@ -510,8 +511,14 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Quick Processing Tool")
-        self.resize(1180, 760)
-        self.setMinimumSize(900, 620)
+        startup_screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        if startup_screen is not None:
+            available = startup_screen.availableGeometry()
+            self.setMinimumSize(adaptive_minimum_size(available))
+            self.setGeometry(centered_window_geometry(available))
+        else:
+            self.resize(1180, 760)
+            self.setMinimumSize(900, 620)
         self.setAcceptDrops(True)
         self.workspace = ImageWorkspace(self)
         self.files: list[ImageInfo] = []
