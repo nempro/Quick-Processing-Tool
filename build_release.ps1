@@ -3,7 +3,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$version = "0.2.0"
+$version = "0.2.1"
 $pyInstallerVersion = "6.22.2"
 $repoRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $buildRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "build\release"))
@@ -91,6 +91,7 @@ Get-ChildItem -LiteralPath (Join-Path $frozenRoot "_internal") -Filter "icu*.dll
     Remove-Item -Force
 $qtRoot = Join-Path $frozenRoot "_internal\PySide6"
 $allowedQtPlugins = @(
+    "plugins\imageformats\qico.dll",
     "plugins\imageformats\qjpeg.dll",
     "plugins\imageformats\qwebp.dll",
     "plugins\platforms\qwindows.dll",

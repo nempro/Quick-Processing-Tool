@@ -9,6 +9,7 @@ import pefile
 
 
 ALLOWED_PLUGINS = {
+    "plugins/imageformats/qico.dll",
     "plugins/imageformats/qjpeg.dll",
     "plugins/imageformats/qwebp.dll",
     "plugins/platforms/qwindows.dll",

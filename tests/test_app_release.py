@@ -12,11 +12,14 @@ from PySide6.QtWidgets import QApplication
 from quick_processing_tool import __version__
 from quick_processing_tool.app import configure_logging
 from quick_processing_tool.app_icon import REQUIRED_ICON_SIZES, validate_icon
-from quick_processing_tool.app_identity import apply_application_icon
+from quick_processing_tool.app_identity import (
+    apply_application_icon,
+    application_icon_path,
+)
 
 
 def test_release_version_contract() -> None:
-    assert __version__ == "0.2.0"
+    assert __version__ == "0.2.1"
 
 
 def test_configure_logging_uses_bounded_utf8_appdata_log(
@@ -43,7 +46,7 @@ def test_application_metadata_can_be_applied() -> None:
     app.setApplicationName("Quick Processing Tool")
     app.setApplicationVersion(__version__)
     assert app.applicationName() == "Quick Processing Tool"
-    assert app.applicationVersion() == "0.2.0"
+    assert app.applicationVersion() == "0.2.1"
 
 
 def test_formal_icon_validator_requires_all_windows_sizes(tmp_path: Path) -> None:
@@ -60,6 +63,42 @@ def test_formal_icon_validator_rejects_incomplete_ico(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="missing sizes"):
         validate_icon(icon_path)
+
+
+def test_formal_icon_asset_contains_transparent_windows_frames() -> None:
+    icon_path = application_icon_path()
+    assert icon_path is not None
+    assert REQUIRED_ICON_SIZES <= validate_icon(icon_path)
+
+    master = Image.open(icon_path.with_name("quick-processing-tool-master.png")).convert(
+        "RGBA"
+    )
+    master_alpha = master.getchannel("A")
+    assert master_alpha.getextrema() == (0, 255)
+    assert all(
+        master_alpha.getpixel(point) == 0
+        for point in (
+            (0, 0),
+            (master.width - 1, 0),
+            (0, master.height - 1),
+            (master.width - 1, master.height - 1),
+        )
+    )
+
+    with Image.open(icon_path) as icon:
+        for size in REQUIRED_ICON_SIZES:
+            frame = icon.ico.getimage(size).convert("RGBA")
+            alpha = frame.getchannel("A")
+            assert alpha.getextrema() == (0, 255)
+            assert all(
+                alpha.getpixel(point) == 0
+                for point in (
+                    (0, 0),
+                    (size[0] - 1, 0),
+                    (0, size[1] - 1),
+                    (size[0] - 1, size[1] - 1),
+                )
+            )
 
 
 def test_application_icon_is_shared_by_qt_windows(tmp_path: Path) -> None:

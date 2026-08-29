@@ -1,4 +1,4 @@
-Quick Processing Tool 0.2.0 - Third-party notices
+Quick Processing Tool 0.2.1 - Third-party notices
 ==================================================
 
 This Windows package contains software from the following projects. The full
