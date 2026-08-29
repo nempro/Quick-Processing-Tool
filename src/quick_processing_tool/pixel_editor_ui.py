@@ -134,6 +134,9 @@ class PixelCanvasView(QAbstractScrollArea):
         self.grid_enabled = True
         self.reference: ReferenceImage | None = None
         self.reference_visible = True
+        self._last_pixel = None
+        self._stroke_active = False
+        self._right_erase_active = False
         self.setAcceptDrops(True)
         self.viewport().setAcceptDrops(True)
         self.viewport().installEventFilter(self)

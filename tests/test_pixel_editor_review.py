@@ -51,6 +51,54 @@ def _mouse_event(page: PixelEditorPage, event_type, point, button, buttons) -> N
     QApplication.sendEvent(page.canvas_view.viewport(), event)
 
 
+def test_canvas_hover_before_press_is_noop_and_preserves_history() -> None:
+    app = QApplication.instance() or QApplication([])
+    page = PixelEditorPage()
+    before = (
+        page.canvas.snapshot(),
+        page.canvas.history._index,
+        len(page.canvas.history._entries),
+    )
+    point = QPointF(10, 10)
+    move = QMouseEvent(
+        QEvent.MouseMove,
+        point,
+        point,
+        Qt.NoButton,
+        Qt.NoButton,
+        Qt.NoModifier,
+    )
+    release = QMouseEvent(
+        QEvent.MouseButtonRelease,
+        point,
+        point,
+        Qt.LeftButton,
+        Qt.NoButton,
+        Qt.NoModifier,
+    )
+
+    page.canvas_view.mouseMoveEvent(move)
+    page.canvas_view.mouseReleaseEvent(release)
+
+    assert page.canvas_view._last_pixel is None
+    assert page.canvas_view._stroke_active is False
+    assert page.canvas_view._right_erase_active is False
+    assert (
+        page.canvas.snapshot(),
+        page.canvas.history._index,
+        len(page.canvas.history._entries),
+    ) == before
+
+    click = _canvas_point(page, 1, 1)
+    _mouse_event(page, QEvent.MouseButtonPress, click, Qt.LeftButton, Qt.LeftButton)
+    _mouse_event(page, QEvent.MouseButtonRelease, click, Qt.LeftButton, Qt.NoButton)
+    assert page.canvas.snapshot() != before[0]
+    assert page.canvas.history._index == before[1] + 1
+    assert len(page.canvas.history._entries) == before[2] + 1
+    page.close()
+    app.processEvents()
+
+
 def test_tools_are_exclusive_and_right_drag_preserves_selection() -> None:
     app = QApplication.instance() or QApplication([])
     page = PixelEditorPage()
