@@ -19,7 +19,15 @@ from quick_processing_tool.app_identity import (
 
 
 def test_release_version_contract() -> None:
-    assert __version__ == "0.2.1"
+    assert __version__ == "0.2.2"
+    repository = Path(__file__).resolve().parents[1]
+    version_info = (
+        repository / "packaging" / "windows" / "file_version_info.txt"
+    ).read_text(encoding="utf-8")
+    assert "filevers=(0, 2, 2, 0)" in version_info
+    assert "prodvers=(0, 2, 2, 0)" in version_info
+    assert "StringStruct('FileVersion', '0.2.2.0')" in version_info
+    assert "StringStruct('ProductVersion', '0.2.2')" in version_info
 
 
 def test_configure_logging_uses_bounded_utf8_appdata_log(
@@ -46,7 +54,7 @@ def test_application_metadata_can_be_applied() -> None:
     app.setApplicationName("Quick Processing Tool")
     app.setApplicationVersion(__version__)
     assert app.applicationName() == "Quick Processing Tool"
-    assert app.applicationVersion() == "0.2.1"
+    assert app.applicationVersion() == "0.2.2"
 
 
 def test_formal_icon_validator_requires_all_windows_sizes(tmp_path: Path) -> None:

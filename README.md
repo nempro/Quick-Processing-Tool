@@ -1,4 +1,4 @@
-# Quick Processing Tool 0.2.1
+# Quick Processing Tool 0.2.2
 
 AI画像やSNS投稿前の「少しだけ加工したい」を、Windows上で素早く済ませるローカル画像処理アプリです。元画像は上書きせず、PNG / JPEG / WebPを扱います。
 

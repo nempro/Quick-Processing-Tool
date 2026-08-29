@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
-from PySide6.QtCore import QEvent, QObject, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QCursor, QDragEnterEvent, QDropEvent, QGuiApplication, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -366,8 +366,11 @@ class CollapsibleSection(QWidget):
         )
         self.toggle.setStyleSheet(
             "QToolButton { text-align: left; font-size: 15px; font-weight: 700;"
-            "padding: 10px 8px; border: 0; background: #eef2f7; border-radius: 8px; }"
+            "padding: 10px 8px; border: 1px solid transparent;"
+            "background: #eef2f7; border-radius: 8px; color: #182230; }"
             "QToolButton:hover { background: #e4eaf2; }"
+            "QToolButton[expanded=\"true\"] { background: #e8f1ff; color: #174ea6;"
+            "border: 1px solid #b8cdf8; border-bottom: 2px solid #315fbd; }"
         )
 
         self.description = QLabel(description)
@@ -380,12 +383,20 @@ class CollapsibleSection(QWidget):
         layout.addWidget(self.toggle)
         layout.addWidget(self.description)
         layout.addWidget(self.content)
+        self._apply_header_state(expanded)
+
+    def _apply_header_state(self, expanded: bool) -> None:
+        self.toggle.setProperty("expanded", expanded)
+        self.toggle.style().unpolish(self.toggle)
+        self.toggle.style().polish(self.toggle)
+        self.toggle.update()
 
     @Slot(bool)
     def _set_expanded(self, expanded: bool) -> None:
         self.toggle.setArrowType(
             Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
         )
+        self._apply_header_state(expanded)
         self.content.setVisible(expanded)
 
 
@@ -803,7 +814,9 @@ class MainWindow(QMainWindow):
         self.destination_combo.addItem("指定したフォルダー", "Custom folder")
         self.destination_combo.currentIndexChanged.connect(self._destination_changed)
         self.destination_form.addRow("保存先", self.destination_combo)
-        self.processed_check = QCheckBox("処理済みサブフォルダーを使う")
+        self.processed_check = QCheckBox("処理済みサブフォルダーを\n使う")
+        self.processed_check.setAccessibleName("処理済みサブフォルダーを使う")
+        self.processed_check.setToolTip("処理済みサブフォルダーを使う")
         self.processed_check.setChecked(True)
         self.destination_form.addRow("", self.processed_check)
         self.folder_button = QPushButton("保存先を選ぶ…")
@@ -817,7 +830,9 @@ class MainWindow(QMainWindow):
         self.metadata_check.setAccessibleDescription(
             "EXIFなどの画像情報を保存時に削除します"
         )
-        self.timestamp_check = QCheckBox("元画像の更新日時を引き継ぐ")
+        self.timestamp_check = QCheckBox("元画像の更新日時を\n引き継ぐ")
+        self.timestamp_check.setAccessibleName("元画像の更新日時を引き継ぐ")
+        self.timestamp_check.setToolTip("元画像の更新日時を引き継ぐ")
         self.timestamp_check.setChecked(True)
         self.destination_form.addRow("", self.metadata_check)
         self.destination_form.addRow("", self.timestamp_check)
@@ -831,14 +846,92 @@ class MainWindow(QMainWindow):
         layout.addWidget(destination_section)
         layout.addStretch(1)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(content)
-        scroll.setMinimumWidth(220)
-        scroll.setMaximumWidth(340)
+        self.quick_sections = [
+            capacity_section,
+            resize_section,
+            format_section,
+            transform_section,
+            destination_section,
+        ]
+
+        self.quick_settings_scroll = QScrollArea()
+        self.quick_settings_scroll.setObjectName("quick_settings_scroll")
+        self.quick_settings_scroll.setWidgetResizable(True)
+        self.quick_settings_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.quick_settings_scroll.setWidget(content)
+
+        panel = QWidget()
+        panel.setObjectName("quick_settings_panel")
+        panel.setMinimumWidth(220)
+        panel.setMaximumWidth(340)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        panel_layout.setSpacing(0)
+        panel_layout.addWidget(self.quick_settings_scroll, 1)
+
+        self.quick_settings_footer = QFrame()
+        self.quick_settings_footer.setObjectName("quick_settings_footer")
+        self.quick_settings_footer.setStyleSheet(
+            "QFrame#quick_settings_footer { background: #f8fafc;"
+            "border-top: 1px solid #cbd5e1; padding-top: 2px; }"
+            "QPushButton#quick_save_button { background: #315fbd; color: white;"
+            "border: 1px solid #244b99; border-radius: 8px; font-weight: 700;"
+            "padding: 10px 12px; min-height: 22px; }"
+            "QPushButton#quick_save_button:hover { background: #284fa1; }"
+            "QPushButton#quick_save_button:pressed { background: #1f3f82; }"
+            "QPushButton#quick_save_button:disabled { background: #e5e7eb;"
+            "color: #8a94a3; border-color: #d1d5db; }"
+        )
+        footer_layout = QVBoxLayout(self.quick_settings_footer)
+        footer_layout.setContentsMargins(10, 8, 10, 10)
+        footer_layout.setSpacing(5)
+        self.quick_save_hint = QLabel("画像を開くと保存できます")
+        self.quick_save_hint.setObjectName("quick_save_hint")
+        self.quick_save_hint.setWordWrap(True)
+        self.quick_save_hint.setStyleSheet("color: #667085; font-size: 12px;")
+        self.quick_save_button = QPushButton("現在の設定で保存")
+        self.quick_save_button.setObjectName("quick_save_button")
+        self.quick_save_button.setEnabled(False)
+        self.quick_save_button.setToolTip("画像を開くと保存できます")
+        self.quick_save_button.clicked.connect(self.export_all)
+        footer_layout.addWidget(self.quick_save_hint)
+        footer_layout.addWidget(self.quick_save_button)
+        panel_layout.addWidget(self.quick_settings_footer, 0)
+
+        for section in self.quick_sections:
+            section.toggle.toggled.connect(
+                lambda expanded, current=section: self._quick_section_toggled(
+                    current, expanded
+                )
+            )
         self._destination_changed()
         self._settings_changed()
-        return scroll
+        return panel
+
+    def _quick_section_toggled(
+        self, section: CollapsibleSection, expanded: bool
+    ) -> None:
+        if expanded:
+            QTimer.singleShot(0, lambda: self._ensure_quick_section_visible(section))
+
+    def _ensure_quick_section_visible(self, section: CollapsibleSection) -> None:
+        if not section.toggle.isChecked() or section.content.isHidden():
+            return
+        viewport = self.quick_settings_scroll.viewport()
+        content_top = section.content.mapTo(viewport, QPoint(0, 0)).y()
+        desired_height = min(section.content.height(), 76)
+        content_bottom = content_top + desired_height
+        margin = 8
+        delta = 0
+        if content_top < margin:
+            delta = content_top - margin
+        elif content_bottom > viewport.height() - margin:
+            delta = content_bottom - (viewport.height() - margin)
+        if delta:
+            bar = self.quick_settings_scroll.verticalScrollBar()
+            bar.setValue(max(bar.minimum(), min(bar.maximum(), bar.value() + delta)))
     @staticmethod
     def _spin(minimum: int, maximum: int, value: int) -> QSpinBox:
         spin = QSpinBox()
@@ -1287,6 +1380,7 @@ class MainWindow(QMainWindow):
         self.navigation.setTabEnabled(self.image_edit_tab, False)
         self.navigation.setTabEnabled(self.pixel_tab, False)
         self._thread = QThread(self)
+        self._update_quick_actions()
         self._worker = ProcessingWorker(
             paths,
             copy.deepcopy(self.options()),
@@ -1343,6 +1437,19 @@ class MainWindow(QMainWindow):
         self.quick_add_source_button.setEnabled(
             global_open_enabled and self.workspace.current is not None
         )
+        save_enabled = quick_enabled and bool(self.files)
+        self.quick_save_button.setEnabled(save_enabled)
+        if self._thread is not None:
+            save_hint = "保存中です…"
+        elif not self.files:
+            save_hint = "画像を開くと保存できます"
+        elif not quick_enabled:
+            save_hint = "かんたん変換タブで保存できます"
+        else:
+            save_hint = "すべての設定をまとめて適用します"
+        self.quick_save_hint.setText(save_hint)
+        self.quick_save_button.setToolTip(save_hint)
+        self.quick_save_button.setAccessibleDescription(save_hint)
 
     def _source_change_available(self) -> bool:
         return (

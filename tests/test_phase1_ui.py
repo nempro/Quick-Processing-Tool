@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QLabel,
+    QScrollArea,
     QSplitter,
     QToolButton,
     QWidget,
@@ -345,6 +346,185 @@ def test_metadata_removal_is_discoverable_while_privacy_section_is_closed(
     assert window.metadata_check.text() == "メタ情報を削除"
     assert window.metadata_check.toolTip() == "EXIFなどの画像情報を保存時に削除します"
     assert window.metadata_check.isChecked()
+
+
+def test_sticky_save_button_uses_the_same_batch_export_path(
+    window: MainWindow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert window.quick_save_button.text() == "現在の設定で保存"
+    assert not window.quick_save_button.isEnabled()
+    assert window.quick_save_hint.text() == "画像を開くと保存できます"
+
+    first = make_image(tmp_path / "first-save.png")
+    second = make_image(tmp_path / "second-save.png")
+    window.load_paths([first, second])
+    assert window.quick_save_button.isEnabled()
+    assert window.quick_save_hint.text() == "すべての設定をまとめて適用します"
+
+    calls: list[tuple[list[Path], bool, list[int]]] = []
+    monkeypatch.setattr(
+        window,
+        "_start_worker",
+        lambda paths, copy_mode, row_indices: calls.append(
+            (list(paths), copy_mode, list(row_indices))
+        ),
+    )
+    window.quick_save_button.click()
+    window.export_action.trigger()
+
+    expected = ([first, second], False, [0, 1])
+    assert calls == [expected, expected]
+
+
+def test_sticky_save_collects_all_current_settings(
+    window: MainWindow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = make_image(tmp_path / "combined.png")
+    window.load_paths([source])
+    window.resize_mode.setCurrentIndex(
+        window.resize_mode.findData(ResizeMode.PERCENTAGE)
+    )
+    window.percent_spin.setValue(50)
+    window.format_combo.setCurrentIndex(window.format_combo.findData(OutputFormat.PNG))
+    window.target_combo.setCurrentIndex(1)
+    window.metadata_check.setChecked(False)
+    window.timestamp_check.setChecked(False)
+    window.add_transform(Transform.ROTATE_RIGHT)
+
+    captured: dict[str, object] = {}
+
+    def capture(paths, copy_mode, row_indices) -> None:
+        captured.update(
+            paths=list(paths),
+            copy_mode=copy_mode,
+            row_indices=list(row_indices),
+            options=window.options(),
+            destination=window.destination_combo.currentData(),
+            processed=window.processed_check.isChecked(),
+        )
+
+    monkeypatch.setattr(window, "_start_worker", capture)
+    window.quick_save_button.click()
+
+    options = captured["options"]
+    assert captured["paths"] == [source]
+    assert captured["copy_mode"] is False
+    assert captured["row_indices"] == [0]
+    assert options.resize_mode is ResizeMode.PERCENTAGE
+    assert options.percentage == 50
+    assert options.output_format is OutputFormat.PNG
+    assert options.target_bytes == 500 * 1024
+    assert options.transforms == [Transform.ROTATE_RIGHT]
+    assert options.remove_metadata is False
+    assert options.preserve_timestamp is False
+    assert captured["destination"] == "Same folder"
+    assert captured["processed"] is True
+
+
+def test_sticky_save_disables_while_processing(
+    window: MainWindow,
+    app: QApplication,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = make_image(tmp_path / "processing.png")
+    window.load_paths([source])
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and window._quick_preview_thread is not None:
+        app.processEvents()
+    assert window._quick_preview_thread is None
+    assert window.quick_save_button.isEnabled()
+
+    monkeypatch.setattr(QThread, "start", lambda _thread: None)
+    window._start_worker([source], copy_mode=False, row_indices=[0])
+    assert not window.quick_save_button.isEnabled()
+    assert window.quick_save_hint.text() == "保存中です…"
+    assert window.quick_save_button.toolTip() == "保存中です…"
+    window.quick_save_button.click()
+    assert window._worker is not None
+
+    window._clear_worker_refs()
+    assert window.quick_save_button.isEnabled()
+
+
+def test_quick_footer_is_sticky_and_fits_at_720px(
+    window: MainWindow, app: QApplication
+) -> None:
+    window.setMinimumSize(0, 0)
+    window.resize(720, 720)
+    window.show()
+    app.processEvents()
+
+    scroll = window.findChild(QScrollArea, "quick_settings_scroll")
+    panel = window.findChild(QWidget, "quick_settings_panel")
+    footer = window.quick_settings_footer
+    assert scroll is not None
+    assert panel is not None
+    assert footer.isVisibleTo(panel)
+    assert window.quick_save_button.isVisibleTo(panel)
+    assert footer.rect().contains(window.quick_save_button.geometry().topLeft())
+    assert footer.rect().contains(window.quick_save_button.geometry().bottomRight())
+    assert scroll.horizontalScrollBar().maximum() == 0
+
+    footer_position = footer.mapTo(panel, QPoint(0, 0))
+    scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
+    app.processEvents()
+    assert footer.mapTo(panel, QPoint(0, 0)) == footer_position
+    assert footer.geometry().bottom() <= panel.rect().bottom()
+
+
+def test_quick_accordion_marks_expansion_and_scrolls_only_when_needed(
+    window: MainWindow, app: QApplication
+) -> None:
+    window.setMinimumSize(0, 0)
+    window.resize(720, 720)
+    window.show()
+    app.processEvents()
+    scroll = window.quick_settings_scroll
+    bar = scroll.verticalScrollBar()
+
+    first = window.quick_sections[0]
+    assert first.toggle.arrowType() is Qt.ArrowType.RightArrow
+    assert first.toggle.property("expanded") is False
+    first.toggle.click()
+    app.processEvents()
+    assert first.toggle.arrowType() is Qt.ArrowType.DownArrow
+    assert first.toggle.property("expanded") is True
+    assert bar.value() == 0
+    assert 'QToolButton[expanded="true"]' in first.toggle.styleSheet()
+
+    destination = window.quick_sections[-1]
+    for section in window.quick_sections[1:-1]:
+        section.toggle.setChecked(True)
+    app.processEvents()
+    bar.setValue(bar.maximum())
+    destination.toggle.setChecked(True)
+    app.processEvents()
+    app.processEvents()
+
+    content_top = destination.content.mapTo(scroll.viewport(), QPoint(0, 0)).y()
+    visible_target = min(destination.content.height(), 64)
+    assert content_top < scroll.viewport().height()
+    assert content_top + visible_target <= scroll.viewport().height()
+
+
+def test_quick_privacy_checkboxes_wrap_without_losing_full_labels(
+    window: MainWindow, app: QApplication
+) -> None:
+    window.setMinimumSize(0, 0)
+    window.resize(720, 720)
+    window.quick_sections[-1].toggle.setChecked(True)
+    window.show()
+    app.processEvents()
+
+    assert window.processed_check.text().replace("\n", "") == "処理済みサブフォルダーを使う"
+    assert window.processed_check.accessibleName() == "処理済みサブフォルダーを使う"
+    assert "\n" in window.processed_check.text()
+    assert window.processed_check.sizeHint().height() >= (
+        window.processed_check.fontMetrics().lineSpacing() * 2
+    )
+    assert window.timestamp_check.text().replace("\n", "") == "元画像の更新日時を引き継ぐ"
+    assert window.quick_settings_scroll.horizontalScrollBar().maximum() == 0
 
 
 def test_navigation_tabs_have_uniform_larger_click_targets(

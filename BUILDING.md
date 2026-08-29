@@ -27,8 +27,8 @@ From the repository root:
 
 The script validates the package and tool versions, creates a clean windowed one-folder build, gathers redistribution license texts, writes a manifest, creates a root-level ZIP, and writes its SHA-256. Outputs are placed in `dist`:
 
-- `Quick Processing Tool 0.2.1\`
-- `Quick-Processing-Tool-0.2.1-windows-x64.zip`
-- `Quick-Processing-Tool-0.2.1-windows-x64.zip.sha256`
+- `Quick Processing Tool 0.2.2\`
+- `Quick-Processing-Tool-0.2.2-windows-x64.zip`
+- `Quick-Processing-Tool-0.2.2-windows-x64.zip.sha256`
 
 The Real-ESRGAN executable and models are intentionally excluded. They can be installed separately with the verified script included in the release.
