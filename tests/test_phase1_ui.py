@@ -8,7 +8,14 @@ import pytest
 from PIL import Image
 from PySide6.QtCore import QMimeData, QPoint, QPointF, QThread, Qt, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
-from PySide6.QtWidgets import QApplication, QFileDialog, QSplitter, QToolButton, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QLabel,
+    QSplitter,
+    QToolButton,
+    QWidget,
+)
 
 from quick_processing_tool.models import OutputFormat, ResizeMode, Transform
 from quick_processing_tool.ui import MainWindow
@@ -326,6 +333,18 @@ def test_settings_are_purpose_first_and_future_tabs_are_disabled(
     assert window.navigation.isTabEnabled(5)
     assert not window.navigation.isTabEnabled(6)
     assert window.navigation.tabToolTip(6) == "今後追加予定"
+
+
+def test_metadata_removal_is_discoverable_while_privacy_section_is_closed(
+    window: MainWindow,
+) -> None:
+    summary = window.findChild(QLabel, "metadata_privacy_summary")
+    assert summary is not None
+    assert summary.text() == "メタ情報（EXIFなど）を保存時に削除できます"
+    assert not summary.isHidden()
+    assert window.metadata_check.text() == "メタ情報を削除"
+    assert window.metadata_check.toolTip() == "EXIFなどの画像情報を保存時に削除します"
+    assert window.metadata_check.isChecked()
 
 
 def test_navigation_tabs_have_uniform_larger_click_targets(

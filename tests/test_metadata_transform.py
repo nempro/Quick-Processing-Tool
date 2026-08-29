@@ -2,6 +2,7 @@ from io import BytesIO
 import os
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from quick_processing_tool.models import OutputFormat, ProcessingOptions, Transform
@@ -20,6 +21,41 @@ def test_exif_is_removed(tmp_path: Path) -> None:
     result = process_image(path, ProcessingOptions(output_format=OutputFormat.JPEG, remove_metadata=True))
     with Image.open(BytesIO(result.data)) as output:
         assert len(output.getexif()) == 0
+
+
+@pytest.mark.parametrize(
+    ("output_format", "pillow_format", "suffix"),
+    [
+        (OutputFormat.PNG, "PNG", ".png"),
+        (OutputFormat.JPEG, "JPEG", ".jpg"),
+        (OutputFormat.WEBP, "WEBP", ".webp"),
+    ],
+)
+@pytest.mark.parametrize("remove_metadata", [True, False])
+def test_metadata_contract_for_png_jpeg_and_webp(
+    tmp_path: Path,
+    output_format: OutputFormat,
+    pillow_format: str,
+    suffix: str,
+    remove_metadata: bool,
+) -> None:
+    source = tmp_path / f"source{suffix}"
+    exif = Image.Exif()
+    exif[270] = "private comment"
+    Image.new("RGB", (30, 20), "blue").save(source, pillow_format, exif=exif)
+
+    result = process_image(
+        source,
+        ProcessingOptions(
+            output_format=output_format,
+            remove_metadata=remove_metadata,
+        ),
+    )
+    with Image.open(BytesIO(result.data)) as output:
+        if remove_metadata:
+            assert len(output.getexif()) == 0
+        else:
+            assert output.getexif().get(270) == "private comment"
 
 
 def test_rotate_and_flip_pixel_positions() -> None:

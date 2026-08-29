@@ -10,6 +10,7 @@ $buildRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "build\release"))
 $distRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "dist"))
 $releaseRoot = [IO.Path]::GetFullPath((Join-Path $distRoot "Quick Processing Tool $version"))
 $zipPath = [IO.Path]::GetFullPath((Join-Path $distRoot "Quick-Processing-Tool-$version-windows-x64.zip"))
+$appIconPath = [IO.Path]::GetFullPath((Join-Path $repoRoot "assets\windows\quick-processing-tool.ico"))
 
 function Assert-SafeChild([string]$Path) {
     $prefix = $repoRoot.TrimEnd('\') + '\'
@@ -23,6 +24,13 @@ foreach ($path in @($buildRoot, $distRoot, $releaseRoot, $zipPath)) {
 }
 if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
     throw "Python was not found: $Python"
+}
+if (-not (Test-Path -LiteralPath $appIconPath -PathType Leaf)) {
+    throw "Formal app icon was not found: $appIconPath. Release builds must not use a placeholder icon."
+}
+& $Python (Join-Path $repoRoot "packaging\windows\verify_app_icon.py") $appIconPath
+if ($LASTEXITCODE -ne 0) {
+    throw "Formal app icon validation failed"
 }
 
 $pythonVersion = (& $Python -c "import platform; print(platform.python_version())").Trim()
@@ -63,6 +71,8 @@ $pyInstallerArguments = @(
     "--specpath", (Join-Path $buildRoot "spec"),
     "--version-file", (Join-Path $repoRoot "packaging\windows\file_version_info.txt"),
     "--manifest", (Join-Path $repoRoot "packaging\windows\app.manifest"),
+    "--icon", $appIconPath,
+    "--add-data", "$appIconPath;quick_processing_tool/assets",
     (Join-Path $repoRoot "packaging\windows\entry.py")
 )
 & $Python -m PyInstaller @pyInstallerArguments
@@ -137,6 +147,8 @@ $manifest = [ordered]@{
     dependencies = @($dependencyVersions)
     optionalUpscalerRuntimeIncluded = $false
     executable = "Quick Processing Tool.exe"
+    appIcon = "quick-processing-tool.ico"
+    formalAppIconIncluded = $true
 }
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $releaseRoot "RELEASE-MANIFEST.json") -Encoding utf8
 

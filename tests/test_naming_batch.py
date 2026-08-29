@@ -73,6 +73,42 @@ def test_batch_continues_after_partial_failure(tmp_path: Path) -> None:
     assert (2, "Done") in statuses
     assert len(list(destination.glob("*.jpg"))) == 2
 
+
+@pytest.mark.parametrize("remove_metadata", [True, False])
+def test_batch_preserves_metadata_option_for_every_file(
+    tmp_path: Path, remove_metadata: bool
+) -> None:
+    sources: list[Path] = []
+    for index in range(2):
+        source = tmp_path / f"source-{index}.jpg"
+        exif = Image.Exif()
+        exif[270] = f"private-{index}"
+        Image.new("RGB", (20, 10), "blue").save(source, "JPEG", exif=exif)
+        sources.append(source)
+    destination = tmp_path / "out"
+    worker = ProcessingWorker(
+        sources,
+        ProcessingOptions(
+            output_format=OutputFormat.WEBP,
+            remove_metadata=remove_metadata,
+        ),
+        False,
+        "Custom folder",
+        destination,
+        False,
+    )
+
+    worker.run()
+
+    outputs = sorted(destination.glob("*.webp"))
+    assert len(outputs) == 2
+    for index, output in enumerate(outputs):
+        with Image.open(output) as image:
+            if remove_metadata:
+                assert len(image.getexif()) == 0
+            else:
+                assert image.getexif().get(270) == f"private-{index}"
+
 def test_window_can_start_a_second_worker_after_thread_teardown(tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     source = tmp_path / "source.png"

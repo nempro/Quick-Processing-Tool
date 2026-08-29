@@ -14,6 +14,11 @@ The release constraints pin every direct runtime and build dependency. Transitiv
 
 ## Build
 
+Place the approved multi-resolution Windows icon at
+`assets/windows/quick-processing-tool.ico`. It must include 16, 24, 32, 48,
+64, 128, and 256 pixel images. Placeholder icons are not accepted; the build
+stops before changing `dist` when the formal asset is absent or invalid.
+
 From the repository root:
 
 ```powershell

@@ -809,17 +809,24 @@ class MainWindow(QMainWindow):
         self.folder_button = QPushButton("保存先を選ぶ…")
         self.folder_button.clicked.connect(self.choose_folder)
         self.destination_form.addRow("", self.folder_button)
-        self.metadata_check = QCheckBox("位置情報・撮影情報などを削除")
+        self.metadata_check = QCheckBox("メタ情報を削除")
         self.metadata_check.setChecked(True)
+        self.metadata_check.setToolTip(
+            "EXIFなどの画像情報を保存時に削除します"
+        )
+        self.metadata_check.setAccessibleDescription(
+            "EXIFなどの画像情報を保存時に削除します"
+        )
         self.timestamp_check = QCheckBox("元画像の更新日時を引き継ぐ")
         self.timestamp_check.setChecked(True)
         self.destination_form.addRow("", self.metadata_check)
         self.destination_form.addRow("", self.timestamp_check)
         destination_section = CollapsibleSection(
             "保存先とプライバシー",
-            "保存場所、画像情報、更新日時を設定します",
+            "メタ情報（EXIFなど）を保存時に削除できます",
             destination_content,
         )
+        destination_section.description.setObjectName("metadata_privacy_summary")
         destination_content.setObjectName("destination_settings")
         layout.addWidget(destination_section)
         layout.addStretch(1)

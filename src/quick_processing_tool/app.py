@@ -10,6 +10,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from . import __version__
+from .app_identity import apply_application_icon
 from .ui import MainWindow
 
 
@@ -49,6 +50,10 @@ def main() -> int:
         return 1
 
     logger = logging.getLogger(__name__)
+    if apply_application_icon(app):
+        logger.info("Formal application icon applied")
+    else:
+        logger.warning("Formal application icon is not installed")
     logger.info("App start; version=%s; log=%s", __version__, log_path)
 
     def report_unhandled(exc_type, exc, traceback) -> None:
