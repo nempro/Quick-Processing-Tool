@@ -254,7 +254,7 @@ class SpeechBubblePage(QWidget):
         self.preview = BubblePreview()
         self.preview.setMinimumHeight(320)
         center_layout.addWidget(self.preview, 1)
-        self.preview_status = QLabel("セリフを入力するとプレビューを表示します。")
+        self.preview_status = QLabel("セリフを入力するとプレビューされます")
         self.preview_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         center_layout.addWidget(self.preview_status)
         splitter.addWidget(center)
@@ -414,7 +414,7 @@ class SpeechBubblePage(QWidget):
             self.preview_result = result
             if result is None:
                 self.preview.set_result(None, None)
-                self.preview_status.setText("セリフを入力するとプレビューを表示します。")
+                self.preview_status.setText("セリフを入力するとプレビューされます")
                 self.output_info.setText("透明背景（RGBA）\n—")
             else:
                 self.preview.set_result(

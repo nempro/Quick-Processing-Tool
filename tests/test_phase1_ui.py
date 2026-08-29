@@ -298,7 +298,7 @@ def test_quick_inputs_define_distinct_interaction_states(
     assert "border: 2px solid #2457b2" in style
     assert "background-color: #f3f4f6" in style
 
-def test_settings_are_purpose_first_and_future_tabs_are_disabled(
+def test_settings_are_purpose_first_and_tabs_follow_user_workflow(
     window: MainWindow,
 ) -> None:
     labels = [
@@ -322,18 +322,31 @@ def test_settings_are_purpose_first_and_future_tabs_are_disabled(
     ):
         assert window.findChild(object, object_name).isHidden()
 
-    assert window.navigation.tabText(0) == "かんたん変換"
-    assert window.navigation.tabText(1) == "文字サムネ"
-    assert window.navigation.tabText(2) == "擬音素材"
-    assert window.navigation.isTabEnabled(2)
-    assert window.navigation.tabText(3) == "吹き出し素材"
-    assert window.navigation.isTabEnabled(3)
-    assert window.navigation.tabText(4) == "画像加工"
-    assert window.navigation.isTabEnabled(4)
-    assert window.navigation.tabText(5) == "高画質化"
-    assert window.navigation.isTabEnabled(5)
-    assert not window.navigation.isTabEnabled(6)
-    assert window.navigation.tabToolTip(6) == "今後追加予定"
+    assert [
+        window.navigation.tabText(index)
+        for index in range(window.navigation.count())
+    ] == [
+        "かんたん変換",
+        "画像加工",
+        "擬音素材",
+        "吹き出し素材",
+        "高画質化",
+        "ドット絵",
+        "文字サムネ",
+    ]
+    assert all(
+        window.navigation.isTabEnabled(index)
+        for index in range(window.navigation.count())
+    )
+    assert (
+        window.quick_tab,
+        window.image_edit_tab,
+        window.sound_effect_tab,
+        window.speech_bubble_tab,
+        window.upscale_tab,
+        window.pixel_tab,
+        window.thumbnail_tab,
+    ) == tuple(range(7))
 
 
 def test_metadata_removal_is_discoverable_while_privacy_section_is_closed(
@@ -462,8 +475,11 @@ def test_quick_footer_is_sticky_and_fits_at_720px(
     assert panel is not None
     assert footer.isVisibleTo(panel)
     assert window.quick_save_button.isVisibleTo(panel)
+    assert window.quick_clear_button.isVisibleTo(panel)
     assert footer.rect().contains(window.quick_save_button.geometry().topLeft())
     assert footer.rect().contains(window.quick_save_button.geometry().bottomRight())
+    assert footer.rect().contains(window.quick_clear_button.geometry().topLeft())
+    assert footer.rect().contains(window.quick_clear_button.geometry().bottomRight())
     assert scroll.horizontalScrollBar().maximum() == 0
 
     footer_position = footer.mapTo(panel, QPoint(0, 0))

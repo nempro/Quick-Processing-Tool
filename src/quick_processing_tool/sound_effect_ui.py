@@ -198,7 +198,7 @@ class SoundEffectPage(QWidget):
         self.preview = SoundPreview()
         self.preview.setMinimumHeight(320)
         center_layout.addWidget(self.preview, 1)
-        self.preview_status = QLabel("文字を入力すると、ここに透明素材を表示します。")
+        self.preview_status = QLabel("文字を入力するとプレビューされます")
         self.preview_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_status.setWordWrap(True)
         self.preview_status.setStyleSheet("color: #667085; padding: 4px;")
@@ -423,7 +423,7 @@ class SoundEffectPage(QWidget):
             self.output_info.setText("透明背景（RGBA）\n—")
         elif image is None:
             self.preview_status.setStyleSheet("color: #667085; padding: 4px;")
-            self.preview_status.setText("文字を入力すると、ここに透明素材を表示します。")
+            self.preview_status.setText("文字を入力するとプレビューされます")
             self.output_info.setText("透明背景（RGBA）\n—")
         else:
             self.preview_status.setStyleSheet("color: #667085; padding: 4px;")

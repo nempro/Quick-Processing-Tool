@@ -577,13 +577,6 @@ class MainWindow(QMainWindow):
         self.navigation.tabBar().setExpanding(False)
         self.navigation.tabBar().setUsesScrollButtons(True)
         self.quick_tab = self.navigation.addTab(self._build_quick_page(), "かんたん変換")
-        self.thumbnail_page = ThumbnailPage()
-        self.thumbnail_page.processing_changed.connect(self._thumbnail_processing_changed)
-        self.thumbnail_tab = self.navigation.addTab(self.thumbnail_page, "文字サムネ")
-        self.sound_effect_page = SoundEffectPage()
-        self.sound_effect_tab = self.navigation.addTab(self.sound_effect_page, "擬音素材")
-        self.speech_bubble_page = SpeechBubblePage()
-        self.speech_bubble_tab = self.navigation.addTab(self.speech_bubble_page, "吹き出し素材")
         self.edit_page = QuickEditPage()
         self.edit_page.set_workspace_managed(True)
         self.edit_page.source_change_requested.connect(self.set_current_source)
@@ -591,21 +584,23 @@ class MainWindow(QMainWindow):
         self.edit_page.palette_handoff_requested.connect(self._handoff_palette_to_pixel)
         self.edit_page.palette_open_requested.connect(self._open_pixel_tab_from_edit)
         self.image_edit_tab = self.navigation.addTab(self.edit_page, "画像加工")
+        self.sound_effect_page = SoundEffectPage()
+        self.sound_effect_tab = self.navigation.addTab(self.sound_effect_page, "擬音素材")
+        self.speech_bubble_page = SpeechBubblePage()
+        self.speech_bubble_tab = self.navigation.addTab(self.speech_bubble_page, "吹き出し素材")
         self.upscale_page = UpscalePage()
         self.upscale_page.set_workspace_managed(True)
         self.upscale_page.source_change_requested.connect(self.set_current_source)
         self.upscale_page.processing_changed.connect(self._upscale_processing_changed)
         self.upscale_tab = self.navigation.addTab(self.upscale_page, "高画質化")
-        placeholder = QLabel("動画加工 · 今後追加予定")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.video_tab = self.navigation.addTab(placeholder, "動画加工（今後追加予定）")
-        self.navigation.setTabEnabled(self.video_tab, False)
         self.pixel_page = PixelEditorPage()
         self.pixel_page.set_workspace_managed(True)
         self.pixel_page.source_change_requested.connect(self.set_current_source)
         self.pixel_page.processing_changed.connect(self._pixel_processing_changed)
         self.pixel_tab = self.navigation.addTab(self.pixel_page, "ドット絵")
-        self.navigation.setTabToolTip(self.video_tab, "今後追加予定")
+        self.thumbnail_page = ThumbnailPage()
+        self.thumbnail_page.processing_changed.connect(self._thumbnail_processing_changed)
+        self.thumbnail_tab = self.navigation.addTab(self.thumbnail_page, "文字サムネ")
         self.navigation.currentChanged.connect(self._navigation_changed)
         self.workspace.source_changed.connect(self._workspace_source_changed)
         self.setCentralWidget(self.navigation)
@@ -818,6 +813,7 @@ class MainWindow(QMainWindow):
         self.processed_check.setAccessibleName("処理済みサブフォルダーを使う")
         self.processed_check.setToolTip("処理済みサブフォルダーを使う")
         self.processed_check.setChecked(True)
+        self.processed_check.toggled.connect(self._update_quick_clear_state)
         self.destination_form.addRow("", self.processed_check)
         self.folder_button = QPushButton("保存先を選ぶ…")
         self.folder_button.clicked.connect(self.choose_folder)
@@ -896,8 +892,13 @@ class MainWindow(QMainWindow):
         self.quick_save_button.setEnabled(False)
         self.quick_save_button.setToolTip("画像を開くと保存できます")
         self.quick_save_button.clicked.connect(self.export_all)
+        self.quick_clear_button = QPushButton("すべてクリア")
+        self.quick_clear_button.setObjectName("quick_clear_button")
+        self.quick_clear_button.setToolTip("現在の画像を残して、このタブの作業状態を初期化します")
+        self.quick_clear_button.clicked.connect(self.clear_quick_all)
         footer_layout.addWidget(self.quick_save_hint)
         footer_layout.addWidget(self.quick_save_button)
+        footer_layout.addWidget(self.quick_clear_button)
         panel_layout.addWidget(self.quick_settings_footer, 0)
 
         for section in self.quick_sections:
@@ -995,7 +996,7 @@ class MainWindow(QMainWindow):
             self.load_paths([Path(name) for name in names])
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
-        if self.navigation.currentIndex() != 0 or self._thread is not None:
+        if self.navigation.currentIndex() != self.quick_tab or self._thread is not None:
             self.drop_zone.set_drag_active(False)
             event.ignore()
             return
@@ -1014,7 +1015,7 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
-        if self.navigation.currentIndex() != 0 or self._thread is not None:
+        if self.navigation.currentIndex() != self.quick_tab or self._thread is not None:
             event.ignore()
             return
         paths = DropZone._paths_from_mime(event.mimeData())
@@ -1246,6 +1247,7 @@ class MainWindow(QMainWindow):
             self.target_combo.currentData() is not None and output_is_png,
         )
         self._update_info()
+        self._update_quick_clear_state()
 
     def _update_info(self) -> None:
         if not 0 <= self.current_index < len(self.files):
@@ -1304,10 +1306,50 @@ class MainWindow(QMainWindow):
             self.file_tree.topLevelItem(index).setText(2, "待機中")
         self._settings_changed()
 
+    @Slot()
+    def clear_quick_all(self) -> None:
+        if self._thread is not None:
+            return
+        self._quick_preview_generation += 1
+        self._quick_preview_request_id += 1
+        self._quick_preview_pending_request = None
+        self._quick_preview_active_result = None
+        self.quick_preview_activity.invalidate()
+        self._quick_preview_activity_token = None
+
+        self.files.clear()
+        self.current_index = -1
+        self.file_tree.clear()
+        self.files_heading.setText("読み込んだ画像　0枚")
+        self.drop_zone.clear_image()
+        self.info_label.clear()
+        self.info_label.hide()
+        self.progress.setValue(0)
+        self.export_action.setText("画像を保存")
+
+        self.reset_settings()
+        self.custom_kb.setValue(1024)
+        self.width_spin.setValue(1600)
+        self.height_spin.setValue(1600)
+        self.aspect_check.setChecked(True)
+        self.long_edge_spin.setValue(1600)
+        self.percent_spin.setValue(100)
+        destination_index = self.destination_combo.findData("Same folder")
+        self.destination_combo.setCurrentIndex(destination_index)
+        self.processed_check.setChecked(True)
+        self.custom_folder = None
+        self.folder_button.setText("保存先を選ぶ…")
+        self.folder_button.setToolTip("")
+        self._destination_changed()
+        self._settings_changed()
+        self.statusBar().showMessage("かんたん変換の作業をクリアしました。現在の画像は保持されています")
+        self._update_quick_actions()
+
     def _destination_changed(self, *_args) -> None:
         value = self.destination_combo.currentData()
         self.folder_button.setEnabled(value == "Custom folder")
         self.processed_check.setEnabled(value == "Same folder")
+        self._update_quick_clear_state()
 
     @Slot()
     def choose_folder(self) -> None:
@@ -1318,6 +1360,7 @@ class MainWindow(QMainWindow):
                 self.custom_folder.name or str(self.custom_folder)
             )
             self.folder_button.setToolTip(str(self.custom_folder))
+            self._update_quick_clear_state()
 
     @Slot()
     def export_all(self) -> None:
@@ -1422,9 +1465,17 @@ class MainWindow(QMainWindow):
             self.edit_page.cancel_palette_extraction()
         self._last_navigation_index = index
         self._update_quick_actions()
+        if index == self.sound_effect_tab:
+            self.statusBar().showMessage("文字を入力するとプレビューされます")
+        elif index == self.speech_bubble_tab:
+            self.statusBar().showMessage("セリフを入力するとプレビューされます")
+        elif index == self.quick_tab and not self.files:
+            self.statusBar().showMessage("中央へ画像をドロップするか、「画像を開く」を選んでください")
+        elif index != self.quick_tab:
+            self.statusBar().clearMessage()
 
     def _update_quick_actions(self) -> None:
-        quick_enabled = self.navigation.currentIndex() == 0 and self._thread is None
+        quick_enabled = self.navigation.currentIndex() == self.quick_tab and self._thread is None
         global_open_enabled = self._source_change_available()
         self.open_action.setEnabled(global_open_enabled)
         self.export_action.setEnabled(quick_enabled and bool(self.files))
@@ -1450,6 +1501,27 @@ class MainWindow(QMainWindow):
         self.quick_save_hint.setText(save_hint)
         self.quick_save_button.setToolTip(save_hint)
         self.quick_save_button.setAccessibleDescription(save_hint)
+        self._update_quick_clear_state()
+
+    def _update_quick_clear_state(self, *_args) -> None:
+        if not hasattr(self, "quick_clear_button"):
+            return
+        quick_enabled = (
+            self.navigation.currentIndex() == getattr(self, "quick_tab", -1)
+            and self._thread is None
+        )
+        quick_dirty = (
+            bool(self.files)
+            or self.options() != ProcessingOptions()
+            or self.destination_combo.currentData() != "Same folder"
+            or not self.processed_check.isChecked()
+            or self.custom_folder is not None
+            or (
+                hasattr(self, "progress")
+                and self.progress.value() != 0
+            )
+        )
+        self.quick_clear_button.setEnabled(quick_enabled and quick_dirty)
 
     def _source_change_available(self) -> bool:
         return (

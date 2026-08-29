@@ -1270,15 +1270,19 @@ class QuickEditPage(QWidget):
         self.undo_button = QPushButton("元に戻す")
         self.redo_button = QPushButton("やり直す")
         self.reset_button = QPushButton("加工をリセット")
-        for button in (self.undo_button, self.redo_button, self.reset_button):
+        self.clear_all_button = QPushButton("すべてクリア")
+        self.clear_all_button.setToolTip("元画像を残して、画像加工の作業状態を初期化します")
+        for button in (self.undo_button, self.redo_button, self.reset_button, self.clear_all_button):
             button.setMinimumWidth(0)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.undo_button.clicked.connect(self.undo)
         self.redo_button.clicked.connect(self.redo)
         self.reset_button.clicked.connect(self.reset_edits)
+        self.clear_all_button.clicked.connect(self.clear_all)
         history_row.addWidget(self.undo_button, 0, 0)
         history_row.addWidget(self.redo_button, 0, 1)
-        history_row.addWidget(self.reset_button, 1, 0, 1, 2)
+        history_row.addWidget(self.reset_button, 1, 0)
+        history_row.addWidget(self.clear_all_button, 1, 1)
         ll.addLayout(history_row)
 
         filter_content = QWidget()
@@ -2334,7 +2338,7 @@ class QuickEditPage(QWidget):
         )
         self.drop_zone.set_empty(False)
         self._applying = True
-        self.apply_settings(EditSettings())
+        self.apply_settings(self._default_settings())
         self._applying = False
         self._history = [self.settings()]
         self._history_index = 0
@@ -2409,6 +2413,16 @@ class QuickEditPage(QWidget):
                 blend_mode=RecolorBlendMode(self.palette_blend_mode_combo.currentData()),
             ),
             hand_draw=self._hand_draw_settings,
+        )
+
+    def _default_settings(self) -> EditSettings:
+        defaults = EditSettings()
+        return replace(
+            defaults,
+            text=replace(
+                defaults.text,
+                font_family=self.font_catalog.default_family(),
+            ),
         )
 
     @staticmethod
@@ -3280,12 +3294,61 @@ class QuickEditPage(QWidget):
         self.finish_ime(clear_focus=True)
         if not self.source_path:
             return
-        default = EditSettings()
+        default = self._default_settings()
         if default != self.settings():
             self._history = self._history[: self._history_index + 1]
             self._history.append(default)
             self._history_index = len(self._history) - 1
             self.apply_settings(default)
+
+    @Slot()
+    def clear_all(self) -> None:
+        if self.source_path is None or self._thread is not None or self._palette_thread is not None:
+            return
+        self._cancel_hand_stroke()
+        self.finish_ime(clear_focus=True)
+        self.cancel_palette_extraction()
+        self._clear_palette_preview_handoff(clear_refresh=True)
+        self._preview_timer.stop()
+        self._preview_generation += 1
+        self._preview_request_id += 1
+        self._preview_pending_request = None
+        self._preview_active_result = None
+        self.preview_activity.invalidate()
+        self._preview_activity_token = None
+
+        self._applying = True
+        self.apply_settings(self._default_settings())
+        self.canvas_width_spin.setValue(320)
+        self.canvas_height_spin.setValue(320)
+        self.hand_mode_enabled.setChecked(False)
+        self._hand_tool = HandTool.PEN
+        self.hand_pen_button.setChecked(True)
+        self._hand_color = QColor("#000000")
+        self.hand_size_spin.setValue(8)
+        self.hand_opacity_spin.setValue(100)
+        self.eyedropper_button.setChecked(False)
+        self.format_combo.setCurrentIndex(0)
+        self.quality_spin.setValue(95)
+        self.jpeg_background_combo.setCurrentIndex(0)
+        self._applying = False
+
+        self._text_history_timer.stop()
+        self._text_history_dirty = False
+        self._history = [self.settings()]
+        self._history_index = 0
+        self._last_output = None
+        self.saved_box.hide()
+        self.saved_filename.set_value("")
+        self.saved_path.set_value("")
+        self.result_label.clear()
+        self._set_filename_default(self.source_path)
+        self._show_original = False
+        self._update_hand_color_button()
+        self._update_visibility()
+        self._update_save_options()
+        self._update_actions()
+        self.update_preview()
 
     @Slot()
     def show_original(self) -> None:
@@ -3645,6 +3708,7 @@ class QuickEditPage(QWidget):
             self.preview_undo_button,
             self.preview_redo_button,
             self.reset_button,
+            self.clear_all_button,
             self.format_combo,
             self.quality_spin,
             self.jpeg_background_combo,
@@ -3681,7 +3745,10 @@ class QuickEditPage(QWidget):
         self.redo_button.setEnabled(can_redo)
         self.preview_undo_button.setEnabled(can_undo)
         self.preview_redo_button.setEnabled(can_redo)
-        self.reset_button.setEnabled(loaded and idle and self.settings() != EditSettings())
+        self.reset_button.setEnabled(
+            loaded and idle and self.settings() != self._default_settings()
+        )
+        self.clear_all_button.setEnabled(loaded and idle)
         self.save_button.setEnabled(save_ready)
         self.folder_button.setEnabled(loaded and idle)
         saved_file_ready = idle and self._last_output is not None and self._last_output.is_file()
