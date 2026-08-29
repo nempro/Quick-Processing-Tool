@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -168,4 +169,46 @@ def test_sound_ui_states_are_complete_and_paths_elide(qt_app: QApplication, tmp_
     assert page.folder_label.toolTip() == str(long_folder)
     assert "…" in page.folder_label.text()
     assert page.zoom_combo.currentText() == "全体表示"
+    page.close()
+
+
+def test_reset_preserves_text_and_clear_all_returns_to_fresh_state(
+    qt_app: QApplication, tmp_path: Path
+) -> None:
+    page = SoundEffectPage()
+    defaults = page.settings()
+    output_folder = tmp_path / "擬音の保存先"
+    output_folder.mkdir()
+    page.output_folder = output_folder
+    page.text_edit.setPlainText("ドン！")
+    page.shadow_enabled.setChecked(True)
+    page.rotation_spin.setValue(24)
+    page.scale_x_spin.setValue(135)
+    page.reset_button.click()
+    assert page.settings() == replace(defaults, text="ドン！")
+
+    page.shadow_enabled.setChecked(True)
+    page.rotation_spin.setValue(-15)
+    page.scale_y_spin.setValue(80)
+    page.filename_edit.setText("保存済み擬音")
+    page.save_png()
+    saved_path = page.last_saved_path
+    assert saved_path is not None and saved_path.is_file()
+    assert not page.open_image_button.isHidden()
+    assert not page.open_folder_button.isHidden()
+
+    page.clear_all_button.click()
+
+    assert page.settings() == defaults
+    assert page.text_edit.toPlainText() == ""
+    assert page.filename_edit.text() == "sound_effect"
+    assert page.preview_image is None
+    assert not page.save_button.isEnabled()
+    assert page.last_saved_path is None
+    assert page.save_result.text() == ""
+    assert page.save_result.toolTip() == ""
+    assert page.open_image_button.isHidden()
+    assert page.open_folder_button.isHidden()
+    assert page.output_folder == output_folder
+    assert saved_path.is_file()
     page.close()

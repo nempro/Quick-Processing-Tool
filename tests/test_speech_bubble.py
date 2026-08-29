@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -317,4 +318,51 @@ def test_bubble_ui_states_and_full_saved_paths(qt_app: QApplication, tmp_path: P
     assert page.last_saved_path is not None
     assert page.save_result.toolTip() == str(page.last_saved_path)
     assert page.zoom_combo.currentText() == "全体表示"
+    page.close()
+
+
+def test_reset_preserves_text_and_clear_all_resets_tail_and_saved_result(
+    qt_app: QApplication, tmp_path: Path
+) -> None:
+    page = SpeechBubblePage()
+    defaults = page.settings()
+    output_folder = tmp_path / "吹き出しの保存先"
+    output_folder.mkdir()
+    page.output_folder = output_folder
+    page.text_edit.setPlainText("えっ！？")
+    page.fill_opacity_spin.setValue(45)
+    page.tail_preset_combo.setCurrentIndex(
+        page.tail_preset_combo.findData(TailPreset.LEFT_TOP.value)
+    )
+    page._tail_tip = (-2.0, -2.0)
+    page.reset_button.click()
+    assert page.settings() == replace(defaults, text="えっ！？")
+
+    page.fill_opacity_spin.setValue(65)
+    page.update_preview()
+    assert page.preview_result is not None
+    page._tail_dragged(QPointF(-100000, 100000))
+    assert page._tail_tip == (-3.0, 3.0)
+    page.filename_edit.setText("保存済み吹き出し")
+    page.save_png()
+    saved_path = page.last_saved_path
+    assert saved_path is not None and saved_path.is_file()
+    assert not page.open_image_button.isHidden()
+    assert not page.open_folder_button.isHidden()
+
+    page.clear_all_button.click()
+
+    assert page.settings() == defaults
+    assert page.text_edit.toPlainText() == ""
+    assert page.filename_edit.text() == "speech_bubble"
+    assert page._tail_tip is None
+    assert page.preview_result is None
+    assert not page.save_button.isEnabled()
+    assert page.last_saved_path is None
+    assert page.save_result.text() == ""
+    assert page.save_result.toolTip() == ""
+    assert page.open_image_button.isHidden()
+    assert page.open_folder_button.isHidden()
+    assert page.output_folder == output_folder
+    assert saved_path.is_file()
     page.close()

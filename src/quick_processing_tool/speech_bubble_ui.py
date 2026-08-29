@@ -225,8 +225,15 @@ class SpeechBubblePage(QWidget):
         left.addWidget(self._text_group())
         left.addWidget(self._bubble_group())
         left.addWidget(self._tail_group())
+        reset_actions = QWidget()
+        reset_layout = QHBoxLayout(reset_actions)
+        reset_layout.setContentsMargins(0, 0, 0, 0)
         self.reset_button = QPushButton("設定をリセット")
-        left.addWidget(self.reset_button)
+        self.clear_all_button = QPushButton("すべてクリア")
+        for button in (self.reset_button, self.clear_all_button):
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            reset_layout.addWidget(button)
+        left.addWidget(reset_actions)
         left.addStretch(1)
         self.settings_scroll.setWidget(host)
         splitter.addWidget(self.settings_scroll)
@@ -360,6 +367,7 @@ class SpeechBubblePage(QWidget):
         )
         self.preview.tip_dragged.connect(self._tail_dragged)
         self.reset_button.clicked.connect(self.reset_settings)
+        self.clear_all_button.clicked.connect(self.clear_all)
         self.folder_button.clicked.connect(self.choose_output_folder)
         self.filename_edit.textChanged.connect(self._update_save_state)
         self.save_button.clicked.connect(self.save_png)
@@ -522,6 +530,23 @@ class SpeechBubblePage(QWidget):
         self.tail_note.show()
         self._update_color_buttons()
         self.update_preview()
+
+    def clear_all(self) -> None:
+        """Return this material editor to a fresh state without touching saved files."""
+        self.reset_settings()
+        self.text_edit.clear()
+        self._auto_filename = self._default_filename("")
+        self.filename_edit.setText(self._auto_filename)
+        self._timer.stop()
+        self.update_preview()
+        self._clear_saved_result()
+
+    def _clear_saved_result(self) -> None:
+        self.last_saved_path = None
+        self.save_result.clear()
+        self.save_result.setToolTip("")
+        self.open_image_button.hide()
+        self.open_folder_button.hide()
 
     def choose_output_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "透明PNGの保存先を選ぶ", str(self.output_folder))
