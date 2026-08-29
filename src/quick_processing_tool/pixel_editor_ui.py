@@ -565,6 +565,36 @@ class PixelEditorPage(QWidget):
         palette_footer.addWidget(self.palette_clear_button)
         pl.addLayout(palette_footer)
 
+        edit_group = QGroupBox("編集")
+        self.edit_group = edit_group
+        el = QVBoxLayout(edit_group)
+        el.setContentsMargins(7, 7, 7, 7)
+        el.setSpacing(5)
+        self.undo_button = QPushButton("元に戻す")
+        self.undo_button.clicked.connect(self.undo)
+        self.redo_button = QPushButton("やり直す")
+        self.redo_button.clicked.connect(self.redo)
+        self.clear_button = QPushButton("全消去")
+        self.clear_button.clicked.connect(self.clear)
+        history_row = QHBoxLayout()
+        for button in (self.undo_button, self.redo_button):
+            button.setMinimumWidth(0)
+            button.setMinimumHeight(30)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            history_row.addWidget(button, 1)
+        self.undo_button.setToolTip("直前の操作を元に戻します")
+        self.undo_button.setAccessibleName("元に戻す")
+        self.redo_button.setToolTip("元に戻した操作をやり直します")
+        self.redo_button.setAccessibleName("やり直す")
+        el.addLayout(history_row)
+        self.clear_button.setObjectName("pixelClearButton")
+        edit_group.setStyleSheet(
+            "QPushButton#pixelClearButton { min-height: 26px; padding: 4px 8px; color: #8a2930; "
+            "background: #faf6f6; border: 1px solid #c9a8ab; }"
+            "QPushButton#pixelClearButton:hover { background: #f6e8e9; border-color: #a85d63; }"
+        )
+        el.addWidget(self.clear_button)
+
         view_group = QGroupBox("表示")
         self.view_group = view_group
         vl = QVBoxLayout(view_group)
@@ -582,42 +612,24 @@ class PixelEditorPage(QWidget):
         self.grid_check.toggled.connect(lambda value: setattr(self.canvas_view, "grid_enabled", value) or self.canvas_view.viewport().update())
         view_row.addWidget(self.grid_check)
         vl.addLayout(view_row)
-        self.undo_button = QPushButton("元に戻す")
-        self.undo_button.clicked.connect(self.undo)
-        self.redo_button = QPushButton("やり直す")
-        self.redo_button.clicked.connect(self.redo)
-        self.clear_button = QPushButton("全消去")
-        self.clear_button.clicked.connect(self.clear)
-        history_row = QHBoxLayout()
-        for button in (self.undo_button, self.redo_button):
-            button.setMinimumWidth(0)
-            button.setMinimumHeight(30)
-            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            history_row.addWidget(button, 1)
-        self.undo_button.setToolTip("直前の操作を元に戻します")
-        self.undo_button.setAccessibleName("元に戻す")
-        self.redo_button.setToolTip("元に戻した操作をやり直します")
-        self.redo_button.setAccessibleName("やり直す")
-        vl.addLayout(history_row)
+        self.reference_check = QCheckBox("下絵を表示")
+        self.reference_check.setChecked(True)
+        self.reference_check.toggled.connect(self._reference_visibility)
+        vl.addWidget(self.reference_check)
+        opacity_row = QHBoxLayout()
+        opacity_row.addWidget(QLabel("下絵の不透明度"))
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setRange(10, 100)
+        self.opacity_slider.setValue(50)
+        self.opacity_slider.valueChanged.connect(self._reference_opacity)
+        opacity_row.addWidget(self.opacity_slider, 1)
+        vl.addLayout(opacity_row)
 
-        # Keep the high-frequency controls in the first viewport and destructive
-        # canvas clearing separate at the bottom.
         left_layout.addWidget(tools)
+        left_layout.addWidget(edit_group)
         left_layout.addWidget(view_group)
         left_layout.addWidget(canvas_group)
         left_layout.addWidget(palette_group)
-        clear_frame = QFrame()
-        clear_frame.setObjectName("pixelClearActions")
-        clear_layout = QVBoxLayout(clear_frame)
-        clear_layout.setContentsMargins(5, 7, 5, 5)
-        clear_layout.addWidget(self.clear_button)
-        clear_frame.setStyleSheet(
-            "QFrame#pixelClearActions { border-top: 1px solid #d7dde5; background: transparent; }"
-            "QPushButton { min-height: 26px; padding: 4px 8px; color: #8a2930; "
-            "background: #faf6f6; border: 1px solid #c9a8ab; }"
-            "QPushButton:hover { background: #f6e8e9; border-color: #a85d63; }"
-        )
-        left_layout.addWidget(clear_frame)
         left_layout.addStretch(1)
         left.setWidget(left_widget)
 
@@ -649,16 +661,6 @@ class PixelEditorPage(QWidget):
         self.preview_hint_label.setWordWrap(True)
         rl.addWidget(self.preview_hint_label)
         rl.addWidget(self.preview_scroll, 1)
-        self.reference_check = QCheckBox("下絵を表示")
-        self.reference_check.setChecked(True)
-        self.reference_check.toggled.connect(self._reference_visibility)
-        rl.addWidget(self.reference_check)
-        self.opacity_slider = QSlider(Qt.Horizontal)
-        self.opacity_slider.setRange(10, 100)
-        self.opacity_slider.setValue(50)
-        self.opacity_slider.valueChanged.connect(self._reference_opacity)
-        rl.addWidget(QLabel("下絵の不透明度"))
-        rl.addWidget(self.opacity_slider)
         rl.addWidget(QLabel("ファイル名"))
         name_row = QHBoxLayout()
         self.filename_edit = QLineEdit("pixel_art")
@@ -1136,6 +1138,7 @@ class PixelEditorPage(QWidget):
         for widget in (
             self.canvas_view,
             self.tools_group,
+            self.edit_group,
             self.view_group,
             self.canvas_group,
             self.palette_group,

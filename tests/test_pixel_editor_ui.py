@@ -38,6 +38,15 @@ def _wait_for_import(qt_app: QApplication, page: PixelEditorPage, timeout: float
     assert page._import_thread is None
 
 
+def _owning_group(widget) -> QGroupBox | None:
+    parent = widget.parentWidget()
+    while parent is not None:
+        if isinstance(parent, QGroupBox):
+            return parent
+        parent = parent.parentWidget()
+    return None
+
+
 def test_pixel_page_japanese_controls_defaults_and_state(qt_app: QApplication) -> None:
     page = PixelEditorPage()
     assert page.canvas.size == (128, 128) if hasattr(page.canvas, "size") else (page.canvas.width, page.canvas.height) == (128, 128)
@@ -67,6 +76,61 @@ def test_pixel_page_japanese_controls_defaults_and_state(qt_app: QApplication) -
         "QPushButton#pixelSave:disabled",
     ):
         assert selector in page.styleSheet()
+
+
+def test_pixel_left_pane_groups_controls_by_action_role(
+    qt_app: QApplication,
+) -> None:
+    page = PixelEditorPage()
+    page.resize(900, 720)
+    page.show()
+    qt_app.processEvents()
+
+    for control in (
+        page.pencil_button,
+        page.eraser_button,
+        page.eyedropper_button,
+        page.size_combo,
+        page.current_color_button,
+    ):
+        assert _owning_group(control) is page.tools_group
+    for control in (page.undo_button, page.redo_button, page.clear_button):
+        assert _owning_group(control) is page.edit_group
+    for control in (
+        page.zoom_combo,
+        page.grid_check,
+        page.reference_check,
+        page.opacity_slider,
+    ):
+        assert _owning_group(control) is page.view_group
+    for control in (
+        page.preset_combo,
+        page.width_spin,
+        page.height_spin,
+        page.new_button,
+    ):
+        assert _owning_group(control) is page.canvas_group
+
+    assert page.current_reference_button.parentWidget() is page.current_source_usage
+    assert page.current_pixels_button.parentWidget() is page.current_source_usage
+    assert not page.view_group.isAncestorOf(page.undo_button)
+    assert [
+        group.title()
+        for group in (
+            page.tools_group,
+            page.edit_group,
+            page.view_group,
+            page.canvas_group,
+        )
+    ] == ["ツール", "編集", "表示", "キャンバス"]
+    assert (
+        page.tools_group.y()
+        < page.edit_group.y()
+        < page.view_group.y()
+        < page.canvas_group.y()
+    )
+    page.close()
+    qt_app.processEvents()
 
 
 @pytest.mark.parametrize("size", [(900, 620), (1180, 760), (1440, 900)])

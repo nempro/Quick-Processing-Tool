@@ -298,10 +298,13 @@ def test_pixel_import_busy_blocks_document_mutation_but_accepts_latest(
     for widget in (
         page.canvas_view,
         page.tools_group,
+        page.edit_group,
         page.view_group,
         page.canvas_group,
         page.palette_group,
         page.clear_button,
+        page.undo_button,
+        page.redo_button,
         page.opacity_slider,
         page.filename_edit,
     ):
