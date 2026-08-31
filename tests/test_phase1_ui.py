@@ -311,6 +311,7 @@ def test_settings_are_purpose_first_and_tabs_follow_user_workflow(
         "画像サイズを変更する",
         "画像形式を変える",
         "回転・反転する",
+        "画像分割",
         "保存先とプライバシー",
     ]
     for object_name in (

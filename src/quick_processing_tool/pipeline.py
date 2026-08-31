@@ -8,6 +8,7 @@ from PIL import Image, UnidentifiedImageError
 
 from .errors import ProcessingError, TargetSizeUnreachable, UnsupportedImageError
 from .image_workspace import MISSING_SOURCE_MESSAGE, MissingSourceError, require_source_file
+from .image_splitting import ImageSplitOptions, SplitDirection, split_image
 from .models import ImageInfo, OutputFormat, ProcessedImage, ProcessingOptions, ResizeMode
 from .processors.encode import encode_best_quality
 from .processors.metadata import safe_metadata
@@ -104,6 +105,78 @@ def process_image(path: Path, options: ProcessingOptions) -> ProcessedImage:
     result = ProcessedImage(data, resized.width, resized.height, output_format, quality, path)
     LOGGER.info("Conversion result: %s, %s bytes, quality=%s", path, len(data), quality)
     return result
+
+
+def process_image_splits(
+    path: Path,
+    options: ProcessingOptions,
+    split_options: ImageSplitOptions,
+) -> list[ProcessedImage]:
+    """Process once, then encode ordered equal panels without extra resizing."""
+    if not split_options.enabled:
+        return [process_image(path, options)]
+    LOGGER.info(
+        "Split conversion start: %s, direction=%s, count=%s",
+        path,
+        split_options.direction.value,
+        split_options.count,
+    )
+    require_source_file(path)
+    try:
+        with Image.open(path) as opened:
+            original_format = (opened.format or "").upper()
+            if original_format not in SUPPORTED_FORMATS:
+                raise UnsupportedImageError("PNG / JPEG / WebP のみ開けます。")
+            metadata = safe_metadata(opened, options.remove_metadata)
+            normalized = normalize_orientation(opened)
+            transformed = apply_transforms(normalized, options.transforms)
+            resized = resize_image(transformed, options)
+            output_format = resolve_output_format(original_format, options.output_format)
+            try:
+                panels = split_image(
+                    resized,
+                    split_options.direction,
+                    split_options.count,
+                )
+            except ValueError as exc:
+                axis = (
+                    "幅"
+                    if split_options.direction is SplitDirection.VERTICAL
+                    else "高さ"
+                )
+                raise ProcessingError(
+                    f"画像の{axis}が{split_options.count}分割に足りません。"
+                ) from exc
+
+            results: list[ProcessedImage] = []
+            for panel in panels:
+                data, quality = encode_best_quality(
+                    panel,
+                    output_format,
+                    options.target_bytes,
+                    options.quality,
+                    options.jpeg_background,
+                    metadata,
+                )
+                results.append(
+                    ProcessedImage(
+                        data,
+                        panel.width,
+                        panel.height,
+                        output_format,
+                        quality,
+                        path,
+                    )
+                )
+    except ProcessingError:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        if not path.is_file():
+            raise MissingSourceError(MISSING_SOURCE_MESSAGE) from exc
+        raise ProcessingError(f"画像処理に失敗しました: {path.name}") from exc
+
+    LOGGER.info("Split conversion result: %s, %s panels", path, len(results))
+    return results
 
 
 def write_processed(result: ProcessedImage, destination: Path, preserve_timestamp: bool) -> None:

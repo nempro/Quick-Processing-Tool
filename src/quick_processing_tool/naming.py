@@ -133,3 +133,35 @@ def unique_output_path(folder: Path, source: Path, output_format: str) -> Path:
     if not same_as_source:
         return candidate
     return unique_named_path(folder, f"{source.stem}_2", extension)
+
+
+def unique_split_output_paths(
+    folder: Path,
+    source: Path,
+    output_format: str,
+    count: int,
+) -> list[Path]:
+    """Return a collision-free filename group while preserving panel order."""
+    extension = EXTENSIONS[output_format]
+    folder.mkdir(parents=True, exist_ok=True)
+    group_index = 1
+    while True:
+        group_stem = source.stem if group_index == 1 else f"{source.stem}_{group_index}"
+        candidates = [
+            folder / f"{group_stem}_{part_index:02d}{extension}"
+            for part_index in range(1, count + 1)
+        ]
+        collision = any(candidate.exists() for candidate in candidates)
+        if not collision:
+            for candidate in candidates:
+                try:
+                    if candidate.resolve() == source.resolve():
+                        collision = True
+                        break
+                except OSError:
+                    if candidate.absolute() == source.absolute():
+                        collision = True
+                        break
+        if not collision:
+            return candidates
+        group_index += 1

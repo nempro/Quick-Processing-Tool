@@ -9,14 +9,16 @@ from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QCursor, QDragEnterEvent, QDropEvent, QGuiApplication, QImage, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QCursor, QDragEnterEvent, QDropEvent, QGuiApplication, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGraphicsLineItem,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
@@ -49,9 +51,10 @@ from .image_workspace import (
     SourceImage,
     require_source_file,
 )
+from .image_splitting import ImageSplitOptions, SplitDirection, partition_edges, split_boxes
 from .models import ImageInfo, OutputFormat, ProcessingOptions, ResizeMode, Transform
-from .naming import unique_output_path
-from .pipeline import process_image, read_image_info, write_processed
+from .naming import unique_output_path, unique_split_output_paths
+from .pipeline import process_image, process_image_splits, read_image_info, write_processed
 from .processors.resize import output_dimensions
 from .processors.transform import normalize_orientation
 from .thumbnail_ui import ThumbnailPage
@@ -155,6 +158,10 @@ class PreviewCanvas(QGraphicsView):
         self._image_item = QGraphicsPixmapItem()
         self._image_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         self.scene().addItem(self._image_item)
+        self._split_enabled = False
+        self._split_direction = SplitDirection.VERTICAL
+        self._split_count = 4
+        self._guide_items: list[QGraphicsLineItem] = []
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setBackgroundBrush(QColor("#202124"))
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
@@ -163,11 +170,57 @@ class PreviewCanvas(QGraphicsView):
     def set_image(self, image: QImage) -> None:
         self._image_item.setPixmap(QPixmap.fromImage(image))
         self.scene().setSceneRect(self._image_item.boundingRect())
+        self._update_split_guides()
         self._fit()
 
     def clear_image(self) -> None:
         self._image_item.setPixmap(QPixmap())
         self.scene().setSceneRect(0, 0, 1, 1)
+        self._update_split_guides()
+
+    def set_split_guides(
+        self,
+        enabled: bool,
+        direction: SplitDirection,
+        count: int,
+    ) -> None:
+        self._split_enabled = enabled
+        self._split_direction = direction
+        self._split_count = count
+        self._update_split_guides()
+
+    def _clear_split_guides(self) -> None:
+        for item in self._guide_items:
+            self.scene().removeItem(item)
+        self._guide_items.clear()
+
+    def _update_split_guides(self) -> None:
+        self._clear_split_guides()
+        pixmap = self._image_item.pixmap()
+        if pixmap.isNull() or not self._split_enabled:
+            return
+        axis_length = (
+            pixmap.width()
+            if self._split_direction is SplitDirection.VERTICAL
+            else pixmap.height()
+        )
+        try:
+            positions = partition_edges(axis_length, self._split_count)[1:-1]
+        except ValueError:
+            return
+        pen = QPen(QColor("#ffca3a"))
+        pen.setWidthF(2.0)
+        pen.setCosmetic(True)
+        for position in positions:
+            guide = QGraphicsLineItem()
+            if self._split_direction is SplitDirection.VERTICAL:
+                guide.setLine(float(position), 0.0, float(position), float(pixmap.height()))
+            else:
+                guide.setLine(0.0, float(position), float(pixmap.width()), float(position))
+            guide.setPen(pen)
+            guide.setZValue(10)
+            self.scene().addItem(guide)
+            self._guide_items.append(guide)
 
     def _fit(self) -> None:
         if not self._image_item.pixmap().isNull():
@@ -404,6 +457,7 @@ class ProcessingWorker(QObject):
     progress = Signal(int)
     file_status = Signal(int, str, str)
     copy_ready = Signal(bytes)
+    outputs_saved = Signal(int)
     finished = Signal(int, int)
 
     def __init__(
@@ -415,6 +469,7 @@ class ProcessingWorker(QObject):
         custom_folder: Path | None,
         processed_subfolder: bool,
         row_indices: list[int] | None = None,
+        split_options: ImageSplitOptions | None = None,
     ) -> None:
         super().__init__()
         self.paths = paths
@@ -424,6 +479,7 @@ class ProcessingWorker(QObject):
         self.custom_folder = custom_folder
         self.processed_subfolder = processed_subfolder
         self.row_indices = row_indices or list(range(len(paths)))
+        self.split_options = split_options or ImageSplitOptions()
 
     def _folder_for(self, source: Path) -> Path:
         if self.destination_mode == "Desktop":
@@ -435,20 +491,50 @@ class ProcessingWorker(QObject):
 
     @Slot()
     def run(self) -> None:
-        succeeded = failed = 0
+        succeeded = failed = saved_outputs = 0
         total = max(1, len(self.paths))
         for index, path in enumerate(self.paths):
             row = self.row_indices[index]
             self.file_status.emit(row, "Processing", "")
             try:
                 require_source_file(path)
-                result = process_image(path, self.options)
                 if self.copy_mode:
+                    result = process_image(path, self.options)
                     self.copy_ready.emit(result.data)
                     detail = f"コピー完了 · {result.width} × {result.height} · {human_bytes(result.size_bytes)}"
+                elif self.split_options.enabled:
+                    results = process_image_splits(path, self.options, self.split_options)
+                    folder = self._folder_for(path)
+                    destinations = unique_split_output_paths(
+                        folder,
+                        path,
+                        results[0].format,
+                        len(results),
+                    )
+                    written: list[Path] = []
+                    try:
+                        for result, destination in zip(results, destinations, strict=True):
+                            write_processed(
+                                result,
+                                destination,
+                                self.options.preserve_timestamp,
+                            )
+                            written.append(destination)
+                    except Exception:
+                        for destination in written:
+                            destination.unlink(missing_ok=True)
+                        raise
+                    saved_outputs += len(destinations)
+                    detail = f"{len(destinations)}枚保存 · {folder}"
                 else:
-                    destination = unique_output_path(self._folder_for(path), path, result.format)
+                    result = process_image(path, self.options)
+                    destination = unique_output_path(
+                        self._folder_for(path),
+                        path,
+                        result.format,
+                    )
                     write_processed(result, destination, self.options.preserve_timestamp)
+                    saved_outputs += 1
                     detail = str(destination)
                 succeeded += 1
                 self.file_status.emit(row, "Done", detail)
@@ -462,9 +548,14 @@ class ProcessingWorker(QObject):
                 if not path.is_file():
                     self.file_status.emit(row, "Missing", MISSING_SOURCE_MESSAGE)
                 else:
-                    message = str(exc) if isinstance(exc, ProcessingError) else f"処理に失敗しました: {path.name}"
+                    message = (
+                        str(exc)
+                        if isinstance(exc, ProcessingError)
+                        else f"処理に失敗しました: {path.name}"
+                    )
                     self.file_status.emit(row, "Error", message)
             self.progress.emit(round((index + 1) * 100 / total))
+        self.outputs_saved.emit(saved_outputs)
         self.finished.emit(succeeded, failed)
 
 
@@ -539,6 +630,8 @@ class MainWindow(QMainWindow):
         self.transform_queue: list[Transform] = []
         self._thread: QThread | None = None
         self._worker: ProcessingWorker | None = None
+        self._active_split_options = ImageSplitOptions()
+        self._saved_output_count = 0
         self._quick_preview_thread: QThread | None = None
         self._quick_preview_worker: QuickPreviewWorker | None = None
         self._quick_preview_generation = 0
@@ -622,6 +715,7 @@ class MainWindow(QMainWindow):
         self.drop_zone.choose_requested.connect(self.open_files)
         self.drop_zone.paths_dropped.connect(self.load_paths)
         self.preview = self.drop_zone.preview
+        self._update_split_preview_guides()
         center_layout.addWidget(self.drop_zone, 1)
         self.info_label = QLabel("")
         self.info_label.setObjectName("preview_info_label")
@@ -801,6 +895,80 @@ class MainWindow(QMainWindow):
         transform_content.setObjectName("transform_settings")
         layout.addWidget(transform_section)
 
+        split_content = QWidget()
+        split_layout = QVBoxLayout(split_content)
+        split_layout.setContentsMargins(0, 4, 0, 0)
+        split_layout.setSpacing(8)
+        self.split_enable_check = QCheckBox("画像を分割して保存")
+        self.split_enable_check.setToolTip(
+            "元画像全体を欠けなく均等に分け、連番ファイルとして保存します"
+        )
+        self.split_enable_check.toggled.connect(self._split_settings_changed)
+        split_layout.addWidget(self.split_enable_check)
+
+        split_direction_label = QLabel("分割方向")
+        split_direction_label.setStyleSheet("font-weight: 600; color: #344054;")
+        split_layout.addWidget(split_direction_label)
+        direction_row = QHBoxLayout()
+        direction_row.setSpacing(4)
+        self.split_direction_group = QButtonGroup(self)
+        self.split_direction_buttons: dict[SplitDirection, QPushButton] = {}
+        for direction, label, tooltip in (
+            (SplitDirection.VERTICAL, "縦に分割", "左から右の順に保存します"),
+            (SplitDirection.HORIZONTAL, "横に分割", "上から下の順に保存します"),
+        ):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.setToolTip(tooltip)
+            button.setStyleSheet(
+                "QPushButton { padding: 7px 4px; }"
+                "QPushButton:checked { background: #dbeafe; color: #174ea6;"
+                "border: 2px solid #315fbd; font-weight: 700; }"
+            )
+            self.split_direction_group.addButton(button)
+            self.split_direction_buttons[direction] = button
+            direction_row.addWidget(button, 1)
+        self.split_direction_buttons[SplitDirection.VERTICAL].setChecked(True)
+        self.split_direction_group.buttonClicked.connect(self._split_settings_changed)
+        split_layout.addLayout(direction_row)
+
+        split_count_label = QLabel("分割数")
+        split_count_label.setStyleSheet("font-weight: 600; color: #344054;")
+        split_layout.addWidget(split_count_label)
+        count_row = QHBoxLayout()
+        count_row.setSpacing(3)
+        self.split_count_group = QButtonGroup(self)
+        self.split_count_buttons: dict[int, QPushButton] = {}
+        for count in range(2, 7):
+            button = QPushButton(str(count))
+            button.setCheckable(True)
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.setStyleSheet(
+                "QPushButton { padding: 7px 2px; }"
+                "QPushButton:checked { background: #dbeafe; color: #174ea6;"
+                "border: 2px solid #315fbd; font-weight: 700; }"
+            )
+            self.split_count_group.addButton(button, count)
+            self.split_count_buttons[count] = button
+            count_row.addWidget(button, 1)
+        self.split_count_buttons[4].setChecked(True)
+        self.split_count_group.idClicked.connect(self._split_settings_changed)
+        split_layout.addLayout(count_row)
+
+        self.split_summary = QLabel("4分割 · 左から右")
+        self.split_summary.setWordWrap(True)
+        self.split_summary.setStyleSheet("color: #667085; padding: 4px 2px;")
+        split_layout.addWidget(self.split_summary)
+        split_section = CollapsibleSection(
+            "画像分割",
+            "画像全体を2〜6枚へ均等に分けます",
+            split_content,
+        )
+        split_content.setObjectName("split_settings")
+        layout.addWidget(split_section)
         destination_content = QWidget()
         self.destination_form = QFormLayout(destination_content)
         self.destination_combo = QComboBox()
@@ -847,6 +1015,7 @@ class MainWindow(QMainWindow):
             resize_section,
             format_section,
             transform_section,
+            split_section,
             destination_section,
         ]
 
@@ -908,7 +1077,7 @@ class MainWindow(QMainWindow):
                 )
             )
         self._destination_changed()
-        self._settings_changed()
+        self._split_settings_changed()
         return panel
 
     def _quick_section_toggled(
@@ -1218,6 +1387,52 @@ class MainWindow(QMainWindow):
             transforms=list(self.transform_queue),
         )
 
+    def split_options(self) -> ImageSplitOptions:
+        direction = next(
+            (
+                direction
+                for direction, button in self.split_direction_buttons.items()
+                if button.isChecked()
+            ),
+            SplitDirection.VERTICAL,
+        )
+        count = self.split_count_group.checkedId()
+        if count not in self.split_count_buttons:
+            count = 4
+        return ImageSplitOptions(
+            enabled=self.split_enable_check.isChecked(),
+            direction=direction,
+            count=count,
+        )
+
+    @Slot()
+    def _split_settings_changed(self, *_args) -> None:
+        options = self.split_options()
+        for button in self.split_direction_buttons.values():
+            button.setEnabled(options.enabled)
+        for button in self.split_count_buttons.values():
+            button.setEnabled(options.enabled)
+        order = (
+            "左から右"
+            if options.direction is SplitDirection.VERTICAL
+            else "上から下"
+        )
+        self.split_summary.setText(f"{options.count}分割 · {order}")
+        self._update_split_preview_guides()
+        self._settings_changed()
+        if hasattr(self, "quick_tab"):
+            self._update_quick_actions()
+
+    def _update_split_preview_guides(self) -> None:
+        if not hasattr(self, "preview"):
+            return
+        options = self.split_options()
+        self.preview.set_split_guides(
+            options.enabled,
+            options.direction,
+            options.count,
+        )
+
     @Slot()
     def _settings_changed(self) -> None:
         mode = ResizeMode(self.resize_mode.currentData())
@@ -1273,6 +1488,41 @@ class MainWindow(QMainWindow):
             size_plan = f"約{human_bytes(info.size_bytes)}"
         else:
             size_plan = "容量は保存時に確定"
+        split_info = ""
+        split_options = self.split_options()
+        if split_options.enabled:
+            order = (
+                "左から右"
+                if split_options.direction is SplitDirection.VERTICAL
+                else "上から下"
+            )
+            try:
+                boxes = split_boxes(
+                    out_width,
+                    out_height,
+                    split_options.direction,
+                    split_options.count,
+                )
+            except ValueError:
+                split_info = "<br><br><b>画像分割</b><br>画像サイズが分割数に足りません"
+            else:
+                panel_widths = [right - left for left, _top, right, _bottom in boxes]
+                panel_heights = [bottom - top for _left, top, _right, bottom in boxes]
+                width_label = (
+                    str(panel_widths[0])
+                    if min(panel_widths) == max(panel_widths)
+                    else f"{min(panel_widths)}〜{max(panel_widths)}"
+                )
+                height_label = (
+                    str(panel_heights[0])
+                    if min(panel_heights) == max(panel_heights)
+                    else f"{min(panel_heights)}〜{max(panel_heights)}"
+                )
+                split_info = (
+                    f"<br><br><b>画像分割</b><br>"
+                    f"{split_options.count}枚 / {order} / "
+                    f"各 {width_label} × {height_label} px"
+                )
         self.info_label.setText(
             f"<b>元画像</b><br>"
             f"{html.escape(info.path.name)}<br>"
@@ -1280,6 +1530,7 @@ class MainWindow(QMainWindow):
             f"{human_bytes(info.size_bytes)}"
             f"<br><br><b>保存後（見込み）</b><br>"
             f"{out_width} × {out_height} / {out_format} / {size_plan}"
+            f"{split_info}"
         )
         self.info_label.show()
 
@@ -1299,12 +1550,15 @@ class MainWindow(QMainWindow):
         self.metadata_check.setChecked(True)
         self.timestamp_check.setChecked(True)
         self.background_combo.setCurrentIndex(0)
+        self.split_enable_check.setChecked(False)
+        self.split_direction_buttons[SplitDirection.VERTICAL].setChecked(True)
+        self.split_count_buttons[4].setChecked(True)
         self.transform_queue.clear()
         self.transform_label.setText("変更なし")
         self.progress.setValue(0)
         for index in range(self.file_tree.topLevelItemCount()):
             self.file_tree.topLevelItem(index).setText(2, "待機中")
-        self._settings_changed()
+        self._split_settings_changed()
 
     @Slot()
     def clear_quick_all(self) -> None:
@@ -1422,6 +1676,10 @@ class MainWindow(QMainWindow):
         self.navigation.setTabEnabled(self.upscale_tab, False)
         self.navigation.setTabEnabled(self.image_edit_tab, False)
         self.navigation.setTabEnabled(self.pixel_tab, False)
+        self._saved_output_count = 0
+        self._active_split_options = (
+            ImageSplitOptions() if copy_mode else copy.deepcopy(self.split_options())
+        )
         self._thread = QThread(self)
         self._update_quick_actions()
         self._worker = ProcessingWorker(
@@ -1432,12 +1690,14 @@ class MainWindow(QMainWindow):
             self.custom_folder,
             self.processed_check.isChecked(),
             row_indices,
+            self._active_split_options,
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self.progress.setValue)
         self._worker.file_status.connect(self._on_file_status)
         self._worker.copy_ready.connect(self._set_clipboard)
+        self._worker.outputs_saved.connect(self._set_saved_output_count)
         self._worker.finished.connect(self._on_finished)
         self._worker.finished.connect(self._thread.quit)
         self._thread.finished.connect(self._worker.deleteLater)
@@ -1448,6 +1708,7 @@ class MainWindow(QMainWindow):
     def _clear_worker_refs(self) -> None:
         self._worker = None
         self._thread = None
+        self._active_split_options = ImageSplitOptions()
         self.drop_zone.setEnabled(True)
         self.navigation.setTabEnabled(self.thumbnail_tab, True)
         self.navigation.setTabEnabled(self.sound_effect_tab, True)
@@ -1477,10 +1738,24 @@ class MainWindow(QMainWindow):
     def _update_quick_actions(self) -> None:
         quick_enabled = self.navigation.currentIndex() == self.quick_tab and self._thread is None
         global_open_enabled = self._source_change_available()
+        split_options = self.split_options()
         self.open_action.setEnabled(global_open_enabled)
         self.export_action.setEnabled(quick_enabled and bool(self.files))
-        self.copy_action.setEnabled(quick_enabled and bool(self.files))
+        self.copy_action.setEnabled(
+            quick_enabled and bool(self.files) and not split_options.enabled
+        )
         self.reset_action.setEnabled(quick_enabled)
+        if split_options.enabled and self.files:
+            output_count = len(self.files) * split_options.count
+            self.export_action.setText(f"{output_count}枚に分割して保存")
+        elif self.files:
+            self.export_action.setText(
+                "画像を保存"
+                if len(self.files) == 1
+                else f"{len(self.files)}枚をまとめて保存"
+            )
+        else:
+            self.export_action.setText("画像を保存")
         if not quick_enabled:
             self.drop_zone.set_drag_active(False)
         self.drop_zone.setEnabled(quick_enabled)
@@ -1496,6 +1771,12 @@ class MainWindow(QMainWindow):
             save_hint = "画像を開くと保存できます"
         elif not quick_enabled:
             save_hint = "かんたん変換タブで保存できます"
+        elif split_options.enabled:
+            output_count = len(self.files) * split_options.count
+            save_hint = (
+                f"各画像を{split_options.count}分割し、"
+                f"合計{output_count}枚を保存します"
+            )
         else:
             save_hint = "すべての設定をまとめて適用します"
         self.quick_save_hint.setText(save_hint)
@@ -1513,6 +1794,7 @@ class MainWindow(QMainWindow):
         quick_dirty = (
             bool(self.files)
             or self.options() != ProcessingOptions()
+            or self.split_options() != ImageSplitOptions()
             or self.destination_combo.currentData() != "Same folder"
             or not self.processed_check.isChecked()
             or self.custom_folder is not None
@@ -1596,6 +1878,11 @@ class MainWindow(QMainWindow):
             item.setToolTip(2, detail)
         self.statusBar().showMessage(detail or status_label)
 
+    @Slot(int)
+    def _set_saved_output_count(self, count: int) -> None:
+        self._saved_output_count = count
+
+
     @Slot(bytes)
     def _set_clipboard(self, data: bytes) -> None:
         image = QImage()
@@ -1611,15 +1898,26 @@ class MainWindow(QMainWindow):
 
     @Slot(int, int)
     def _on_finished(self, succeeded: int, failed: int) -> None:
+        split_active = self._active_split_options.enabled
         if failed:
-            self.statusBar().showMessage(
-                f"完了 · 成功 {succeeded}件 · エラー {failed}件"
-            )
+            if split_active:
+                status = f"完了 · {self._saved_output_count}枚保存 · エラー {failed}件"
+                detail = (
+                    f"保存した分割画像: {self._saved_output_count}枚\n"
+                    f"エラー: {failed}件\n"
+                )
+            else:
+                status = f"完了 · 成功 {succeeded}件 · エラー {failed}件"
+                detail = f"成功: {succeeded}件\nエラー: {failed}件\n"
+            self.statusBar().showMessage(status)
             QMessageBox.warning(
                 self,
                 "一部の処理でエラーが発生しました",
-                f"成功: {succeeded}件\nエラー: {failed}件\n"
-                "詳細は一覧のツールチップとログを確認してください。",
+                detail + "詳細は一覧のツールチップとログを確認してください。",
+            )
+        elif split_active:
+            self.statusBar().showMessage(
+                f"完了 · {self._saved_output_count}枚の分割画像を保存しました"
             )
         else:
             self.statusBar().showMessage(f"完了 · {succeeded}件を保存しました")
