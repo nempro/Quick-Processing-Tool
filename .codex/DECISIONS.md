@@ -13,3 +13,11 @@
 - Primary actions remain visually larger: Quick save is 40 px and Edit/Upscale/Thumbnail execution buttons are 48–50 px.
 - The Edit save inspector is vertically scrollable at short window heights and has no horizontal scrollbar; at the normal 720 px window height its content fits without vertical scrolling.
 - Density is reduced through padding, margins, and spacing rather than smaller Japanese fonts.
+
+## Phase 4B interaction and layout rules
+
+- The hand-draw eyedropper is an ephemeral UI tool, not a persisted `HandStroke` tool. Sampling updates the brush color preference without adding Undo history.
+- Hand color sampling composites the processed preview and committed hand overlay, while preserving the separately controlled pen opacity. Explicit picker use returns to Pen; Alt-click temporarily samples without changing the selected drawing tool.
+- The existing transparency eyedropper remains a separate input mode and continues sampling the processed image without the hand overlay.
+- Quick and Edit use shared primary settings-pane widths (250 px default/minimum, 340 px maximum) and give resize stretch to the center preview.
+- Edit save options use a two-column grid with matching label/control visibility and an ignored horizontal size policy so vertical-scrollbar appearance cannot create horizontal overflow.

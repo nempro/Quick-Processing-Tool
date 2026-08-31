@@ -64,7 +64,12 @@ from .pixel_editor_ui import PixelEditorPage
 from .sound_effect_ui import SoundEffectPage
 from .speech_bubble_ui import SpeechBubblePage
 from .source_ui import CurrentSourceCard
-from .ui_styles import INPUT_CONTROL_STYLE
+from .ui_styles import (
+    INPUT_CONTROL_STYLE,
+    PRIMARY_SETTINGS_PANE_DEFAULT_WIDTH,
+    PRIMARY_SETTINGS_PANE_MAX_WIDTH,
+    PRIMARY_SETTINGS_PANE_MIN_WIDTH,
+)
 from .preview_activity import PreviewActivityIndicator
 from .window_geometry import adaptive_minimum_size, centered_window_geometry
 
@@ -753,7 +758,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
-        splitter.setSizes([240, 620, 240])
+        splitter.setSizes([PRIMARY_SETTINGS_PANE_DEFAULT_WIDTH, 580, 240])
         return splitter
 
     def _settings_panel(self) -> QWidget:
@@ -1029,8 +1034,8 @@ class MainWindow(QMainWindow):
 
         panel = QWidget()
         panel.setObjectName("quick_settings_panel")
-        panel.setMinimumWidth(220)
-        panel.setMaximumWidth(340)
+        panel.setMinimumWidth(PRIMARY_SETTINGS_PANE_MIN_WIDTH)
+        panel.setMaximumWidth(PRIMARY_SETTINGS_PANE_MAX_WIDTH)
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(0, 0, 0, 0)
         panel_layout.setSpacing(0)

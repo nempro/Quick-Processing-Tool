@@ -1,5 +1,9 @@
 """Shared visual rules for editable controls across the application."""
 
+PRIMARY_SETTINGS_PANE_MIN_WIDTH = 250
+PRIMARY_SETTINGS_PANE_DEFAULT_WIDTH = 250
+PRIMARY_SETTINGS_PANE_MAX_WIDTH = 340
+
 INPUT_CONTROL_STYLE = """
 QComboBox, QSpinBox, QLineEdit {
     background-color: #dce5ef;

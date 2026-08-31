@@ -73,6 +73,7 @@ def test_hand_section_is_compact_ordered_and_processing_safe(qt_app, tmp_path: P
         page.hand_mode_enabled,
         page.hand_pen_button,
         page.hand_eraser_button,
+        page.hand_eyedropper_button,
         page.hand_color_button,
         page.hand_size_spin,
         page.hand_opacity_spin,
@@ -121,6 +122,147 @@ def test_real_mouse_click_drag_eraser_and_one_gesture_history(qt_app, tmp_path: 
     assert page.settings().hand_draw.strokes[-1].tool is HandTool.PEN
     page.redo()
     assert page.settings().hand_draw.strokes[-1].tool is HandTool.ERASER
+    page.close()
+
+
+def test_hand_eyedropper_samples_visible_composite_returns_to_pen_without_history(
+    qt_app, tmp_path: Path
+) -> None:
+    page, _source = _loaded_page(qt_app, tmp_path)
+    preview = page.drop_zone.preview
+    point = HandPoint(24, 20)
+    page._hand_draw_settings = HandDrawSettings(
+        strokes=(
+            HandStroke(
+                points=(point,),
+                color=(20, 90, 220, 160),
+                width=18,
+            ),
+        ),
+        base_width=64,
+        base_height=48,
+    )
+    page._refresh_hand_overlay()
+    qt_app.processEvents()
+    position = _viewport_position(page, point.x, point.y)
+    item_point = preview._item.mapFromScene(preview.mapToScene(position))
+    x, y = int(item_point.x()), int(item_point.y())
+    base = preview._image.pixelColor(x, y)
+    overlay = preview._committed_overlay_image.pixelColor(x, y)
+    overlay_alpha = overlay.alphaF()
+    base_alpha = base.alphaF()
+    output_alpha = overlay_alpha + base_alpha * (1.0 - overlay_alpha)
+    expected = QColor(
+        *(
+            round(
+                (
+                    overlay_channel * overlay_alpha
+                    + base_channel * base_alpha * (1.0 - overlay_alpha)
+                )
+                / output_alpha
+            )
+            for base_channel, overlay_channel in zip(
+                (base.red(), base.green(), base.blue()),
+                (overlay.red(), overlay.green(), overlay.blue()),
+            )
+        ),
+        round(output_alpha * 255),
+    )
+    assert preview.visible_color_at(QPointF(position)) == expected
+
+    page.hand_opacity_spin.setValue(40)
+    history_before = list(page._history)
+    strokes_before = page.settings().hand_draw.strokes
+    page.hand_eyedropper_button.click()
+    assert page.hand_eyedropper_button.isChecked()
+    assert preview._hand_color_picking
+    assert not preview._drawing_enabled
+    QTest.mouseClick(preview.viewport(), Qt.MouseButton.LeftButton, pos=position)
+    qt_app.processEvents()
+
+    assert page.hand_pen_button.isChecked()
+    assert page._hand_tool is HandTool.PEN
+    assert not preview._hand_color_picking
+    assert page._hand_color.getRgb() == (
+        expected.red(),
+        expected.green(),
+        expected.blue(),
+        102,
+    )
+    assert page.hand_color_button.text() == expected.name().upper()
+    assert page._history == history_before
+    assert page.settings().hand_draw.strokes == strokes_before
+
+    draw_position = _viewport_position(page, 45, 35)
+    QTest.mouseClick(preview.viewport(), Qt.MouseButton.LeftButton, pos=draw_position)
+    qt_app.processEvents()
+    drawn = page.settings().hand_draw.strokes[-1]
+    assert drawn.color[:3] == (expected.red(), expected.green(), expected.blue())
+    assert len(page._history) == len(history_before) + 1
+    page.close()
+
+
+@pytest.mark.parametrize("zoom", ["fit", "100", "200"])
+def test_alt_click_is_temporary_zoom_safe_eyedropper(
+    qt_app, tmp_path: Path, zoom: str
+) -> None:
+    source = tmp_path / f"alt-pick-{zoom}.png"
+    image = Image.new("RGBA", (80, 60), (200, 20, 30, 255))
+    for y in range(60):
+        for x in range(40, 80):
+            image.putpixel((x, y), (10, 180, 70, 255))
+    image.save(source)
+    page = QuickEditPage()
+    page.resize(900, 620)
+    page.show()
+    assert page.load_image(source)
+    _wait(qt_app, lambda: page._preview_thread is None)
+    page.hand_section.toggle.setChecked(True)
+    page.hand_mode_enabled.setChecked(True)
+    page.hand_eraser_button.click()
+    page.drop_zone.preview.set_zoom_mode(zoom)
+    qt_app.processEvents()
+
+    history_before = list(page._history)
+    position = _viewport_position(page, 60, 30)
+    QTest.mouseClick(
+        page.drop_zone.preview.viewport(),
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.AltModifier,
+        position,
+    )
+    qt_app.processEvents()
+    assert page._hand_color.getRgb() == (10, 180, 70, 255)
+    assert page.hand_eraser_button.isChecked()
+    assert page._hand_tool is HandTool.ERASER
+    assert page._history == history_before
+    assert page.settings().hand_draw.strokes == ()
+    page.close()
+
+
+def test_hand_eyedropper_is_safe_on_fully_transparent_pixels(
+    qt_app, tmp_path: Path
+) -> None:
+    source = tmp_path / "transparent-pick.png"
+    Image.new("RGBA", (32, 24), (70, 80, 90, 0)).save(source)
+    page = QuickEditPage()
+    page.resize(900, 620)
+    page.show()
+    assert page.load_image(source)
+    _wait(qt_app, lambda: page._preview_thread is None)
+    page.hand_section.toggle.setChecked(True)
+    page.hand_mode_enabled.setChecked(True)
+    page.hand_opacity_spin.setValue(25)
+    history_before = list(page._history)
+    page.hand_eyedropper_button.click()
+    position = _viewport_position(page, 12, 10)
+    QTest.mouseClick(page.drop_zone.preview.viewport(), Qt.MouseButton.LeftButton, pos=position)
+    qt_app.processEvents()
+    assert page.hand_pen_button.isChecked()
+    assert page.drop_zone.preview.visible_color_at(QPointF(position)).alpha() == 0
+    assert page._hand_color.getRgb() == (0, 0, 0, 64)
+    assert page._history == history_before
+    assert page.settings().hand_draw.strokes == ()
     page.close()
 
 
@@ -647,6 +789,7 @@ def test_hand_layout_has_no_horizontal_scroll_or_preview_regression(qt_app, widt
     assert page.drop_zone.width() >= minimum_preview
     assert page.hand_pen_button.width() >= 30
     assert page.hand_eraser_button.width() >= 30
+    assert page.hand_eyedropper_button.width() >= 30
     assert page.preview_history_bar.width() == page.drop_zone.width()
     assert page.preview_undo_button.geometry().right() < page.preview_redo_button.geometry().left()
     page.close()

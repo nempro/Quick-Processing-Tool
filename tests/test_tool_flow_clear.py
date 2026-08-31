@@ -238,6 +238,7 @@ def test_edit_clear_resets_all_edit_state_history_and_saved_result(
         assert page.settings().canvas.height == 320
         assert page._hand_tool is HandTool.PEN
         assert page.hand_pen_button.isChecked()
+        assert not page.hand_eyedropper_button.isChecked()
         assert not page.hand_mode_enabled.isChecked()
         assert page.hand_size_spin.value() == 8
         assert page.hand_opacity_spin.value() == 100

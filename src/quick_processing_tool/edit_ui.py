@@ -93,7 +93,12 @@ from .naming import EXTENSIONS, KNOWN_IMAGE_EXTENSIONS, normalize_filename_stem
 from .editing.text import pil_to_qimage
 from .image_workspace import MISSING_SOURCE_MESSAGE, MissingSourceError, SourceImage, require_source_file
 from .source_ui import CurrentSourceCard
-from .ui_styles import INPUT_CONTROL_STYLE
+from .ui_styles import (
+    INPUT_CONTROL_STYLE,
+    PRIMARY_SETTINGS_PANE_DEFAULT_WIDTH,
+    PRIMARY_SETTINGS_PANE_MAX_WIDTH,
+    PRIMARY_SETTINGS_PANE_MIN_WIDTH,
+)
 from .preview_activity import PreviewActivityIndicator
 
 
@@ -477,6 +482,7 @@ class ActiveHandOverlayItem(QGraphicsItem):
 
 class EditPreview(QGraphicsView):
     color_picked = Signal(int, int, int)
+    hand_color_picked = Signal(object, bool)
     hand_pressed = Signal(object)
     hand_moved = Signal(object)
     hand_released = Signal()
@@ -513,6 +519,7 @@ class EditPreview(QGraphicsView):
         self.viewport().installEventFilter(self)
         self._image = QImage()
         self._picking = False
+        self._hand_color_picking = False
         self._drawing_enabled = False
         self._pointer_active = False
         self._brush_width = 8.0
@@ -579,6 +586,10 @@ class EditPreview(QGraphicsView):
 
     def set_picking(self, enabled: bool) -> None:
         self._picking = enabled
+        self._update_viewport_cursor()
+
+    def set_hand_color_picking(self, enabled: bool) -> None:
+        self._hand_color_picking = bool(enabled)
         self._update_viewport_cursor()
 
     def set_drawing_enabled(self, enabled: bool) -> None:
@@ -731,11 +742,64 @@ class EditPreview(QGraphicsView):
         y = min(self._full_size[1] - 1e-6, max(0.0, item_point.y() * self._full_size[1] / bounds.height()))
         return HandPoint(x, y)
 
+    @staticmethod
+    def _source_over(base: QColor, overlay: QColor) -> QColor:
+        overlay_alpha = overlay.alphaF()
+        base_alpha = base.alphaF()
+        output_alpha = overlay_alpha + base_alpha * (1.0 - overlay_alpha)
+        if output_alpha <= 0.0:
+            return QColor(0, 0, 0, 0)
+        channels = [
+            round(
+                (
+                    overlay_channel * overlay_alpha
+                    + base_channel * base_alpha * (1.0 - overlay_alpha)
+                )
+                / output_alpha
+            )
+            for base_channel, overlay_channel in zip(
+                (base.red(), base.green(), base.blue()),
+                (overlay.red(), overlay.green(), overlay.blue()),
+            )
+        ]
+        return QColor(*channels, round(output_alpha * 255))
+
+    def image_color_at(self, viewport_point: QPointF) -> QColor | None:
+        if self._image.isNull():
+            return None
+        scene_point = self.mapToScene(viewport_point.toPoint())
+        item_point = self._item.mapFromScene(scene_point)
+        bounds = self._item.boundingRect()
+        if not bounds.contains(item_point):
+            return None
+        x = min(self._image.width() - 1, max(0, int(item_point.x())))
+        y = min(self._image.height() - 1, max(0, int(item_point.y())))
+        return self._image.pixelColor(x, y)
+
+    def visible_color_at(self, viewport_point: QPointF) -> QColor | None:
+        color = self.image_color_at(viewport_point)
+        if color is None:
+            return None
+        scene_point = self.mapToScene(viewport_point.toPoint())
+        item_point = self._item.mapFromScene(scene_point)
+        x = min(self._image.width() - 1, max(0, int(item_point.x())))
+        y = min(self._image.height() - 1, max(0, int(item_point.y())))
+        if (
+            self._overlay_item.isVisible()
+            and not self._committed_overlay_image.isNull()
+            and self._committed_overlay_image.size() == self._image.size()
+        ):
+            color = self._source_over(
+                color,
+                self._committed_overlay_image.pixelColor(x, y),
+            )
+        return color
+
     def geometry_generation(self) -> int | None:
         return self._geometry_generation
 
     def _update_viewport_cursor(self) -> None:
-        if self._picking or self._drawing_enabled:
+        if self._picking or self._hand_color_picking or self._drawing_enabled:
             cursor = Qt.CursorShape.CrossCursor
         else:
             cursor = Qt.CursorShape.ArrowCursor
@@ -793,16 +857,24 @@ class EditPreview(QGraphicsView):
         return True
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton and self._begin_pointer(event.position()):
-            event.accept()
-            return
-        if self._picking and not self._image.isNull():
-            scene_point = self.mapToScene(event.position().toPoint())
-            point = self._item.mapFromScene(scene_point)
-            x, y = int(point.x()), int(point.y())
-            if 0 <= x < self._image.width() and 0 <= y < self._image.height():
-                color = self._image.pixelColor(x, y)
-                self.color_picked.emit(color.red(), color.green(), color.blue())
+        if event.button() == Qt.MouseButton.LeftButton:
+            temporary_hand_pick = bool(
+                self._drawing_enabled
+                and event.modifiers() & Qt.KeyboardModifier.AltModifier
+            )
+            if self._hand_color_picking or temporary_hand_pick:
+                color = self.visible_color_at(event.position())
+                if color is not None:
+                    self.hand_color_picked.emit(color, temporary_hand_pick)
+                    event.accept()
+                    return
+            if self._picking and not self._image.isNull():
+                color = self.image_color_at(event.position())
+                if color is not None:
+                    self.color_picked.emit(color.red(), color.green(), color.blue())
+                    event.accept()
+                    return
+            if self._begin_pointer(event.position()):
                 event.accept()
                 return
         super().mousePressEvent(event)
@@ -1251,8 +1323,8 @@ class QuickEditPage(QWidget):
         self.settings_scroll.setWidgetResizable(True)
         self.settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.settings_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.settings_scroll.setMinimumWidth(250)
-        self.settings_scroll.setMaximumWidth(355)
+        self.settings_scroll.setMinimumWidth(PRIMARY_SETTINGS_PANE_MIN_WIDTH)
+        self.settings_scroll.setMaximumWidth(PRIMARY_SETTINGS_PANE_MAX_WIDTH)
         left = QWidget()
         left.setMinimumWidth(0)
         left.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1383,9 +1455,11 @@ class QuickEditPage(QWidget):
         self.hand_tool_group.setExclusive(True)
         self.hand_pen_button = QPushButton("ペン")
         self.hand_eraser_button = QPushButton("消しゴム")
+        self.hand_eyedropper_button = QPushButton("スポイト")
         for button, tool, tooltip in (
             (self.hand_pen_button, HandTool.PEN, "選んだ色で描きます"),
             (self.hand_eraser_button, HandTool.ERASER, "手書き部分だけを消します"),
+            (self.hand_eyedropper_button, None, "表示中の画像からペン色を選びます"),
         ):
             button.setCheckable(True)
             button.setMinimumHeight(28)
@@ -1397,6 +1471,7 @@ class QuickEditPage(QWidget):
             tool_row.addWidget(button, 1)
             button.clicked.connect(lambda _checked=False, selected=tool: self._select_hand_tool(selected))
         self.hand_pen_button.setChecked(True)
+        self.hand_eyedropper_button.setAccessibleName("手描きのスポイト")
         self.hand_color_button = QPushButton()
         self.hand_color_button.setProperty("showAlphaValue", False)
         self.hand_color_button.setProperty("colorPurpose", "手書きの色を選びます")
@@ -1796,6 +1871,7 @@ class QuickEditPage(QWidget):
         self.drop_zone.choose_requested.connect(self.choose_image)
         self.drop_zone.path_dropped.connect(self._request_or_load_image)
         self.drop_zone.preview.color_picked.connect(self._color_picked)
+        self.drop_zone.preview.hand_color_picked.connect(self._hand_color_picked)
         self.drop_zone.preview.hand_pressed.connect(self._begin_hand_stroke)
         self.drop_zone.preview.hand_moved.connect(self._append_hand_point)
         self.drop_zone.preview.hand_released.connect(self._finish_hand_stroke)
@@ -1847,6 +1923,7 @@ class QuickEditPage(QWidget):
         right.setObjectName("editSavePanel")
         self.save_panel = right
         right.setMinimumWidth(0)
+        right.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         rl = QVBoxLayout(right)
         rl.setContentsMargins(8, 8, 10, 8)
         info_title = QLabel("画像情報 / 保存")
@@ -1859,8 +1936,11 @@ class QuickEditPage(QWidget):
             label.setWordWrap(True)
             label.setStyleSheet(info_style)
             rl.addWidget(label)
-        save_form = QFormLayout()
-        self._configure_form(save_form)
+        self.save_options_grid = QGridLayout()
+        self.save_options_grid.setContentsMargins(3, 1, 3, 2)
+        self.save_options_grid.setHorizontalSpacing(8)
+        self.save_options_grid.setVerticalSpacing(4)
+        self.save_options_grid.setColumnStretch(1, 1)
         self.format_combo = QComboBox()
         self.format_combo.addItem("元の形式", EditOutputFormat.SAME.value)
         self.format_combo.addItem("PNG", EditOutputFormat.PNG.value)
@@ -1870,10 +1950,24 @@ class QuickEditPage(QWidget):
         self.jpeg_background_combo = QComboBox()
         self.jpeg_background_combo.addItem("白", (255, 255, 255))
         self.jpeg_background_combo.addItem("黒", (0, 0, 0))
-        save_form.addRow("保存形式", self.format_combo)
-        save_form.addRow("画質", self.quality_spin)
-        save_form.addRow("JPEGの透明部分", self.jpeg_background_combo)
-        rl.addLayout(save_form)
+        self.format_label = QLabel("保存形式")
+        self.quality_label = QLabel("画質")
+        self.jpeg_background_label = QLabel("JPEGの\n透明部分")
+        self.jpeg_background_label.setAccessibleName("JPEGの透明部分")
+        for row, (label, field) in enumerate(
+            (
+                (self.format_label, self.format_combo),
+                (self.quality_label, self.quality_spin),
+                (self.jpeg_background_label, self.jpeg_background_combo),
+            )
+        ):
+            label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            label.setMinimumWidth(0)
+            field.setMinimumWidth(0)
+            field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self.save_options_grid.addWidget(label, row, 0)
+            self.save_options_grid.addWidget(field, row, 1)
+        rl.addLayout(self.save_options_grid)
         self.alpha_hint = QLabel()
         self.alpha_hint.setWordWrap(True)
         self.alpha_hint.setStyleSheet("color: #9a6700;")
@@ -1947,10 +2041,10 @@ class QuickEditPage(QWidget):
         self.save_scroll.setWidget(right)
         splitter.addWidget(self.save_scroll)
 
-        splitter.setStretchFactor(0, 25)
-        splitter.setStretchFactor(1, 50)
-        splitter.setStretchFactor(2, 25)
-        splitter.setSizes([300, 580, 300])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 0)
+        splitter.setSizes([PRIMARY_SETTINGS_PANE_DEFAULT_WIDTH, 710, 220])
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(splitter)
@@ -2111,8 +2205,16 @@ class QuickEditPage(QWidget):
         self._hand_color.setAlpha(round(percent * 255 / 100))
         self._update_hand_color_button()
 
-    def _select_hand_tool(self, tool: HandTool) -> None:
-        self._hand_tool = tool
+    def _select_hand_tool(self, tool: HandTool | None) -> None:
+        self._cancel_hand_stroke()
+        if tool is None:
+            if self.eyedropper_button.isChecked():
+                self.eyedropper_button.setChecked(False)
+            if self.source_path and self.hand_mode_enabled.isChecked():
+                self.preview_status.setText("画像上をクリックしてペン色を選んでください")
+        else:
+            self._hand_tool = tool
+        self._update_hand_drawing_state()
 
     @Slot()
     def choose_hand_color(self) -> None:
@@ -2144,7 +2246,7 @@ class QuickEditPage(QWidget):
 
     def _update_hand_drawing_state(self) -> None:
         self.preview_history_bar.setVisible(self.hand_mode_enabled.isChecked())
-        ready = (
+        interaction_ready = (
             self.source_path is not None
             and self.hand_mode_enabled.isChecked()
             and self._hand_draw_settings.visible
@@ -2155,8 +2257,14 @@ class QuickEditPage(QWidget):
             and not self._processing_controls_locked
             and self.drop_zone.preview.geometry_generation() == self._preview_geometry_key()
         )
+        hand_color_picking = self.hand_eyedropper_button.isChecked()
         self.drop_zone.preview.set_brush_width(self._hand_size)
-        self.drop_zone.preview.set_drawing_enabled(ready)
+        self.drop_zone.preview.set_drawing_enabled(
+            interaction_ready and not hand_color_picking
+        )
+        self.drop_zone.preview.set_hand_color_picking(
+            interaction_ready and hand_color_picking
+        )
 
     def _transient_hand_stroke(self) -> HandStroke | None:
         if not self._active_hand_points:
@@ -3071,6 +3179,7 @@ class QuickEditPage(QWidget):
         self.hand_details.setVisible(hand_mode)
         self.hand_pen_button.setEnabled(hand_mode and self._hand_draw_settings.visible)
         self.hand_eraser_button.setEnabled(hand_mode and self._hand_draw_settings.visible)
+        self.hand_eyedropper_button.setEnabled(hand_mode and self._hand_draw_settings.visible)
         self.hand_color_button.setEnabled(hand_mode and self._hand_draw_settings.visible)
         self.hand_size_spin.setEnabled(hand_mode and self._hand_draw_settings.visible)
         self.hand_opacity_spin.setEnabled(hand_mode and self._hand_draw_settings.visible)
@@ -3465,6 +3574,9 @@ class QuickEditPage(QWidget):
 
     @Slot(bool)
     def _eyedropper_toggled(self, enabled: bool) -> None:
+        if enabled and self.hand_eyedropper_button.isChecked():
+            self.hand_pen_button.setChecked(True)
+            self._select_hand_tool(HandTool.PEN)
         self.drop_zone.preview.set_picking(enabled)
         self._update_hand_drawing_state()
         self.eyedropper_button.setText("画像上で選ぶ" if enabled else "画像から選ぶ")
@@ -3478,6 +3590,17 @@ class QuickEditPage(QWidget):
         self.transparency_enabled.setChecked(True)
         self.eyedropper_button.setChecked(False)
         self._control_changed()
+
+    @Slot(object, bool)
+    def _hand_color_picked(self, color: QColor, temporary: bool) -> None:
+        opacity = self._hand_color.alpha()
+        self._hand_color = QColor(color.red(), color.green(), color.blue(), opacity)
+        self._update_hand_color_button()
+        display = self._hand_color.name().upper()
+        self.preview_status.setText(f"スポイトで {display} を選びました")
+        if not temporary:
+            self.hand_pen_button.setChecked(True)
+            self._select_hand_tool(HandTool.PEN)
 
     @Slot()
     def open_transparency_settings(self) -> None:
@@ -3588,8 +3711,11 @@ class QuickEditPage(QWidget):
         selected = EditOutputFormat(self.format_combo.currentData())
         source_is_jpeg = self._source_format in {"JPEG", "JPG"}
         jpeg = selected is EditOutputFormat.JPEG or (selected is EditOutputFormat.SAME and source_is_jpeg)
+        quality_visible = selected is not EditOutputFormat.PNG
+        self.jpeg_background_label.setVisible(jpeg)
         self.jpeg_background_combo.setVisible(jpeg)
-        self.quality_spin.setVisible(selected is not EditOutputFormat.PNG)
+        self.quality_label.setVisible(quality_visible)
+        self.quality_spin.setVisible(quality_visible)
         transparent = self.transparency_enabled.isChecked() or self._source_has_alpha
         self.alpha_hint.setText("透明部分を保存する場合はPNGがおすすめです" if transparent and jpeg else "")
         self._update_output_info()
@@ -3675,6 +3801,7 @@ class QuickEditPage(QWidget):
             self.hand_details,
             self.hand_pen_button,
             self.hand_eraser_button,
+            self.hand_eyedropper_button,
             self.hand_color_button,
             self.hand_size_spin,
             self.hand_opacity_spin,
