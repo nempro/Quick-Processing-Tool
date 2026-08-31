@@ -167,6 +167,7 @@ class PreviewCanvas(QGraphicsView):
         self._split_direction = SplitDirection.VERTICAL
         self._split_count = 4
         self._guide_items: list[QGraphicsLineItem] = []
+        self._zoom_factor: float | None = None
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setBackgroundBrush(QColor("#202124"))
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
@@ -176,7 +177,7 @@ class PreviewCanvas(QGraphicsView):
         self._image_item.setPixmap(QPixmap.fromImage(image))
         self.scene().setSceneRect(self._image_item.boundingRect())
         self._update_split_guides()
-        self._fit()
+        self._apply_zoom()
 
     def clear_image(self) -> None:
         self._image_item.setPixmap(QPixmap())
@@ -228,12 +229,26 @@ class PreviewCanvas(QGraphicsView):
             self._guide_items.append(guide)
 
     def _fit(self) -> None:
+        self.set_zoom_factor(None)
+
+    def set_zoom_factor(self, factor: float | None) -> None:
+        if factor is not None and factor <= 0:
+            raise ValueError("zoom factor must be positive")
+        self._zoom_factor = factor
+        self._apply_zoom()
+
+    def _apply_zoom(self) -> None:
+        self.resetTransform()
         if not self._image_item.pixmap().isNull():
-            self.fitInView(self._image_item, Qt.AspectRatioMode.KeepAspectRatio)
+            if self._zoom_factor is None:
+                self.fitInView(self._image_item, Qt.AspectRatioMode.KeepAspectRatio)
+            else:
+                self.scale(self._zoom_factor, self._zoom_factor)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self._fit()
+        if self._zoom_factor is None:
+            self._apply_zoom()
 
 
 class DropZone(QWidget):
@@ -721,6 +736,32 @@ class MainWindow(QMainWindow):
         self.drop_zone.paths_dropped.connect(self.load_paths)
         self.preview = self.drop_zone.preview
         self._update_split_preview_guides()
+        zoom_row = QHBoxLayout()
+        zoom_row.setContentsMargins(0, 0, 0, 0)
+        zoom_row.setSpacing(4)
+        zoom_label = QLabel("表示")
+        zoom_label.setStyleSheet("color: #667085; font-weight: 600;")
+        zoom_row.addWidget(zoom_label)
+        self.preview_zoom_group = QButtonGroup(self)
+        self.preview_zoom_buttons: dict[str, QPushButton] = {}
+        for label, factor in (("全体表示", None), ("100%", 1.0), ("200%", 2.0)):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.setStyleSheet(
+                "QPushButton { padding: 4px 6px; }"
+                "QPushButton:checked { background: #dbeafe; color: #174ea6;"
+                "border: 2px solid #315fbd; font-weight: 700; }"
+            )
+            button.clicked.connect(
+                lambda _checked=False, current=factor: self.preview.set_zoom_factor(current)
+            )
+            self.preview_zoom_group.addButton(button)
+            self.preview_zoom_buttons[label] = button
+            zoom_row.addWidget(button, 1)
+        self.preview_zoom_buttons["全体表示"].setChecked(True)
+        center_layout.addLayout(zoom_row)
         center_layout.addWidget(self.drop_zone, 1)
         self.info_label = QLabel("")
         self.info_label.setObjectName("preview_info_label")
@@ -1581,6 +1622,8 @@ class MainWindow(QMainWindow):
         self.file_tree.clear()
         self.files_heading.setText("読み込んだ画像　0枚")
         self.drop_zone.clear_image()
+        self.preview_zoom_buttons["全体表示"].setChecked(True)
+        self.preview.set_zoom_factor(None)
         self.info_label.clear()
         self.info_label.hide()
         self.progress.setValue(0)

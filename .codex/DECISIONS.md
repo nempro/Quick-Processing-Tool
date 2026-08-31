@@ -21,3 +21,9 @@
 - The existing transparency eyedropper remains a separate input mode and continues sampling the processed image without the hand overlay.
 - Quick and Edit use shared primary settings-pane widths (250 px default/minimum, 340 px maximum) and give resize stretch to the center preview.
 - Edit save options use a two-column grid with matching label/control visibility and an ignored horizontal size policy so vertical-scrollbar appearance cannot create horizontal overflow.
+
+## Phase 4C image splitting acceptance
+
+- Reuse the existing Phase 4A split core, batch worker, naming, destination, and encoding paths; do not introduce a second split-only export pipeline.
+- Quick preview zoom is explicit view state: `None` means fit, while `1.0` and `2.0` mean 100% and 200%. Image refresh preserves the selected fixed zoom and guides remain scene-coordinate overlays with cosmetic pens.
+- Do not add panel thumbnails in the compact three-column workspace. The source overlay guides, ordered filename preview, and saved-panel verification provide sufficient confirmation without reducing the central preview or increasing left-pane density.

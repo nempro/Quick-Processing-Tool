@@ -1,18 +1,19 @@
 # Current State
 
-- Task: Phase 4B hand-draw eyedropper and primary workspace layout alignment
+- Task: Phase 4C equal image splitting acceptance and Quick preview zoom controls
 - Repository: `C:\product\Quick Processing Tool`
 - Branch: `main`
-- Start HEAD: `29cc2745b1fb13d9ccbb40692e68b7df0393f722`
+- Start / current HEAD: `53d90ec14505bedbfe2448c7f8667a1a0ed3fdef`
 - Starting working tree: clean
-- Status: implementation complete; all requested verification and independent review passed; no blocking findings
-- Scope: hand-draw eyedropper, Alt temporary sampling, Edit save-options grid, shared Quick/Edit left-pane width rules
-- Hand picker: samples the visible edited preview plus committed hand overlay, preserves the current pen opacity, creates no history entry, and returns explicit picker use to Pen
-- Layout: Quick/Edit left panes are both 250 px by default; center panes own resize stretch; save option rows use a responsive two-column grid
-- Focused regression: PASS
-- Full regression: PASS (542 tests)
-- QT scale 1.25 / 1.5 Phase 4B checks: PASS (23 tests each)
+- Status: implementation, requested verification, and independent review complete; no blocking findings
+- Existing split core: exact 2–6 panel partitioning, PNG/JPEG/WebP encoding, collision-safe `_01` naming, and batch export were already present and were reused without duplication
+- Added scope: compact Quick preview controls for fit / 100% / 200% so split guides can be inspected at fixed zoom; focused coverage for 1003/6, formats, guide transforms, and compact layouts
+- Batch: enabled for multiple Quick source images through the existing ProcessingWorker; source failures remain isolated and partial panel groups roll back
+- Focused regression: PASS (66 related tests; 26 split tests)
+- Full regression: PASS (550 tests)
+- QT scale 1.25 / 1.5 split checks: PASS (26 tests each)
 - compileall / diff-check: PASS
-- Runtime GUI QA: PASS at 1180×720 and 900×620; Quick/Edit preview start x=255, all tested horizontal overflow ranges=0
-- Computer Use helper: unavailable after the required initialization recovery; visible Windows Qt automation and screenshot review used instead
-- Git: Phase 4B changes intentionally remain uncommitted; no tag/push/release
+- Runtime GUI QA: PASS at 1180×720 and 900×620; horizontal overflow=0; PNG/JPEG/WebP each saved and reopened as four panels
+- Pixel QA: vertical and horizontal PNG rejoin exactly; PNG alpha channel exactly preserved
+- Computer Use helper: unavailable after initialization and the required recovery retry; visible Windows Qt GUI automation and screenshot review used instead
+- Git: Phase 4C changes intentionally remain uncommitted; no tag/push/release

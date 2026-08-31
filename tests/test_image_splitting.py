@@ -9,7 +9,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PIL import Image
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QPointF
+from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QApplication, QSplitter
 
 from quick_processing_tool.image_splitting import (
     ImageSplitOptions,
@@ -21,7 +23,7 @@ from quick_processing_tool.image_splitting import (
 from quick_processing_tool.models import OutputFormat, ProcessingOptions
 from quick_processing_tool.naming import unique_split_output_paths
 from quick_processing_tool.pipeline import process_image_splits
-from quick_processing_tool.ui import MainWindow, ProcessingWorker
+from quick_processing_tool.ui import MainWindow, PreviewCanvas, ProcessingWorker
 
 
 @pytest.fixture(scope="module")
@@ -35,6 +37,7 @@ def app() -> QApplication:
         (1000, 2, [500, 500]),
         (1000, 3, [333, 333, 334]),
         (1001, 3, [333, 334, 334]),
+        (1003, 6, [167, 167, 167, 167, 167, 168]),
     ],
 )
 def test_partition_edges_cover_axis_once(
@@ -154,6 +157,42 @@ def test_png_split_pipeline_preserves_alpha_and_full_region(tmp_path: Path) -> N
     assert rejoined.tobytes() == original.tobytes()
 
 
+@pytest.mark.parametrize(
+    ("output_format", "pil_format", "keeps_alpha"),
+    [
+        (OutputFormat.PNG, "PNG", True),
+        (OutputFormat.JPEG, "JPEG", False),
+        (OutputFormat.WEBP, "WEBP", True),
+    ],
+)
+def test_split_pipeline_reuses_supported_export_formats(
+    tmp_path: Path,
+    output_format: OutputFormat,
+    pil_format: str,
+    keeps_alpha: bool,
+) -> None:
+    source = tmp_path / f"formats-{output_format.value}.png"
+    image = Image.new("RGBA", (1003, 24), (40, 120, 220, 96))
+    image.save(source)
+
+    results = process_image_splits(
+        source,
+        ProcessingOptions(
+            output_format=output_format,
+            jpeg_background=(12, 34, 56),
+        ),
+        ImageSplitOptions(True, SplitDirection.VERTICAL, 6),
+    )
+
+    assert len(results) == 6
+    assert sum(result.width for result in results) == image.width
+    for result in results:
+        with Image.open(BytesIO(result.data)) as opened:
+            assert opened.format == pil_format
+            assert ("A" in opened.getbands()) is keeps_alpha
+            opened.load()
+
+
 def test_batch_worker_saves_every_panel_in_natural_order(tmp_path: Path) -> None:
     sources: list[Path] = []
     for name, colors in (
@@ -254,6 +293,126 @@ def test_quick_split_controls_update_guides_immediately(
         window.reset_settings()
         assert window.split_options() == ImageSplitOptions()
         assert window.preview._guide_items == []
+    finally:
+        _wait_for_quick_preview(app, window)
+        window.close()
+
+
+@pytest.mark.parametrize("direction", list(SplitDirection))
+def test_split_guides_stay_on_exact_boundaries_at_fit_and_zoom(
+    app: QApplication,
+    direction: SplitDirection,
+) -> None:
+    preview = PreviewCanvas()
+    try:
+        preview.resize(720, 420)
+        preview.show()
+        image = QImage(1003, 603, QImage.Format.Format_RGBA8888)
+        image.fill(0xFF1E6091)
+        preview.set_image(image)
+        preview.set_split_guides(True, direction, 4)
+        app.processEvents()
+
+        axis_length = image.width() if direction is SplitDirection.VERTICAL else image.height()
+        expected_positions = partition_edges(axis_length, 4)[1:-1]
+
+        for view_mode in ("fit", "100%", "200%"):
+            if view_mode == "fit":
+                preview.set_zoom_factor(None)
+                expected_scale = None
+            else:
+                expected_scale = 1.0 if view_mode == "100%" else 2.0
+                preview.set_zoom_factor(expected_scale)
+            app.processEvents()
+
+            scene_positions: list[float] = []
+            viewport_positions: list[int] = []
+            for guide in preview._guide_items:
+                line = guide.line()
+                assert guide.pen().isCosmetic()
+                if direction is SplitDirection.VERTICAL:
+                    assert line.x1() == line.x2()
+                    scene_positions.append(line.x1())
+                    viewport_positions.append(
+                        preview.mapFromScene(QPointF(line.x1(), 0.0)).x()
+                    )
+                else:
+                    assert line.y1() == line.y2()
+                    scene_positions.append(line.y1())
+                    viewport_positions.append(
+                        preview.mapFromScene(QPointF(0.0, line.y1())).y()
+                    )
+
+            assert scene_positions == [float(value) for value in expected_positions]
+            scale = (
+                preview.transform().m11()
+                if direction is SplitDirection.VERTICAL
+                else preview.transform().m22()
+            )
+            if expected_scale is not None:
+                assert scale == pytest.approx(expected_scale)
+            for index in range(len(expected_positions) - 1):
+                expected_delta = (expected_positions[index + 1] - expected_positions[index]) * scale
+                actual_delta = viewport_positions[index + 1] - viewport_positions[index]
+                assert actual_delta == pytest.approx(expected_delta, abs=1.5)
+    finally:
+        preview.close()
+
+
+@pytest.mark.parametrize(
+    ("width", "height", "minimum_preview_width"),
+    [(900, 620, 360), (1180, 720, 400)],
+)
+def test_quick_split_controls_keep_compact_layout_without_horizontal_scroll(
+    app: QApplication,
+    tmp_path: Path,
+    width: int,
+    height: int,
+    minimum_preview_width: int,
+) -> None:
+    source = tmp_path / f"layout-{width}.png"
+    Image.new("RGB", (1003, 603), "navy").save(source)
+    window = MainWindow()
+    try:
+        window.setMinimumSize(0, 0)
+        window.resize(width, height)
+        window.show()
+        window.navigation.setCurrentIndex(window.quick_tab)
+        window.load_paths([source])
+        _wait_for_quick_preview(app, window)
+
+        split_section = next(
+            section for section in window.quick_sections
+            if section.toggle.text() == "画像分割"
+        )
+        split_section.toggle.setChecked(True)
+        window.split_enable_check.setChecked(True)
+        app.processEvents()
+
+        workspace = window.navigation.currentWidget()
+        assert isinstance(workspace, QSplitter)
+        assert workspace.widget(0).width() == 250
+        assert workspace.widget(1).width() >= minimum_preview_width
+        assert workspace.widget(2).width() >= 180
+        assert window.quick_settings_scroll.horizontalScrollBar().maximum() == 0
+        assert split_section.content.width() <= window.quick_settings_scroll.viewport().width()
+        assert len(window.preview._guide_items) == 3
+
+        for label, expected_scale in (("100%", 1.0), ("200%", 2.0)):
+            window.preview_zoom_buttons[label].click()
+            app.processEvents()
+            assert window.preview.transform().m11() == pytest.approx(expected_scale)
+            assert len(window.preview._guide_items) == 3
+        window.preview_zoom_buttons["全体表示"].click()
+        app.processEvents()
+        assert window.preview._zoom_factor is None
+
+        last_count_button = window.split_count_buttons[6]
+        button_right = last_count_button.mapTo(
+            window.quick_settings_scroll.viewport(),
+            last_count_button.rect().bottomRight(),
+        ).x()
+        assert button_right <= window.quick_settings_scroll.viewport().width()
     finally:
         _wait_for_quick_preview(app, window)
         window.close()
