@@ -197,7 +197,7 @@ def test_edit_inspector_descriptions_and_conditional_groups_are_compact(
         assert page.palette_results_widget.isVisible()
         assert len(page._palette_reset_buttons) == 12
         assert page.palette_send_button.height() <= 36
-        assert page.sticker_prereq_button.minimumHeight() >= 30
+        assert page.sticker_prereq_button.minimumHeight() >= 28
         assert page.hand_clear_button.height() <= 36
     finally:
         _wait_for_edit_preview_idle(qt_app, page)

@@ -64,8 +64,8 @@ def test_hand_section_is_compact_ordered_and_processing_safe(qt_app, tmp_path: P
     assert page.sections.index(page.hand_section) == page.sections.index(page.text_section) + 1
     assert page.sections.index(page.transparency_section) == page.sections.index(page.hand_section) + 1
     assert page.hand_pen_button.isChecked()
-    assert page.hand_pen_button.minimumHeight() >= 30
-    assert page.hand_eraser_button.minimumHeight() >= 30
+    assert page.hand_pen_button.minimumHeight() >= 28
+    assert page.hand_eraser_button.minimumHeight() >= 28
     assert page.hand_size_spin.value() == 8
     assert page.hand_size_spin.maximum() == 100
     page._set_processing(True)

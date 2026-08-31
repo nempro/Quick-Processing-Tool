@@ -6,8 +6,8 @@ QComboBox, QSpinBox, QLineEdit {
     color: #182230;
     border: 1px solid #6f8094;
     border-radius: 6px;
-    padding: 5px 28px 5px 8px;
-    min-height: 28px;
+    padding: 3px 28px 3px 8px;
+    min-height: 26px;
     selection-background-color: #315fbd;
     selection-color: #ffffff;
 }
@@ -21,7 +21,7 @@ QComboBox:hover, QSpinBox:hover, QLineEdit:hover {
 QComboBox:focus, QSpinBox:focus, QLineEdit:focus {
     background-color: #ffffff;
     border: 2px solid #2457b2;
-    padding: 4px 27px 4px 7px;
+    padding: 2px 27px 2px 7px;
 }
 QSpinBox:focus {
     padding-right: 21px;

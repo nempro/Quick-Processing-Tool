@@ -92,8 +92,8 @@ QGroupBox {
     font-weight: 700;
     border: 1px solid #d7dde5;
     border-radius: 8px;
-    margin-top: 12px;
-    padding: 12px 8px 8px 8px;
+    margin-top: 9px;
+    padding: 8px 7px 6px 7px;
     background-color: #fbfcfd;
 }
 QGroupBox::title {
@@ -107,7 +107,7 @@ QPlainTextEdit {
     color: #182230;
     border: 2px solid #6f8094;
     border-radius: 8px;
-    padding: 10px;
+    padding: 7px;
     font-size: 14px;
     selection-background-color: #315fbd;
     selection-color: #ffffff;
@@ -126,12 +126,12 @@ QPlainTextEdit:disabled {
     border-color: #d4d8de;
 }
 QPushButton {
-    min-height: 28px;
+    min-height: 26px;
     background-color: #f5f7fa;
     color: #182230;
     border: 1px solid #7b899a;
     border-radius: 6px;
-    padding: 5px 10px;
+    padding: 3px 9px;
 }
 QPushButton:hover {
     background-color: #e5edf6;
@@ -140,7 +140,7 @@ QPushButton:hover {
 QPushButton:focus {
     background-color: #ffffff;
     border: 2px solid #2457b2;
-    padding: 4px 9px;
+    padding: 2px 8px;
 }
 QPushButton:disabled {
     background-color: #f3f4f6;
@@ -151,7 +151,7 @@ QCheckBox {
     color: #182230;
     border: 1px solid transparent;
     border-radius: 5px;
-    padding: 4px;
+    padding: 2px;
 }
 QCheckBox:hover {
     background-color: #e5edf6;
@@ -165,12 +165,12 @@ QCheckBox:disabled {
     background-color: transparent;
 }
 QPushButton#generateButton {
-    min-height: 44px;
+    min-height: 40px;
     background-color: #315fbd;
     color: #ffffff;
     border: 1px solid #315fbd;
     border-radius: 8px;
-    padding: 8px 16px;
+    padding: 4px 14px;
     font-size: 15px;
     font-weight: 700;
 }
@@ -181,7 +181,7 @@ QPushButton#generateButton:hover {
 QPushButton#generateButton:focus {
     background-color: #284fa1;
     border: 2px solid #173a82;
-    padding: 7px 15px;
+    padding: 3px 13px;
 }
 QPushButton#generateButton:pressed {
     background-color: #203f82;
@@ -198,8 +198,8 @@ class CollapsibleSection(QWidget):
     def __init__(self, title: str, description: str, content: QWidget) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 4, 0, 0)
-        layout.setSpacing(5)
+        layout.setContentsMargins(0, 2, 0, 0)
+        layout.setSpacing(3)
 
         self.toggle = QToolButton()
         self.toggle.setText(title)
@@ -208,17 +208,17 @@ class CollapsibleSection(QWidget):
         self.toggle.setArrowType(Qt.ArrowType.RightArrow)
         self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.toggle.setStyleSheet(
-            "QToolButton { text-align: left; font-weight: 700; padding: 7px;"
+            "QToolButton { text-align: left; font-weight: 700; padding: 6px;"
             "border: 1px solid #c3ceda; background: #e8eef5;"
             "color: #182230; border-radius: 6px; }"
             "QToolButton:hover { background: #dbe6f1; border-color: #405b79; }"
-            "QToolButton:focus { border: 2px solid #2457b2; padding: 6px; }"
+            "QToolButton:focus { border: 2px solid #2457b2; padding: 5px; }"
             "QToolButton:disabled { background: #f3f4f6; color: #9aa1aa;"
             "border-color: #d4d8de; }"
         )
         self.description = QLabel(description)
         self.description.setWordWrap(True)
-        self.description.setStyleSheet("color: #667085; padding: 0 8px 4px 24px;")
+        self.description.setStyleSheet("color: #667085; padding: 0 8px 2px 24px;")
         self.content = content
         self.content.hide()
         self.toggle.toggled.connect(self._set_expanded)
@@ -426,11 +426,11 @@ class ThumbnailPage(QWidget):
         )
         settings_layout = QVBoxLayout(settings_content)
         settings_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        settings_layout.setSpacing(10)
+        settings_layout.setSpacing(6)
 
         self.settings_heading = QLabel("サムネイル設定")
         self.settings_heading.setStyleSheet(
-            "font-size: 20px; font-weight: 750; color: #182230;"
+            "font-size: 19px; font-weight: 750; color: #182230;"
         )
         settings_intro = QLabel(
             "プレビューを見ながら共通デザインを設定します"
@@ -442,7 +442,7 @@ class ThumbnailPage(QWidget):
 
         self.template_group = QGroupBox("テンプレート")
         template_layout = QVBoxLayout(self.template_group)
-        template_layout.setSpacing(6)
+        template_layout.setSpacing(4)
         self.template_combo = QComboBox()
         self._configure_combo(self.template_combo)
         self.template_combo.setAccessibleName("テンプレート")
@@ -690,12 +690,12 @@ class ThumbnailPage(QWidget):
         batch.setObjectName("thumbnail_titles_panel")
         batch.setMinimumWidth(180)
         batch_layout = QVBoxLayout(batch)
-        batch_layout.setContentsMargins(8, 8, 8, 8)
-        batch_layout.setSpacing(8)
+        batch_layout.setContentsMargins(6, 6, 6, 6)
+        batch_layout.setSpacing(6)
 
         self.titles_heading = QLabel("タイトル")
         self.titles_heading.setStyleSheet(
-            "font-size: 20px; font-weight: 750; color: #182230;"
+            "font-size: 19px; font-weight: 750; color: #182230;"
         )
         batch_layout.addWidget(self.titles_heading)
         titles_help = QLabel("1行につき1枚のサムネイルを作成します")
@@ -710,7 +710,7 @@ class ThumbnailPage(QWidget):
             "嫉妬した彼に問い詰められて\n"
             "眠れない夜にずっと囁かれて"
         )
-        self.titles_edit.setMinimumHeight(230)
+        self.titles_edit.setMinimumHeight(210)
         self.titles_edit.textChanged.connect(self._titles_changed)
         batch_layout.addWidget(self.titles_edit, 2)
 
@@ -754,7 +754,7 @@ class ThumbnailPage(QWidget):
         self.result_tree = QTreeWidget()
         self.result_tree.setHeaderLabels(["番号", "タイトル", "状態"])
         self.result_tree.setAlternatingRowColors(True)
-        self.result_tree.setMinimumHeight(150)
+        self.result_tree.setMinimumHeight(140)
         header = self.result_tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -841,6 +841,7 @@ class ThumbnailPage(QWidget):
         form.setLabelAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
+        form.setVerticalSpacing(4)
 
     @staticmethod
     def _configure_combo(combo: QComboBox) -> None:

@@ -135,17 +135,17 @@ POSITION_LABELS = {
 EDIT_STYLE = INPUT_CONTROL_STYLE + """
 QPlainTextEdit {
     background: #dce5ef; color: #182230; border: 1px solid #6f8094;
-    border-radius: 6px; padding: 7px; selection-background-color: #315fbd;
+    border-radius: 6px; padding: 5px; selection-background-color: #315fbd;
 }
 QPlainTextEdit:hover { background: #cfdeec; border-color: #405b79; }
-QPlainTextEdit:focus { background: white; border: 2px solid #2457b2; padding: 6px; }
+QPlainTextEdit:focus { background: white; border: 2px solid #2457b2; padding: 4px; }
 QPlainTextEdit:disabled { background: #f3f4f6; color: #9aa1aa; border-color: #d4d8de; }
-QPushButton { min-height: 30px; background: #f5f7fa; color: #182230;
-    border: 1px solid #7b899a; border-radius: 6px; padding: 5px 10px; }
+QPushButton { min-height: 26px; background: #f5f7fa; color: #182230;
+    border: 1px solid #7b899a; border-radius: 6px; padding: 3px 9px; }
 QPushButton:hover { background: #e5edf6; border-color: #405b79; }
-QPushButton:focus { background: white; border: 2px solid #2457b2; padding: 4px 9px; }
+QPushButton:focus { background: white; border: 2px solid #2457b2; padding: 2px 8px; }
 QPushButton:disabled { background: #f3f4f6; color: #9aa1aa; border-color: #d4d8de; }
-QPushButton#editSave { min-height: 46px; background: #315fbd; color: white;
+QPushButton#editSave { min-height: 40px; background: #315fbd; color: white;
     border-color: #315fbd; border-radius: 8px; font-size: 15px; font-weight: 700; }
 QPushButton#editSave:hover { background: #284fa1; }
 QPushButton#editSave:disabled { background: #d9dee6; color: #8f98a6; border-color: #d9dee6; }
@@ -380,23 +380,23 @@ class CollapsibleSection(QWidget):
         self.toggle.setCheckable(True)
         self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.toggle.setStyleSheet(
-            "QToolButton { text-align: left; font-size: 14px; font-weight: 700; padding: 8px;"
+            "QToolButton { text-align: left; font-size: 14px; font-weight: 700; padding: 6px;"
             "border: 1px solid #c3ceda; background: #e8eef5; color: #182230; border-radius: 6px; }"
             "QToolButton:hover { background: #dbe6f1; border-color: #405b79; }"
-            "QToolButton:focus { border: 2px solid #2457b2; padding: 7px; }"
+            "QToolButton:focus { border: 2px solid #2457b2; padding: 5px; }"
             "QToolButton:disabled { background: #f3f4f6; color: #9aa1aa; border-color: #d4d8de; }"
         )
         self.description = QLabel(description)
         self.description.setWordWrap(True)
-        self.description.setStyleSheet("color: #667085; padding: 0 8px 2px 24px;")
+        self.description.setStyleSheet("color: #667085; padding: 0 8px 1px 24px;")
         self.content = content
         self.content.setMinimumWidth(0)
         self.content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.content.setProperty("editAccordionContent", True)
         self.content.setStyleSheet(
-            "QPushButton { min-height: 20px; padding: 4px 7px; }"
-            "QPushButton:focus { padding: 3px 6px; }"
-            "QComboBox, QSpinBox { min-height: 24px; padding-top: 2px; padding-bottom: 2px; }"
+            "QPushButton { min-height: 22px; padding: 2px 6px; }"
+            "QPushButton:focus { padding: 1px 5px; }"
+            "QComboBox, QSpinBox { min-height: 22px; padding-top: 2px; padding-bottom: 2px; }"
         )
         self.toggle.toggled.connect(self.set_expanded)
         layout.addWidget(self.toggle)
@@ -1257,8 +1257,8 @@ class QuickEditPage(QWidget):
         left.setMinimumWidth(0)
         left.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         ll = QVBoxLayout(left)
-        ll.setContentsMargins(4, 8, 4, 8)
-        ll.setSpacing(3)
+        ll.setContentsMargins(4, 6, 4, 6)
+        ll.setSpacing(2)
         heading = QLabel("何をしますか？")
         heading.setStyleSheet("font-size: 18px; font-weight: 700; color: #182230;")
         ll.addWidget(heading)
@@ -1312,7 +1312,7 @@ class QuickEditPage(QWidget):
         self._configure_form(text_form)
         self.text_edit = IMEPlainTextEdit()
         self.text_edit.setPlaceholderText("例：おはよう")
-        self.text_edit.setFixedHeight(72)
+        self.text_edit.setFixedHeight(64)
         self.font_combo = FontPickerButton(self.font_catalog)
         self._select_default_font()
         self.font_size_spin = self._spin(8, 500, 64, " px")
@@ -1388,7 +1388,7 @@ class QuickEditPage(QWidget):
             (self.hand_eraser_button, HandTool.ERASER, "手書き部分だけを消します"),
         ):
             button.setCheckable(True)
-            button.setMinimumHeight(30)
+            button.setMinimumHeight(28)
             button.setMinimumWidth(0)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             button.setToolTip(tooltip)
@@ -1414,7 +1414,7 @@ class QuickEditPage(QWidget):
         self.hand_clear_button.setToolTip("手書きをすべて消す")
         self.hand_clear_button.setAccessibleName("手書きレイヤーをすべて消す")
         self.hand_clear_button.setMinimumWidth(0)
-        self.hand_clear_button.setMinimumHeight(30)
+        self.hand_clear_button.setMinimumHeight(28)
         self.hand_clear_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.hand_clear_button.clicked.connect(self.clear_hand_draw)
         hand_mode_row.addWidget(self.hand_visible_check)
@@ -1567,7 +1567,7 @@ class QuickEditPage(QWidget):
         self.sticker_prereq_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.sticker_prereq_button.setToolTip("背景を透明にする設定へ移動します")
         self.sticker_prereq_button.setAccessibleName("背景を透明にする設定を開く")
-        self.sticker_prereq_button.setMinimumHeight(30)
+        self.sticker_prereq_button.setMinimumHeight(28)
         self.sticker_prereq_button.setStyleSheet(
             "QToolButton { color: #2457b2; background: transparent; border: 0; "
             "padding: 4px 2px; text-align: left; font-weight: 600; }"
@@ -1734,19 +1734,19 @@ class QuickEditPage(QWidget):
         self.palette_open_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.palette_open_button.setToolTip("ドット絵画面へ移動します")
         self.palette_open_button.setAccessibleName("ドット絵を開く")
-        self.palette_open_button.setMinimumHeight(30)
+        self.palette_open_button.setMinimumHeight(28)
         self.palette_open_button.setMinimumWidth(0)
         self.palette_open_button.setMaximumWidth(90)
         self.palette_open_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.palette_open_button.clicked.connect(self.open_pixel_tab)
         palette_actions_row.addWidget(self.palette_open_button, 1)
         self.palette_send_button.setStyleSheet(
-            "QPushButton { font-size: 11px; padding: 3px 2px; min-height: 28px; }"
-            "QPushButton:focus { padding: 2px 1px; }"
+            "QPushButton { font-size: 11px; padding: 2px; min-height: 24px; }"
+            "QPushButton:focus { padding: 1px; }"
         )
         self.palette_open_button.setStyleSheet(
             "QToolButton { color: #2457b2; background: transparent; border: 0; "
-            "font-size: 11px; padding: 4px 2px; font-weight: 600; }"
+            "font-size: 11px; padding: 3px 2px; font-weight: 600; }"
             "QToolButton:hover { color: #173a82; text-decoration: underline; }"
             "QToolButton:focus { border: 1px solid #2457b2; border-radius: 4px; }"
         )
@@ -1766,7 +1766,7 @@ class QuickEditPage(QWidget):
 
         center = QWidget()
         cl = QVBoxLayout(center)
-        cl.setContentsMargins(8, 12, 8, 12)
+        cl.setContentsMargins(8, 8, 8, 8)
         preview_head = QHBoxLayout()
         title = QLabel("プレビュー")
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
@@ -1816,7 +1816,7 @@ class QuickEditPage(QWidget):
             button.setText(text)
             button.setToolTip(tooltip)
             button.setAccessibleName(accessible_name)
-            button.setFixedSize(34, 30)
+            button.setFixedSize(34, 28)
             button.setStyleSheet(
                 "QToolButton { background: #e8eef5; color: #182230; border: 1px solid #9aabba; "
                 "border-radius: 6px; font-size: 18px; font-weight: 700; padding: 0; }"
@@ -1837,19 +1837,24 @@ class QuickEditPage(QWidget):
         cl.addWidget(self.preview_status)
         splitter.addWidget(center)
 
+        self.save_scroll = QScrollArea()
+        self.save_scroll.setObjectName("editSaveScroll")
+        self.save_scroll.setWidgetResizable(True)
+        self.save_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.save_scroll.setMinimumWidth(220)
+        self.save_scroll.setMaximumWidth(360)
         right = QWidget()
         right.setObjectName("editSavePanel")
         self.save_panel = right
-        right.setMinimumWidth(220)
-        right.setMaximumWidth(360)
+        right.setMinimumWidth(0)
         rl = QVBoxLayout(right)
-        rl.setContentsMargins(8, 12, 12, 12)
+        rl.setContentsMargins(8, 8, 10, 8)
         info_title = QLabel("画像情報 / 保存")
         info_title.setStyleSheet("font-size: 18px; font-weight: 700;")
         rl.addWidget(info_title)
         self.original_info = QLabel("元画像\n画像を読み込んでください")
         self.output_info = QLabel("加工後\n—")
-        info_style = "padding: 10px; background: #f4f6f8; border: 1px solid #d7dde5; border-radius: 8px; color: #273142;"
+        info_style = "padding: 8px; background: #f4f6f8; border: 1px solid #d7dde5; border-radius: 8px; color: #273142;"
         for label in (self.original_info, self.output_info):
             label.setWordWrap(True)
             label.setStyleSheet(info_style)
@@ -1910,7 +1915,7 @@ class QuickEditPage(QWidget):
         rl.addWidget(self.result_label)
         self.saved_box = QWidget()
         saved_layout = QVBoxLayout(self.saved_box)
-        saved_layout.setContentsMargins(0, 4, 0, 0)
+        saved_layout.setContentsMargins(0, 2, 0, 0)
         saved_layout.setSpacing(4)
         self.saved_filename = ElidedPathLabel()
         self.saved_filename.setObjectName("editSavedFilename")
@@ -1939,7 +1944,8 @@ class QuickEditPage(QWidget):
         self.saved_box.hide()
         rl.addWidget(self.saved_box)
         rl.addStretch()
-        splitter.addWidget(right)
+        self.save_scroll.setWidget(right)
+        splitter.addWidget(self.save_scroll)
 
         splitter.setStretchFactor(0, 25)
         splitter.setStretchFactor(1, 50)
@@ -3432,7 +3438,7 @@ class QuickEditPage(QWidget):
             background = color.name()
         button.setText(display)
         button.setMinimumWidth(0)
-        button.setMinimumHeight(30)
+        button.setMinimumHeight(28)
         button.setMaximumHeight(36)
         button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         purpose = button.property("colorPurpose")

@@ -40,14 +40,14 @@ STATUS_TEXT = {
 }
 UPSCALE_STYLE = INPUT_CONTROL_STYLE + """
 QGroupBox { font-size: 14px; font-weight: 700; border: 1px solid #d7dde5;
- border-radius: 8px; margin-top: 12px; padding: 12px 8px 8px; background: #fbfcfd; }
+ border-radius: 8px; margin-top: 9px; padding: 8px 7px 6px; background: #fbfcfd; }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #182230; }
-QPushButton { min-height: 30px; background: #f5f7fa; color: #182230;
- border: 1px solid #7b899a; border-radius: 6px; padding: 5px 10px; }
+QPushButton { min-height: 26px; background: #f5f7fa; color: #182230;
+ border: 1px solid #7b899a; border-radius: 6px; padding: 3px 9px; }
 QPushButton:hover { background: #e5edf6; border-color: #405b79; }
-QPushButton:focus { background: white; border: 2px solid #2457b2; padding: 4px 9px; }
+QPushButton:focus { background: white; border: 2px solid #2457b2; padding: 2px 8px; }
 QPushButton:disabled { background: #f3f4f6; color: #9aa1aa; border-color: #d4d8de; }
-QRadioButton#scaleOption { min-height: 42px; min-width: 0; padding: 7px 4px;
+QRadioButton#scaleOption { min-height: 36px; min-width: 0; padding: 4px;
  background-color: #e8eef5; color: #243447; border: 2px solid #8da0b5;
  border-radius: 8px; font-size: 16px; font-weight: 600; }
 QRadioButton#scaleOption::indicator { width: 0; height: 0; }
@@ -56,12 +56,12 @@ QRadioButton#scaleOption:checked { background-color: #315fbd; color: #ffffff;
  border-color: #174a9c; font-weight: 700; }
 QRadioButton#scaleOption:focus { border-color: #102f6b; }
 QRadioButton#scaleOption:disabled { background-color: #f3f4f6; color: #9aa1aa; border-color: #d4d8de; }
-QPushButton#upscaleStart { min-height: 46px; background: #315fbd; color: white;
+QPushButton#upscaleStart { min-height: 40px; background: #315fbd; color: white;
  border: 1px solid #315fbd; border-radius: 8px; font-size: 15px; font-weight: 700; }
 QPushButton#upscaleStart:hover { background: #284fa1; }
 QPushButton#upscaleStart:disabled { background: #d9dee6; color: #8f98a6; border-color: #d9dee6; }
 QTreeWidget#upscaleQueue { background: white; border: 1px solid #aab4c1; border-radius: 7px; }
-QTreeWidget#upscaleQueue::item { min-height: 29px; }
+QTreeWidget#upscaleQueue::item { min-height: 27px; }
 QTreeWidget#upscaleQueue::item:selected { background: #dce9ff; color: #172b4d; }
 """
 
@@ -304,7 +304,7 @@ class UpscalePage(QWidget):
 
         left = QWidget()
         left.setMinimumWidth(210); left.setMaximumWidth(330)
-        ll = QVBoxLayout(left); ll.setContentsMargins(12, 12, 8, 12)
+        ll = QVBoxLayout(left); ll.setContentsMargins(8, 8, 6, 8); ll.setSpacing(5)
         heading = QLabel("高画質化設定")
         heading.setStyleSheet("font-size: 18px; font-weight: 700;")
         ll.addWidget(heading)
@@ -322,7 +322,7 @@ class UpscalePage(QWidget):
         scale_box = QGroupBox("拡大倍率")
         scale_box.setMinimumWidth(0)
         scale_layout = QHBoxLayout(scale_box)
-        scale_layout.setContentsMargins(6, 6, 6, 6)
+        scale_layout.setContentsMargins(4, 4, 4, 4)
         scale_layout.setSpacing(4)
         self.scale_2 = QRadioButton("2倍"); self.scale_4 = QRadioButton("4倍")
         for scale_button in (self.scale_2, self.scale_4):
@@ -351,7 +351,7 @@ class UpscalePage(QWidget):
         self.cancel_button = QPushButton("キャンセル"); self.cancel_button.hide(); self.cancel_button.clicked.connect(self.cancel)
         ll.addWidget(self.start_button); ll.addWidget(self.cancel_button); ll.addStretch(); splitter.addWidget(left)
 
-        center = QWidget(); cl = QVBoxLayout(center); cl.setContentsMargins(8, 12, 8, 12)
+        center = QWidget(); cl = QVBoxLayout(center); cl.setContentsMargins(8, 8, 8, 8)
         preview_head = QHBoxLayout(); preview_head.addWidget(QLabel("プレビュー")); preview_head.addStretch()
         self.before_button = QPushButton("元画像"); self.after_button = QPushButton("高画質化後"); self.after_button.setEnabled(False)
         self.fit_button = QPushButton("全体表示"); self.actual_button = QPushButton("100%")
@@ -365,7 +365,7 @@ class UpscalePage(QWidget):
         self.drop_zone.choose_requested.connect(self.choose_images); self.drop_zone.paths_dropped.connect(self.load_paths)
         cl.addWidget(self.drop_zone, 1); splitter.addWidget(center)
         right = QWidget(); right.setMinimumWidth(220); right.setMaximumWidth(430)
-        rl = QVBoxLayout(right); rl.setContentsMargins(8, 12, 12, 12)
+        rl = QVBoxLayout(right); rl.setContentsMargins(8, 8, 10, 8); rl.setSpacing(5)
         queue_head = QHBoxLayout()
         self.queue_title = QLabel("高画質化する画像　0枚")
         self.queue_title.setStyleSheet("font-size: 17px; font-weight: 700;")
@@ -396,7 +396,7 @@ class UpscalePage(QWidget):
 
         self.original_info = QLabel("元画像\n画像を読み込んでください")
         self.output_info = QLabel("高画質化後\n—")
-        info_style = "padding: 9px; background: #f4f6f8; border: 1px solid #d7dde5; border-radius: 8px; color: #273142;"
+        info_style = "padding: 7px; background: #f4f6f8; border: 1px solid #d7dde5; border-radius: 8px; color: #273142;"
         for label in (self.original_info, self.output_info):
             label.setWordWrap(True); label.setStyleSheet(info_style); rl.addWidget(label)
         self.engine_label = QLabel(); self.engine_label.setWordWrap(True); rl.addWidget(self.engine_label)
@@ -405,7 +405,7 @@ class UpscalePage(QWidget):
         rl.addWidget(self.progress_label); rl.addWidget(self.progress)
         self.result_label = QLabel(); self.result_label.setWordWrap(True); rl.addWidget(self.result_label)
 
-        self.saved_box = QWidget(); saved = QVBoxLayout(self.saved_box); saved.setContentsMargins(0, 6, 0, 0)
+        self.saved_box = QWidget(); saved = QVBoxLayout(self.saved_box); saved.setContentsMargins(0, 3, 0, 0)
         saved.addWidget(QLabel("保存先")); self.saved_path = ElidedPathLabel(); saved.addWidget(self.saved_path)
         self.open_folder_button = QPushButton("保存先を開く"); self.open_folder_button.clicked.connect(self.open_saved_folder)
         saved.addWidget(self.open_folder_button); self.saved_box.hide(); rl.addWidget(self.saved_box)

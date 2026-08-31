@@ -6,3 +6,10 @@
 - Splitting occurs after the Quick tab's existing transform/explicit resize settings and before per-panel encoding. No split-only resize or alternate format path is introduced.
 - The existing batch worker and destination/format settings are reused. One source failure does not stop later sources, and a partially written panel group is rolled back.
 - Preview guides are a separate graphics overlay. The boundary function can later be replaced by custom positions without changing image encoding or export naming.
+
+## Vertical density rules
+
+- Shared editable controls target a 34 px logical height; auxiliary compact actions may use 28 px when their font still has at least 10 px of vertical allowance.
+- Primary actions remain visually larger: Quick save is 40 px and Edit/Upscale/Thumbnail execution buttons are 48–50 px.
+- The Edit save inspector is vertically scrollable at short window heights and has no horizontal scrollbar; at the normal 720 px window height its content fits without vertical scrolling.
+- Density is reduced through padding, margins, and spacing rather than smaller Japanese fonts.

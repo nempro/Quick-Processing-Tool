@@ -406,8 +406,8 @@ class CollapsibleSection(QWidget):
     def __init__(self, title: str, description: str, content: QWidget, expanded: bool = False) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 8)
-        layout.setSpacing(6)
+        layout.setContentsMargins(0, 0, 0, 4)
+        layout.setSpacing(3)
 
         self.toggle = QToolButton()
         self.toggle.setText(title)
@@ -419,7 +419,7 @@ class CollapsibleSection(QWidget):
         )
         self.toggle.setStyleSheet(
             "QToolButton { text-align: left; font-size: 15px; font-weight: 700;"
-            "padding: 10px 8px; border: 1px solid transparent;"
+            "padding: 7px 7px; border: 1px solid transparent;"
             "background: #eef2f7; border-radius: 8px; color: #182230; }"
             "QToolButton:hover { background: #e4eaf2; }"
             "QToolButton[expanded=\"true\"] { background: #e8f1ff; color: #174ea6;"
@@ -428,7 +428,7 @@ class CollapsibleSection(QWidget):
 
         self.description = QLabel(description)
         self.description.setWordWrap(True)
-        self.description.setStyleSheet("color: #667085; padding: 0 10px 4px 28px;")
+        self.description.setStyleSheet("color: #667085; padding: 0 8px 2px 26px;")
         self.content = content
         self.content.setVisible(expanded)
         self.toggle.toggled.connect(self._set_expanded)
@@ -761,12 +761,12 @@ class MainWindow(QMainWindow):
         content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout = QVBoxLayout(content)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        layout.setSpacing(10)
+        layout.setSpacing(6)
 
         heading = QLabel("何をしたいですか？")
-        heading.setStyleSheet("font-size: 20px; font-weight: 750; color: #182230;")
+        heading.setStyleSheet("font-size: 19px; font-weight: 750; color: #182230;")
         guidance = QLabel("必要な項目だけ開いて設定できます")
-        guidance.setStyleSheet("color: #667085; padding-bottom: 4px;")
+        guidance.setStyleSheet("color: #667085; padding-bottom: 2px;")
         layout.addWidget(heading)
         layout.addWidget(guidance)
 
@@ -876,7 +876,7 @@ class MainWindow(QMainWindow):
 
         transform_content = QWidget()
         transform_layout = QVBoxLayout(transform_content)
-        transform_layout.setContentsMargins(0, 4, 0, 0)
+        transform_layout.setContentsMargins(0, 2, 0, 0)
         for transform in Transform:
             button = QPushButton(TRANSFORM_LABELS[transform])
             button.clicked.connect(
@@ -885,7 +885,7 @@ class MainWindow(QMainWindow):
             transform_layout.addWidget(button)
         self.transform_label = QLabel("変更なし")
         self.transform_label.setWordWrap(True)
-        self.transform_label.setStyleSheet("color: #667085; padding: 6px;")
+        self.transform_label.setStyleSheet("color: #667085; padding: 4px;")
         transform_layout.addWidget(self.transform_label)
         transform_section = CollapsibleSection(
             "回転・反転する",
@@ -897,8 +897,8 @@ class MainWindow(QMainWindow):
 
         split_content = QWidget()
         split_layout = QVBoxLayout(split_content)
-        split_layout.setContentsMargins(0, 4, 0, 0)
-        split_layout.setSpacing(8)
+        split_layout.setContentsMargins(0, 2, 0, 0)
+        split_layout.setSpacing(5)
         self.split_enable_check = QCheckBox("画像を分割して保存")
         self.split_enable_check.setToolTip(
             "元画像全体を欠けなく均等に分け、連番ファイルとして保存します"
@@ -923,7 +923,7 @@ class MainWindow(QMainWindow):
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             button.setToolTip(tooltip)
             button.setStyleSheet(
-                "QPushButton { padding: 7px 4px; }"
+                "QPushButton { padding: 5px 4px; }"
                 "QPushButton:checked { background: #dbeafe; color: #174ea6;"
                 "border: 2px solid #315fbd; font-weight: 700; }"
             )
@@ -947,7 +947,7 @@ class MainWindow(QMainWindow):
             button.setMinimumWidth(0)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             button.setStyleSheet(
-                "QPushButton { padding: 7px 2px; }"
+                "QPushButton { padding: 5px 2px; }"
                 "QPushButton:checked { background: #dbeafe; color: #174ea6;"
                 "border: 2px solid #315fbd; font-weight: 700; }"
             )
@@ -960,7 +960,7 @@ class MainWindow(QMainWindow):
 
         self.split_summary = QLabel("4分割 · 左から右")
         self.split_summary.setWordWrap(True)
-        self.split_summary.setStyleSheet("color: #667085; padding: 4px 2px;")
+        self.split_summary.setStyleSheet("color: #667085; padding: 2px;")
         split_layout.addWidget(self.split_summary)
         split_section = CollapsibleSection(
             "画像分割",
@@ -1043,15 +1043,15 @@ class MainWindow(QMainWindow):
             "border-top: 1px solid #cbd5e1; padding-top: 2px; }"
             "QPushButton#quick_save_button { background: #315fbd; color: white;"
             "border: 1px solid #244b99; border-radius: 8px; font-weight: 700;"
-            "padding: 10px 12px; min-height: 22px; }"
+            "padding: 8px 12px; min-height: 22px; }"
             "QPushButton#quick_save_button:hover { background: #284fa1; }"
             "QPushButton#quick_save_button:pressed { background: #1f3f82; }"
             "QPushButton#quick_save_button:disabled { background: #e5e7eb;"
             "color: #8a94a3; border-color: #d1d5db; }"
         )
         footer_layout = QVBoxLayout(self.quick_settings_footer)
-        footer_layout.setContentsMargins(10, 8, 10, 10)
-        footer_layout.setSpacing(5)
+        footer_layout.setContentsMargins(8, 6, 8, 8)
+        footer_layout.setSpacing(4)
         self.quick_save_hint = QLabel("画像を開くと保存できます")
         self.quick_save_hint.setObjectName("quick_save_hint")
         self.quick_save_hint.setWordWrap(True)

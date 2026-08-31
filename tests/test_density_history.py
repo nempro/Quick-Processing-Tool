@@ -283,7 +283,7 @@ def test_expanded_edit_material_stays_inside_viewport_with_eight_rows(
         assert page.palette_send_button.width() > 0
         assert page.palette_open_button.width() > 0
         assert page.palette_open_button.width() <= 90
-        assert page.palette_open_button.height() >= 30
+        assert page.palette_open_button.height() >= 28
         assert all(button.height() <= 32 for button in page._palette_reset_buttons)
         assert page.drop_zone.preview.width() >= 300
     finally:
@@ -446,7 +446,7 @@ def test_compact_edit_inspector_states_reduce_height_without_overflow(
             page.hand_clear_button,
         ):
             assert widget.isVisibleTo(page.settings_scroll.widget())
-            assert widget.height() >= 30, (widget.text(), widget.height())
+            assert widget.height() >= 28, (widget.text(), widget.height())
         assert page.hand_visible_check.isVisibleTo(page.settings_scroll.widget())
         mode_label = next(
             label
