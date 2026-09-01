@@ -23,6 +23,7 @@ from quick_processing_tool.image_splitting import (
 from quick_processing_tool.models import OutputFormat, ProcessingOptions
 from quick_processing_tool.naming import unique_split_output_paths
 from quick_processing_tool.pipeline import process_image_splits
+import quick_processing_tool.ui as ui_module
 from quick_processing_tool.ui import MainWindow, PreviewCanvas, ProcessingWorker
 
 
@@ -234,6 +235,181 @@ def test_batch_worker_saves_every_panel_in_natural_order(tmp_path: Path) -> None
         "B_02.png",
         "B_03.png",
         "B_04.png",
+    ]
+
+
+def test_split_batch_mixed_resolution_missing_source_continues_with_custom_ratios(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "moved-source.png"
+    Image.new("RGBA", (401, 83), (30, 80, 200, 120)).save(missing)
+    source = tmp_path / "upscaled-result.png"
+    original = Image.new("RGBA", (1003, 127), (120, 40, 220, 0))
+    original.putdata(
+        [
+            (x % 256, y % 256, (x + y) % 256, (x * 5 + y * 3) % 256)
+            for y in range(original.height)
+            for x in range(original.width)
+        ]
+    )
+    original.save(source)
+    missing.unlink()
+
+    output = tmp_path / "out"
+    statuses: list[tuple[int, str, str]] = []
+    summaries: list[tuple[int, int]] = []
+    output_counts: list[int] = []
+    worker = ProcessingWorker(
+        [missing, source],
+        ProcessingOptions(output_format=OutputFormat.PNG),
+        False,
+        "Custom folder",
+        output,
+        False,
+        split_options=ImageSplitOptions(
+            True,
+            SplitDirection.VERTICAL,
+            3,
+            (0.23, 0.61),
+        ),
+    )
+    worker.file_status.connect(lambda *args: statuses.append(args))
+    worker.finished.connect(lambda *args: summaries.append(args))
+    worker.outputs_saved.connect(output_counts.append)
+
+    worker.run()
+
+    assert summaries == [(1, 1)]
+    assert output_counts == [3]
+    assert any(row == 0 and status == "Missing" for row, status, _ in statuses)
+    assert [path.name for path in sorted(output.glob("*.png"))] == [
+        "upscaled-result_01.png",
+        "upscaled-result_02.png",
+        "upscaled-result_03.png",
+    ]
+    panels = [Image.open(path).convert("RGBA") for path in sorted(output.glob("*.png"))]
+    try:
+        rejoined = Image.new("RGBA", original.size)
+        offset = 0
+        for panel in panels:
+            rejoined.paste(panel, (offset, 0))
+            offset += panel.width
+        assert offset == original.width
+        assert rejoined.tobytes() == original.tobytes()
+    finally:
+        for panel in panels:
+            panel.close()
+
+
+def test_split_batch_mixed_resolution_custom_ratios_saves_all_sources(
+    tmp_path: Path,
+) -> None:
+    originals: dict[str, Image.Image] = {}
+    sources: list[Path] = []
+    for name, size in (("original", (401, 83)), ("upscaled-result", (1003, 127))):
+        image = Image.new("RGBA", size)
+        image.putdata(
+            [
+                (x % 256, y % 256, (x + y) % 256, (x * 5 + y * 3) % 256)
+                for y in range(image.height)
+                for x in range(image.width)
+            ]
+        )
+        path = tmp_path / f"{name}.png"
+        image.save(path)
+        originals[name] = image
+        sources.append(path)
+
+    output = tmp_path / "out"
+    summaries: list[tuple[int, int]] = []
+    output_counts: list[int] = []
+    worker = ProcessingWorker(
+        sources,
+        ProcessingOptions(output_format=OutputFormat.PNG),
+        False,
+        "Custom folder",
+        output,
+        False,
+        split_options=ImageSplitOptions(
+            True,
+            SplitDirection.VERTICAL,
+            3,
+            (0.23, 0.61),
+        ),
+    )
+    worker.finished.connect(lambda *args: summaries.append(args))
+    worker.outputs_saved.connect(output_counts.append)
+
+    worker.run()
+
+    assert summaries == [(2, 0)]
+    assert output_counts == [6]
+    assert [path.name for path in sorted(output.glob("*.png"))] == [
+        "original_01.png",
+        "original_02.png",
+        "original_03.png",
+        "upscaled-result_01.png",
+        "upscaled-result_02.png",
+        "upscaled-result_03.png",
+    ]
+    for name, original in originals.items():
+        panels = [
+            Image.open(output / f"{name}_{index:02d}.png").convert("RGBA")
+            for index in range(1, 4)
+        ]
+        try:
+            rejoined = Image.new("RGBA", original.size)
+            offset = 0
+            for panel in panels:
+                rejoined.paste(panel, (offset, 0))
+                offset += panel.width
+            assert offset == original.width
+            assert rejoined.tobytes() == original.tobytes()
+        finally:
+            for panel in panels:
+                panel.close()
+
+
+def test_split_batch_rolls_back_failed_source_and_continues(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    Image.new("RGBA", (120, 40), (10, 20, 30, 140)).save(first)
+    Image.new("RGBA", (120, 40), (40, 50, 60, 200)).save(second)
+    output = tmp_path / "out"
+    original_write = ui_module.write_processed
+    writes = 0
+
+    def fail_once(result, destination, preserve_timestamp) -> None:
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise OSError("simulated write failure")
+        original_write(result, destination, preserve_timestamp)
+
+    monkeypatch.setattr(ui_module, "write_processed", fail_once)
+    summaries: list[tuple[int, int]] = []
+    worker = ProcessingWorker(
+        [first, second],
+        ProcessingOptions(output_format=OutputFormat.PNG),
+        False,
+        "Custom folder",
+        output,
+        False,
+        split_options=ImageSplitOptions(True, SplitDirection.VERTICAL, 3, (0.3, 0.7)),
+    )
+    worker.finished.connect(lambda *args: summaries.append(args))
+
+    worker.run()
+
+    assert summaries == [(1, 1)]
+    assert not list(output.glob("first_*.png"))
+    assert [path.name for path in sorted(output.glob("second_*.png"))] == [
+        "second_01.png",
+        "second_02.png",
+        "second_03.png",
     ]
 
 

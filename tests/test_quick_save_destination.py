@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -127,6 +128,106 @@ def test_total_failure_never_displays_open_folder_as_success(
         window._on_finished(0, 1)
         assert window.quick_save_result_box.isHidden()
         assert not window.quick_open_folder_button.isEnabled()
+    finally:
+        window.close()
+
+
+def test_partial_split_failure_dialog_names_the_source_and_reason(
+    app: QApplication,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, title, text: shown.append((title, text)),
+    )
+    window = MainWindow()
+    try:
+        source = make_source(tmp_path / "00004-257042179.png")
+        window.files = [read_image_info(source)]
+        window._active_split_options = ImageSplitOptions(
+            True,
+            SplitDirection.VERTICAL,
+            3,
+        )
+        window._saved_output_count = 3
+        window._on_file_status(
+            0,
+            "Missing",
+            "元画像が見つかりません。\n\nファイルが移動または削除された可能性があります。",
+        )
+
+        window._on_finished(1, 1)
+
+        assert shown == [
+            (
+                "一部の処理でエラーが発生しました",
+                "一部の画像を保存できませんでした。\n\n"
+                "成功: 1画像 / 3枚\n"
+                "失敗: 1画像\n\n"
+                "失敗:\n"
+                "・00004-257042179.png\n"
+                "  理由: 元画像が見つかりません。 ファイルが移動または削除された可能性があります。",
+            )
+        ]
+    finally:
+        window.close()
+
+
+def test_batch_split_dialog_reports_missing_source_from_worker(
+    app: QApplication,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, title, text: shown.append((title, text)),
+    )
+    missing = make_source(tmp_path / "moved.png")
+    successful = make_source(tmp_path / "upscaled.png", "teal")
+    missing_info = read_image_info(missing)
+    successful_info = read_image_info(successful)
+    missing.unlink()
+
+    window = MainWindow()
+    try:
+        output = tmp_path / "output"
+        window.files = [missing_info, successful_info]
+        window.custom_folder = output
+        window.destination_combo.setCurrentIndex(
+            window.destination_combo.findData("Custom folder")
+        )
+        window.split_enable_check.setChecked(True)
+        window.split_count_buttons[3].click()
+        window._split_boundaries = (0.23, 0.61)
+        window._start_worker(
+            [missing, successful],
+            copy_mode=False,
+            row_indices=[0, 1],
+        )
+        deadline = time.monotonic() + 5.0
+        while window._thread is not None and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+        app.processEvents()
+
+        assert window._thread is None
+        assert len(list(output.glob("upscaled_*.png"))) == 3
+        assert shown == [
+            (
+                "一部の処理でエラーが発生しました",
+                "一部の画像を保存できませんでした。\n\n"
+                "成功: 1画像 / 3枚\n"
+                "失敗: 1画像\n\n"
+                "失敗:\n"
+                "・moved.png\n"
+                "  理由: 元画像が見つかりません。 ファイルが移動または削除された可能性があります。",
+            )
+        ]
     finally:
         window.close()
 

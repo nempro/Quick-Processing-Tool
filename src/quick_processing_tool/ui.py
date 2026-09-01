@@ -1167,6 +1167,7 @@ class MainWindow(QMainWindow):
         self._crop_rect: tuple[float, float, float, float] | None = None
         self._saved_output_count = 0
         self._saved_output_folders: set[Path] = set()
+        self._processing_failures: dict[int, tuple[str, str]] = {}
         self._quick_source_origins: dict[str, str] = {}
         self._quick_preview_thread: QThread | None = None
         self._quick_preview_worker: QuickPreviewWorker | None = None
@@ -2664,6 +2665,7 @@ class MainWindow(QMainWindow):
                 self, "処理中", "現在の処理が終わるまでお待ちください。"
             )
             return
+        self._processing_failures.clear()
         missing = [path for path in paths if not Path(path).is_file()]
         if len(paths) == 1 and missing:
             row = row_indices[0]
@@ -2958,6 +2960,15 @@ class MainWindow(QMainWindow):
             item = self.file_tree.topLevelItem(index)
             item.setText(2, status_label)
             item.setToolTip(2, detail)
+        if status in {"Error", "Missing"}:
+            filename = (
+                self.files[index].path.name
+                if 0 <= index < len(self.files)
+                else f"{index + 1}番目の画像"
+            )
+            self._processing_failures[index] = (filename, detail)
+        elif status in {"Processing", "Done"}:
+            self._processing_failures.pop(index, None)
         self.statusBar().showMessage(detail or status_label)
 
     @Slot(int)
@@ -2985,18 +2996,32 @@ class MainWindow(QMainWindow):
         if failed:
             if split_active:
                 status = f"完了 · {self._saved_output_count}枚保存 · エラー {failed}件"
-                detail = (
-                    f"保存した分割画像: {self._saved_output_count}枚\n"
-                    f"エラー: {failed}件\n"
-                )
+                detail_lines = [
+                    "一部の画像を保存できませんでした。",
+                    "",
+                    f"成功: {succeeded}画像 / {self._saved_output_count}枚",
+                    f"失敗: {failed}画像",
+                ]
             else:
                 status = f"完了 · 成功 {succeeded}件 · エラー {failed}件"
-                detail = f"成功: {succeeded}件\nエラー: {failed}件\n"
+                detail_lines = [
+                    "一部の画像を保存できませんでした。",
+                    "",
+                    f"成功: {succeeded}画像",
+                    f"失敗: {failed}画像",
+                ]
+            if self._processing_failures:
+                detail_lines.extend(("", "失敗:"))
+                for _, (filename, reason) in sorted(self._processing_failures.items()):
+                    concise_reason = " ".join(reason.split()) or "処理に失敗しました。"
+                    detail_lines.extend((f"・{filename}", f"  理由: {concise_reason}"))
+            if len(self._processing_failures) < failed:
+                detail_lines.append("技術的な詳細は一覧のツールチップとログで確認できます。")
             self.statusBar().showMessage(status)
             QMessageBox.warning(
                 self,
                 "一部の処理でエラーが発生しました",
-                detail + "詳細は一覧のツールチップとログを確認してください。",
+                "\n".join(detail_lines),
             )
         elif split_active:
             self.statusBar().showMessage(
