@@ -704,7 +704,10 @@ class ThumbnailPage(QWidget):
         )
         titles_header = QHBoxLayout()
         titles_header.setContentsMargins(0, 0, 0, 0)
-        self.clear_titles_button = QPushButton("入力をクリア")
+        self.clear_titles_button = QPushButton("一覧をクリア")
+        self.clear_titles_button.setToolTip(
+            "入力したタイトルを一覧から外します。生成済みの画像は削除しません"
+        )
         set_operation_role(self.clear_titles_button, "secondary")
         titles_header.addWidget(self.titles_heading, 1)
         titles_header.addWidget(self.clear_titles_button)

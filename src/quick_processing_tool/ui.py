@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from .errors import ProcessingError, UnsupportedImageError
+from .drop_overlay import RoundedDropOverlay
 from .image_workspace import (
     ImageWorkspace,
     MISSING_SOURCE_MESSAGE,
@@ -195,7 +196,7 @@ def compact_folder_path(path: Path, max_chars: int = 38) -> str:
 
 
 class SplitGuideItem(QGraphicsLineItem):
-    """A thin cosmetic guide with a stable, zoom-aware mouse hit area."""
+    """A thin cosmetic guide with a generous, zoom-aware mouse hit area."""
 
     def __init__(self, preview: "PreviewCanvas", index: int) -> None:
         super().__init__()
@@ -212,7 +213,7 @@ class SplitGuideItem(QGraphicsLineItem):
             if self._preview._split_direction is SplitDirection.VERTICAL
             else self._preview.transform().m22()
         )
-        return 12.0 / max(0.01, abs(scale))
+        return 24.0 / max(0.01, abs(scale))
 
     def boundingRect(self) -> QRectF:  # noqa: N802
         # Keep a stable scene-index extent while shape() adapts its hit width
@@ -229,7 +230,8 @@ class SplitGuideItem(QGraphicsLineItem):
         stroker.setWidth(self._hit_width())
         return stroker.createStroke(path)
 
-    def hoverEnterEvent(self, event) -> None:  # noqa: N802
+    def set_interaction_state(self, hovered: bool, dragging: bool) -> None:
+        """Make the selected guide clear without thickening every guide."""
         cursor = (
             Qt.CursorShape.SizeHorCursor
             if self._preview._split_direction is SplitDirection.VERTICAL
@@ -237,31 +239,39 @@ class SplitGuideItem(QGraphicsLineItem):
         )
         self.setCursor(cursor)
         pen = self.pen()
-        pen.setColor(QColor("#ffd966"))
-        pen.setWidthF(3.0)
+        if dragging:
+            pen.setColor(QColor("#fff0a6"))
+            pen.setWidthF(4.0)
+        elif hovered:
+            pen.setColor(QColor("#ffd966"))
+            pen.setWidthF(3.0)
+        else:
+            pen.setColor(QColor("#ffca3a"))
+            pen.setWidthF(2.0)
         self.setPen(pen)
+
+    def hoverEnterEvent(self, event) -> None:  # noqa: N802
+        self._preview._set_hover_split_guide(event.scenePos())
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event) -> None:  # noqa: N802
-        pen = self.pen()
-        pen.setColor(QColor("#ffca3a"))
-        pen.setWidthF(2.0)
-        self.setPen(pen)
+        self._preview._clear_hover_split_guide(self._index)
         super().hoverLeaveEvent(event)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() is Qt.MouseButton.LeftButton:
+            self._preview._begin_split_guide_drag(event.scenePos(), self._index)
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        self._preview._drag_split_guide(self._index, event.scenePos())
+        self._preview._move_split_guide_drag(event.scenePos(), self._index)
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if event.button() is Qt.MouseButton.LeftButton:
-            self._preview._drag_split_guide(self._index, event.scenePos())
+            self._preview._end_split_guide_drag(event.scenePos(), self._index)
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -353,6 +363,97 @@ class PreviewCanvas(QGraphicsView):
             guide.setPen(pen)
             self.scene().addItem(guide)
             self._guide_items.append(guide)
+
+    def _nearest_split_guide_index(self, scene_position) -> int | None:
+        """Return the nearest guide within the 12px on-screen hit radius."""
+        if not self._guide_items:
+            return None
+        axis_point = (
+            scene_position.x()
+            if self._split_direction is SplitDirection.VERTICAL
+            else scene_position.y()
+        )
+        positions = [
+            guide.line().x1()
+            if self._split_direction is SplitDirection.VERTICAL
+            else guide.line().y1()
+            for guide in self._guide_items
+        ]
+        index, scene_distance = min(
+            enumerate(abs(axis_point - position) for position in positions),
+            key=lambda pair: pair[1],
+        )
+        scale = (
+            self.transform().m11()
+            if self._split_direction is SplitDirection.VERTICAL
+            else self.transform().m22()
+        )
+        return index if scene_distance * abs(scale) <= 12.0 else None
+
+    def _refresh_split_guide_interaction(self) -> None:
+        for index, guide in enumerate(self._guide_items):
+            guide.set_interaction_state(
+                index == self._hovered_split_guide_index,
+                index == self._dragging_split_guide_index,
+            )
+        if self._hovered_split_guide_index is not None or self._dragging_split_guide_index is not None:
+            cursor = (
+                Qt.CursorShape.SizeHorCursor
+                if self._split_direction is SplitDirection.VERTICAL
+                else Qt.CursorShape.SizeVerCursor
+            )
+            self.viewport().setCursor(cursor)
+        else:
+            self.viewport().unsetCursor()
+
+    def _set_hover_split_guide(self, scene_position) -> None:
+        self._hovered_split_guide_index = self._nearest_split_guide_index(scene_position)
+        self._refresh_split_guide_interaction()
+
+    def _clear_hover_split_guide(self, index: int) -> None:
+        if self._hovered_split_guide_index == index and self._dragging_split_guide_index is None:
+            self._hovered_split_guide_index = None
+            self._refresh_split_guide_interaction()
+
+    def _begin_split_guide_drag(self, scene_position, fallback_index: int) -> None:
+        nearest = self._nearest_split_guide_index(scene_position)
+        self._dragging_split_guide_index = nearest if nearest is not None else fallback_index
+        self._hovered_split_guide_index = self._dragging_split_guide_index
+        self._refresh_split_guide_interaction()
+
+    def _move_split_guide_drag(self, scene_position, fallback_index: int) -> None:
+        index = self._dragging_split_guide_index
+        if index is None:
+            self._begin_split_guide_drag(scene_position, fallback_index)
+            index = self._dragging_split_guide_index
+        if index is not None:
+            self._drag_split_guide(index, scene_position)
+
+    def _end_split_guide_drag(self, scene_position, fallback_index: int) -> None:
+        self._move_split_guide_drag(scene_position, fallback_index)
+        self._dragging_split_guide_index = None
+        self._hovered_split_guide_index = self._nearest_split_guide_index(scene_position)
+        self._refresh_split_guide_interaction()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._split_enabled and self._dragging_split_guide_index is None:
+            self._set_hover_split_guide(self.mapToScene(event.position().toPoint()))
+        super().mouseMoveEvent(event)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if watched is self.viewport():
+            if event.type() is QEvent.Type.MouseMove and self._split_enabled:
+                self._set_hover_split_guide(self.mapToScene(event.position().toPoint()))
+            elif event.type() is QEvent.Type.Leave and self._dragging_split_guide_index is None:
+                self._hovered_split_guide_index = None
+                self._refresh_split_guide_interaction()
+        return super().eventFilter(watched, event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        if self._dragging_split_guide_index is None:
+            self._hovered_split_guide_index = None
+            self._refresh_split_guide_interaction()
+        super().leaveEvent(event)
 
     def _drag_split_guide(self, index: int, scene_position) -> None:
         pixmap = self._image_item.pixmap()
@@ -575,10 +676,7 @@ class DropZone(QWidget):
             self.drop_subtitle.setText("PNG / JPG / WebP・複数枚まとめて追加できます")
             self.choose_button.hide()
             self.drop_icon.setText("↓")
-            self.overlay.setStyleSheet(
-                "QFrame#dropOverlay { border: 3px dashed #315fbd; border-radius: 16px;"
-                "background: #eaf1ff; }"
-            )
+            self.overlay.set_drop_active(True)
             self.overlay.show()
             self.overlay.raise_()
             return
@@ -587,10 +685,7 @@ class DropZone(QWidget):
         self.drop_subtitle.setText("PNG / JPG / WebP\n複数枚まとめて追加できます")
         self.choose_button.show()
         self.drop_icon.setText("＋")
-        self.overlay.setStyleSheet(
-            "QFrame#dropOverlay { border: 2px dashed #8f9bad; border-radius: 16px;"
-            "background: #f7f9fc; }"
-        )
+        self.overlay.set_drop_active(False)
         if self._has_image:
             self._stack.setCurrentWidget(self.preview)
             self.overlay.hide()
@@ -884,6 +979,7 @@ class MainWindow(QMainWindow):
         self.edit_page.processing_changed.connect(self._edit_processing_changed)
         self.edit_page.palette_handoff_requested.connect(self._handoff_palette_to_pixel)
         self.edit_page.palette_open_requested.connect(self._open_pixel_tab_from_edit)
+        self.edit_page.result_handoff_requested.connect(self._handoff_image_result)
         self.image_edit_tab = self.navigation.addTab(self.edit_page, "画像加工")
         self.sound_effect_page = SoundEffectPage()
         self.sound_effect_tab = self.navigation.addTab(self.sound_effect_page, "擬音素材")
@@ -1408,18 +1504,24 @@ class MainWindow(QMainWindow):
         if not section.toggle.isChecked() or section.content.isHidden():
             return
         viewport = self.quick_settings_scroll.viewport()
+        header_top = section.toggle.mapTo(viewport, QPoint(0, 0)).y()
         content_top = section.content.mapTo(viewport, QPoint(0, 0)).y()
         desired_height = min(section.content.height(), 76)
         content_bottom = content_top + desired_height
         margin = 8
         delta = 0
-        if content_top < margin:
-            delta = content_top - margin
+        if header_top < margin:
+            delta = header_top - margin
         elif content_bottom > viewport.height() - margin:
             delta = content_bottom - (viewport.height() - margin)
+            delta = min(delta, header_top - margin)
         if delta:
             bar = self.quick_settings_scroll.verticalScrollBar()
             bar.setValue(max(bar.minimum(), min(bar.maximum(), bar.value() + delta)))
+
+    def _reset_quick_scroll_position(self) -> None:
+        bar = self.quick_settings_scroll.verticalScrollBar()
+        bar.setValue(bar.minimum())
     @staticmethod
     def _spin(minimum: int, maximum: int, value: int) -> QSpinBox:
         spin = QSpinBox()
@@ -2370,7 +2472,7 @@ class MainWindow(QMainWindow):
     def _handoff_image_result(self, path, target: str) -> None:
         """Route a verified tool result without introducing a workflow engine."""
 
-        if target != "quick_split":
+        if target not in {"quick_split", "upscale"}:
             QMessageBox.warning(self, "画像を渡せません", "指定された移動先は利用できません。")
             return
         if not self._source_change_available():
@@ -2379,6 +2481,14 @@ class MainWindow(QMainWindow):
         result_path = Path(path).resolve()
         if not result_path.is_file():
             QMessageBox.warning(self, "高画質化画像が見つかりません", "保存済みの高画質化画像を確認できませんでした。")
+            return
+
+        if target == "upscale":
+            self.upscale_page.clear_queue()
+            self.set_current_source(result_path)
+            self.upscale_page.load_paths([result_path], update_workspace=False)
+            self.navigation.setCurrentIndex(self.upscale_tab)
+            self.statusBar().showMessage("加工済みの画像を高画質化へ渡しました")
             return
 
         self.navigation.setCurrentIndex(self.quick_tab)
@@ -2418,6 +2528,7 @@ class MainWindow(QMainWindow):
         self.preview_zoom_buttons["全体表示"].setChecked(True)
         self.preview.set_zoom_factor(None)
         self._split_settings_changed()
+        QTimer.singleShot(0, lambda: self._ensure_quick_section_visible(self.split_section))
         self.statusBar().showMessage("高画質化済みの画像を画像分割へ渡しました")
 
     @Slot(bool)

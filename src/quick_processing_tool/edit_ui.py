@@ -92,6 +92,7 @@ from .editing.service import EditProcessingError, SOURCE_FORMATS
 from .naming import EXTENSIONS, KNOWN_IMAGE_EXTENSIONS, normalize_filename_stem
 from .editing.text import pil_to_qimage
 from .image_workspace import MISSING_SOURCE_MESSAGE, MissingSourceError, SourceImage, require_source_file
+from .drop_overlay import RoundedDropOverlay
 from .source_ui import CurrentSourceCard
 from .ui_styles import (
     INPUT_CONTROL_STYLE,
@@ -1005,7 +1006,7 @@ class EditDropZone(QWidget):
         self.preview.viewport().setAcceptDrops(True)
         self.preview.viewport().installEventFilter(self)
         self._stack.addWidget(self.preview)
-        self.overlay = QFrame()
+        self.overlay = RoundedDropOverlay()
         self.overlay.setObjectName("editDropOverlay")
         box = QVBoxLayout(self.overlay)
         box.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1039,11 +1040,7 @@ class EditDropZone(QWidget):
         self.overlay.setVisible(active or self._empty)
         self._stack.setCurrentWidget(self.overlay if active or self._empty else self.preview)
         self.title.setText("ここにドロップして画像を読み込み" if active else "画像をここにドロップ")
-        self.overlay.setStyleSheet(
-            "QFrame#editDropOverlay { background: rgba(226,237,255,245); border: 3px dashed #2457b2; border-radius: 12px; }"
-            if active
-            else "QFrame#editDropOverlay { background: #f8fafc; border: 2px dashed #8da2b8; border-radius: 12px; }"
-        )
+        self.overlay.set_drop_active(active)
 
     @staticmethod
     def _path(event) -> Path | None:
@@ -1226,6 +1223,7 @@ class EditPreviewWorker(QObject):
 class QuickEditPage(QWidget):
     processing_changed = Signal(bool)
     source_change_requested = Signal(object)
+    result_handoff_requested = Signal(object, str)
     palette_handoff_requested = Signal(object)
     palette_open_requested = Signal()
 
@@ -1343,17 +1341,23 @@ class QuickEditPage(QWidget):
         self.undo_button = QPushButton("元に戻す")
         self.redo_button = QPushButton("やり直す")
         self.reset_button = QPushButton("加工をリセット")
-        self.clear_all_button = QPushButton("すべてクリア")
-        self.clear_all_button.setToolTip("元画像を残して、画像加工の作業状態を初期化します")
-        for button in (self.undo_button, self.redo_button, self.reset_button, self.clear_all_button):
+        self.clear_all_button = QPushButton("作業をリセット")
+        self.clear_all_button.setToolTip("元画像を残して、加工設定・履歴・保存結果を初期化します")
+        self.clear_image_button = QPushButton("画像をクリア")
+        self.clear_image_button.setToolTip("この画像加工タブから画像を外します。他のツールの現在画像は保持されます")
+        for button in (self.undo_button, self.redo_button, self.reset_button, self.clear_all_button, self.clear_image_button):
             button.setMinimumWidth(0)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.undo_button.clicked.connect(self.undo)
         self.redo_button.clicked.connect(self.redo)
         self.reset_button.clicked.connect(self.reset_edits)
         self.clear_all_button.clicked.connect(self.clear_all)
+        self.clear_image_button.clicked.connect(self.clear_image)
         history_row.addWidget(self.undo_button, 0, 0)
         history_row.addWidget(self.redo_button, 0, 1)
+        history_row.addWidget(self.reset_button, 1, 0)
+        history_row.addWidget(self.clear_all_button, 1, 1)
+        history_row.addWidget(self.clear_image_button, 2, 0, 1, 2)
         ll.addLayout(history_row)
 
         filter_content = QWidget()
@@ -2059,6 +2063,11 @@ class QuickEditPage(QWidget):
         saved_actions.addWidget(self.open_image_button, 1)
         saved_actions.addWidget(self.open_folder_button, 1)
         saved_layout.addLayout(saved_actions)
+        self.edit_upscale_button = QPushButton("高画質化へ")
+        self.edit_upscale_button.setToolTip("保存済みの加工結果を高画質化へ渡します")
+        self.edit_upscale_button.clicked.connect(self.send_result_to_upscale)
+        set_operation_role(self.edit_upscale_button, "secondary")
+        saved_layout.addWidget(self.edit_upscale_button)
         self.saved_box.hide()
         rl.addWidget(self.saved_box)
         rl.addStretch()
@@ -3490,6 +3499,41 @@ class QuickEditPage(QWidget):
         self.update_preview()
 
     @Slot()
+    def clear_image(self) -> None:
+        """Return this page to its empty state without altering shared Source."""
+        if self._thread is not None or self._palette_thread is not None:
+            return
+        self._cancel_hand_stroke()
+        self.finish_ime(clear_focus=True)
+        self.cancel_palette_extraction()
+        self._preview_timer.stop()
+        self._preview_generation += 1
+        self._preview_request_id += 1
+        self._preview_pending_request = None
+        self._preview_active_result = None
+        self.preview_activity.invalidate()
+        self._preview_activity_token = None
+        self.source_path = None
+        self._source_size = (0, 0)
+        self._source_format = ""
+        self._source_size_bytes = 0
+        self._source_has_alpha = False
+        self._source_alpha_min = 255
+        self._last_output = None
+        self._history = [self.settings()]
+        self._history_index = 0
+        self.drop_zone.preview.clear_image()
+        self.drop_zone.set_empty(True)
+        self.current_source_card.set_source(None)
+        self.original_info.setText("元画像\n画像を読み込んでください")
+        self.output_info.setText("加工後（見込み）\n—")
+        self.saved_box.hide()
+        self.saved_filename.set_value("")
+        self.saved_path.set_value("")
+        self.result_label.clear()
+        self._update_actions()
+
+    @Slot()
     def show_original(self) -> None:
         if self.source_path:
             self._cancel_hand_stroke()
@@ -3906,12 +3950,14 @@ class QuickEditPage(QWidget):
             loaded and idle and self.settings() != self._default_settings()
         )
         self.clear_all_button.setEnabled(loaded and idle)
+        self.clear_image_button.setEnabled(loaded and idle)
         self.save_button.setEnabled(save_ready)
         self.folder_button.setEnabled(loaded and idle)
         saved_file_ready = idle and self._last_output is not None and self._last_output.is_file()
         saved_folder_ready = idle and self._last_output is not None and self._last_output.parent.is_dir()
         self.open_image_button.setEnabled(saved_file_ready)
         self.open_folder_button.setEnabled(saved_folder_ready)
+        self.edit_upscale_button.setEnabled(saved_file_ready)
         self.original_button.setEnabled(loaded and idle and not self._show_original)
         self.edited_button.setEnabled(loaded and idle and self._show_original)
         self.current_source_card.change_button.setEnabled(idle)
@@ -3927,6 +3973,14 @@ class QuickEditPage(QWidget):
         folder = self._last_output.parent if self._last_output else None
         if not folder or not folder.is_dir() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
             QMessageBox.warning(self, "保存先を開けません", "Windows Explorerで保存先を開けませんでした。")
+
+    @Slot()
+    def send_result_to_upscale(self) -> None:
+        path = self._last_output
+        if not path or not path.is_file():
+            QMessageBox.warning(self, "高画質化へ渡せません", "保存済みの加工結果を選択してください。")
+            return
+        self.result_handoff_requested.emit(path, "upscale")
 
     def can_close(self) -> bool:
         return self._thread is None and self._palette_thread is None and self._preview_thread is None

@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -136,6 +136,75 @@ def test_guide_drag_uses_scene_coordinates_at_every_zoom(
 
         assert preview._split_boundaries is not None
         assert preview._split_boundaries[0] == pytest.approx(target_axis / axis_length)
+    finally:
+        preview.close()
+
+
+@pytest.mark.parametrize("direction", list(SplitDirection))
+@pytest.mark.parametrize("zoom", [None, 1.0, 2.0])
+def test_guides_accept_a_screen_space_offset_and_show_directional_cursor(
+    app: QApplication,
+    direction: SplitDirection,
+    zoom: float | None,
+) -> None:
+    preview = PreviewCanvas()
+    try:
+        preview.resize(720, 520)
+        preview.show()
+        image = QImage(400, 300, QImage.Format.Format_RGBA8888)
+        image.fill(0xFF3B82F6)
+        preview.set_image(image)
+        preview.set_split_guides(True, direction, 3)
+        preview.set_zoom_factor(zoom)
+        app.processEvents()
+
+        axis_length = image.width() if direction is SplitDirection.VERTICAL else image.height()
+        start_axis = partition_edges(axis_length, 3)[1]
+        target_axis = round(axis_length * 0.24)
+        if direction is SplitDirection.VERTICAL:
+            start = preview.mapFromScene(QPointF(start_axis, image.height() / 2)) + QPoint(10, 0)
+            target = preview.mapFromScene(QPointF(target_axis, image.height() / 2))
+            expected_cursor = Qt.CursorShape.SizeHorCursor
+        else:
+            start = preview.mapFromScene(QPointF(image.width() / 2, start_axis)) + QPoint(0, 10)
+            target = preview.mapFromScene(QPointF(image.width() / 2, target_axis))
+            expected_cursor = Qt.CursorShape.SizeVerCursor
+        QTest.mouseMove(preview.viewport(), start, 20)
+        app.processEvents()
+        assert preview.viewport().cursor().shape() is expected_cursor
+        assert preview._hovered_split_guide_index == 0
+        QTest.mousePress(preview.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start)
+        QTest.mouseMove(preview.viewport(), target, 20)
+        QTest.mouseRelease(preview.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, target)
+        app.processEvents()
+        assert preview._split_boundaries is not None
+        assert preview._split_boundaries[0] == pytest.approx(target_axis / axis_length)
+    finally:
+        preview.close()
+
+
+def test_nearest_guide_wins_when_hit_areas_overlap(app: QApplication) -> None:
+    preview = PreviewCanvas()
+    try:
+        preview.resize(1200, 600)
+        preview.show()
+        image = QImage(1000, 400, QImage.Format.Format_RGBA8888)
+        image.fill(0xFF0F766E)
+        preview.set_image(image)
+        preview.set_split_guides(True, SplitDirection.VERTICAL, 3, (0.49, 0.51))
+        preview.set_zoom_factor(1.0)
+        app.processEvents()
+
+        start = preview.mapFromScene(QPointF(508, 200))
+        QTest.mousePress(preview.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start)
+        app.processEvents()
+        assert preview._dragging_split_guide_index == 1
+        target = preview.mapFromScene(QPointF(540, 200))
+        QTest.mouseMove(preview.viewport(), target, 20)
+        QTest.mouseRelease(preview.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, target)
+        app.processEvents()
+        assert preview._split_boundaries is not None
+        assert preview._split_boundaries[1] == pytest.approx(0.54)
     finally:
         preview.close()
 

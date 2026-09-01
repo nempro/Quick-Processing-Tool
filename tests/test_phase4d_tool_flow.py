@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication, QScrollArea
 
 from quick_processing_tool.image_splitting import SplitDirection
@@ -100,6 +100,51 @@ def test_upscale_result_handoff_opens_quick_split_and_preserves_result(
     window.clear_quick_all()
     assert not window.files
     assert page.result == result
+    _wait_window_idle(qt_app, window)
+    window.close()
+
+
+@pytest.mark.parametrize("size", [(900, 620), (1180, 720)])
+def test_handoff_keeps_split_header_visible_and_resets_stale_quick_scroll(
+    qt_app: QApplication, tmp_path: Path, size: tuple[int, int]
+) -> None:
+    source = tmp_path / "source.png"
+    output = tmp_path / "source_2x.png"
+    _rgba_image(source, (80, 60))
+    _rgba_image(output, (160, 120))
+
+    window = MainWindow()
+    window.resize(*size)
+    window.show()
+    window.set_current_source(source)
+    page = window.upscale_page
+    page.result = UpscaleResult(
+        output, 160, 120, output.stat().st_size, 0.1,
+        UpscaleMode.ILLUSTRATION, 2, "Mock GPU",
+    )
+    page._show_selected()
+    page.saved_box.show()
+    page.split_result_button.click()
+    qt_app.processEvents()
+    qt_app.processEvents()
+
+    scroll = window.quick_settings_scroll
+    viewport = scroll.viewport()
+    header = window.split_section.toggle
+    header_top = header.mapTo(viewport, QPoint(0, 0)).y()
+    assert header_top >= 8
+    assert header_top + header.height() <= viewport.height() - 8
+    assert scroll.horizontalScrollBar().maximum() == 0
+
+    scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
+    window.navigation.setCurrentIndex(window.upscale_tab)
+    window.navigation.setCurrentIndex(window.quick_tab)
+    qt_app.processEvents()
+    assert scroll.verticalScrollBar().value() == scroll.verticalScrollBar().minimum()
+
+    scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
+    window.reset_settings()
+    assert scroll.verticalScrollBar().value() == scroll.verticalScrollBar().minimum()
     _wait_window_idle(qt_app, window)
     window.close()
 
