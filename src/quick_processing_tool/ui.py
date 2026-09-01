@@ -8,8 +8,8 @@ import sys
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
-from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QDragEnterEvent, QDropEvent, QGuiApplication, QImage, QPainter, QPen, QPixmap
+from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QDragEnterEvent, QDropEvent, QGuiApplication, QImage, QPainter, QPainterPath, QPainterPathStroker, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -52,7 +52,14 @@ from .image_workspace import (
     SourceImage,
     require_source_file,
 )
-from .image_splitting import ImageSplitOptions, SplitDirection, partition_edges, split_boxes
+from .image_splitting import (
+    MIN_SPLIT_PANEL_PIXELS,
+    ImageSplitOptions,
+    SplitDirection,
+    equal_split_boundaries,
+    partition_edges,
+    split_boxes,
+)
 from .models import ImageInfo, OutputFormat, ProcessingOptions, ResizeMode, Transform
 from .naming import unique_output_path, unique_split_output_paths
 from .pipeline import process_image, process_image_splits, read_image_info, write_processed
@@ -187,8 +194,83 @@ def compact_folder_path(path: Path, max_chars: int = 38) -> str:
     return f"{value[:keep]}…{value[-keep:]}"
 
 
+class SplitGuideItem(QGraphicsLineItem):
+    """A thin cosmetic guide with a stable, zoom-aware mouse hit area."""
+
+    def __init__(self, preview: "PreviewCanvas", index: int) -> None:
+        super().__init__()
+        self._preview = preview
+        self._index = index
+        self.setAcceptHoverEvents(True)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+        self.setZValue(10)
+        self.setToolTip("ドラッグして分割位置を調整します（各パネルは最低16px）")
+
+    def _hit_width(self) -> float:
+        scale = (
+            self._preview.transform().m11()
+            if self._preview._split_direction is SplitDirection.VERTICAL
+            else self._preview.transform().m22()
+        )
+        return 12.0 / max(0.01, abs(scale))
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        # Keep a stable scene-index extent while shape() adapts its hit width
+        # to the current view transform.
+        margin = 128.0
+        return super().boundingRect().adjusted(-margin, -margin, margin, margin)
+
+    def shape(self) -> QPainterPath:
+        line = self.line()
+        path = QPainterPath()
+        path.moveTo(line.p1())
+        path.lineTo(line.p2())
+        stroker = QPainterPathStroker()
+        stroker.setWidth(self._hit_width())
+        return stroker.createStroke(path)
+
+    def hoverEnterEvent(self, event) -> None:  # noqa: N802
+        cursor = (
+            Qt.CursorShape.SizeHorCursor
+            if self._preview._split_direction is SplitDirection.VERTICAL
+            else Qt.CursorShape.SizeVerCursor
+        )
+        self.setCursor(cursor)
+        pen = self.pen()
+        pen.setColor(QColor("#ffd966"))
+        pen.setWidthF(3.0)
+        self.setPen(pen)
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event) -> None:  # noqa: N802
+        pen = self.pen()
+        pen.setColor(QColor("#ffca3a"))
+        pen.setWidthF(2.0)
+        self.setPen(pen)
+        super().hoverLeaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() is Qt.MouseButton.LeftButton:
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        self._preview._drag_split_guide(self._index, event.scenePos())
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() is Qt.MouseButton.LeftButton:
+            self._preview._drag_split_guide(self._index, event.scenePos())
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class PreviewCanvas(QGraphicsView):
     """A scene-based preview, ready for future editable overlay layers."""
+
+    split_boundaries_changed = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -199,7 +281,8 @@ class PreviewCanvas(QGraphicsView):
         self._split_enabled = False
         self._split_direction = SplitDirection.VERTICAL
         self._split_count = 4
-        self._guide_items: list[QGraphicsLineItem] = []
+        self._split_boundaries: tuple[float, ...] | None = None
+        self._guide_items: list[SplitGuideItem] = []
         self._zoom_factor: float | None = None
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setBackgroundBrush(QColor("#202124"))
@@ -222,10 +305,12 @@ class PreviewCanvas(QGraphicsView):
         enabled: bool,
         direction: SplitDirection,
         count: int,
+        boundaries: tuple[float, ...] | None = None,
     ) -> None:
         self._split_enabled = enabled
         self._split_direction = direction
         self._split_count = count
+        self._split_boundaries = boundaries
         self._update_split_guides()
 
     def _clear_split_guides(self) -> None:
@@ -244,22 +329,84 @@ class PreviewCanvas(QGraphicsView):
             else pixmap.height()
         )
         try:
-            positions = partition_edges(axis_length, self._split_count)[1:-1]
+            positions = partition_edges(
+                axis_length,
+                self._split_count,
+                self._split_boundaries,
+                (
+                    MIN_SPLIT_PANEL_PIXELS
+                    if self._split_boundaries is not None
+                    else 1
+                ),
+            )[1:-1]
         except ValueError:
             return
         pen = QPen(QColor("#ffca3a"))
         pen.setWidthF(2.0)
         pen.setCosmetic(True)
-        for position in positions:
-            guide = QGraphicsLineItem()
+        for index, position in enumerate(positions):
+            guide = SplitGuideItem(self, index)
             if self._split_direction is SplitDirection.VERTICAL:
                 guide.setLine(float(position), 0.0, float(position), float(pixmap.height()))
             else:
                 guide.setLine(0.0, float(position), float(pixmap.width()), float(position))
             guide.setPen(pen)
-            guide.setZValue(10)
             self.scene().addItem(guide)
             self._guide_items.append(guide)
+
+    def _drag_split_guide(self, index: int, scene_position) -> None:
+        pixmap = self._image_item.pixmap()
+        if pixmap.isNull() or not self._split_enabled:
+            return
+        axis_length = (
+            pixmap.width()
+            if self._split_direction is SplitDirection.VERTICAL
+            else pixmap.height()
+        )
+        if not 0 <= index < self._split_count - 1 or axis_length < self._split_count:
+            return
+        ratios = list(
+            self._split_boundaries or equal_split_boundaries(self._split_count)
+        )
+        effective_minimum = min(
+            MIN_SPLIT_PANEL_PIXELS,
+            axis_length // self._split_count,
+        )
+        requested = (
+            scene_position.x()
+            if self._split_direction is SplitDirection.VERTICAL
+            else scene_position.y()
+        )
+        previous = 0.0 if index == 0 else ratios[index - 1] * axis_length
+        following = (
+            float(axis_length)
+            if index == len(ratios) - 1
+            else ratios[index + 1] * axis_length
+        )
+        position = round(
+            max(
+                previous + effective_minimum,
+                min(following - effective_minimum, requested),
+            )
+        )
+        ratios[index] = position / axis_length
+        self._split_boundaries = tuple(ratios)
+        guide = self._guide_items[index]
+        if self._split_direction is SplitDirection.VERTICAL:
+            guide.setLine(
+                float(position),
+                0.0,
+                float(position),
+                float(pixmap.height()),
+            )
+        else:
+            guide.setLine(
+                0.0,
+                float(position),
+                float(pixmap.width()),
+                float(position),
+            )
+        self.split_boundaries_changed.emit(self._split_boundaries)
 
     def _fit(self) -> None:
         self.set_zoom_factor(None)
@@ -687,6 +834,9 @@ class MainWindow(QMainWindow):
         self._thread: QThread | None = None
         self._worker: ProcessingWorker | None = None
         self._active_split_options = ImageSplitOptions()
+        self._split_boundaries: tuple[float, ...] | None = None
+        self._split_boundary_direction = SplitDirection.VERTICAL
+        self._split_boundary_count = 4
         self._saved_output_count = 0
         self._saved_output_folders: set[Path] = set()
         self._quick_source_origins: dict[str, str] = {}
@@ -774,6 +924,9 @@ class MainWindow(QMainWindow):
         self.drop_zone.choose_requested.connect(self.open_files)
         self.drop_zone.paths_dropped.connect(self.load_paths)
         self.preview = self.drop_zone.preview
+        self.preview.split_boundaries_changed.connect(
+            self._split_boundaries_changed
+        )
         self._update_split_preview_guides()
         zoom_row = QHBoxLayout()
         zoom_row.setContentsMargins(0, 0, 0, 0)
@@ -1008,7 +1161,7 @@ class MainWindow(QMainWindow):
         split_layout.setSpacing(5)
         self.split_enable_check = QCheckBox("画像を分割して保存")
         self.split_enable_check.setToolTip(
-            "元画像全体を欠けなく均等に分け、連番ファイルとして保存します"
+            "初期位置は均等です。プレビューの黄色い線をドラッグして調整できます"
         )
         self.split_enable_check.toggled.connect(self._split_settings_changed)
         split_layout.addWidget(self.split_enable_check)
@@ -1065,13 +1218,26 @@ class MainWindow(QMainWindow):
         self.split_count_group.idClicked.connect(self._split_settings_changed)
         split_layout.addLayout(count_row)
 
-        self.split_summary = QLabel("4分割 · 左から右")
+        split_summary_row = QHBoxLayout()
+        split_summary_row.setSpacing(4)
+        self.split_summary = QLabel("4分割 · 左から右 · 均等")
         self.split_summary.setWordWrap(True)
         self.split_summary.setStyleSheet("color: #667085; padding: 2px;")
-        split_layout.addWidget(self.split_summary)
+        split_summary_row.addWidget(self.split_summary, 1)
+        self.split_uniform_button = QPushButton("均等に戻す")
+        self.split_uniform_button.setEnabled(False)
+        self.split_uniform_button.setToolTip("ドラッグした分割線を均等な位置へ戻します")
+        self.split_uniform_button.clicked.connect(self.reset_split_boundaries)
+        set_operation_role(self.split_uniform_button, "secondary")
+        split_summary_row.addWidget(self.split_uniform_button)
+        split_layout.addLayout(split_summary_row)
+        split_drag_hint = QLabel("プレビューの黄色い線をドラッグして位置を調整できます")
+        split_drag_hint.setWordWrap(True)
+        split_drag_hint.setStyleSheet("color: #667085; font-size: 11px;")
+        split_layout.addWidget(split_drag_hint)
         self.split_section = CollapsibleSection(
             "画像分割",
-            "画像全体を2〜6枚へ均等に分けます",
+            "画像全体を2〜6枚へ分け、位置も調整できます",
             split_content,
         )
         split_content.setObjectName("split_settings")
@@ -1540,7 +1706,7 @@ class MainWindow(QMainWindow):
             transforms=list(self.transform_queue),
         )
 
-    def split_options(self) -> ImageSplitOptions:
+    def _split_selection(self) -> tuple[SplitDirection, int]:
         direction = next(
             (
                 direction
@@ -1552,25 +1718,36 @@ class MainWindow(QMainWindow):
         count = self.split_count_group.checkedId()
         if count not in self.split_count_buttons:
             count = 4
+        return direction, count
+
+    def split_options(self) -> ImageSplitOptions:
+        direction, count = self._split_selection()
         return ImageSplitOptions(
             enabled=self.split_enable_check.isChecked(),
             direction=direction,
             count=count,
+            boundaries=self._split_boundaries,
         )
 
     @Slot()
     def _split_settings_changed(self, *_args) -> None:
+        direction, count = self._split_selection()
+        if (
+            direction is not self._split_boundary_direction
+            or count != self._split_boundary_count
+        ):
+            self._split_boundaries = None
+            self._split_boundary_direction = direction
+            self._split_boundary_count = count
         options = self.split_options()
         for button in self.split_direction_buttons.values():
             button.setEnabled(options.enabled)
         for button in self.split_count_buttons.values():
             button.setEnabled(options.enabled)
-        order = (
-            "左から右"
-            if options.direction is SplitDirection.VERTICAL
-            else "上から下"
+        self._update_split_summary(options)
+        self.split_uniform_button.setEnabled(
+            options.enabled and options.boundaries is not None
         )
-        self.split_summary.setText(f"{options.count}分割 · {order}")
         self._update_split_preview_guides()
         self._settings_changed()
         if hasattr(self, "quick_tab"):
@@ -1584,7 +1761,54 @@ class MainWindow(QMainWindow):
             options.enabled,
             options.direction,
             options.count,
+            options.boundaries,
         )
+
+    def _update_split_summary(self, options: ImageSplitOptions) -> None:
+        order = (
+            "左から右"
+            if options.direction is SplitDirection.VERTICAL
+            else "上から下"
+        )
+        mode = "任意位置" if options.boundaries is not None else "均等"
+        self.split_summary.setText(f"{options.count}分割 · {order} · {mode}")
+        if options.boundaries is None:
+            self.split_summary.setToolTip("")
+        else:
+            values = " / ".join(
+                f"{ratio * 100:.1f}%" for ratio in options.boundary_ratios()
+            )
+            self.split_summary.setToolTip(f"分割位置: {values}")
+
+    @Slot(object)
+    def _split_boundaries_changed(self, boundaries) -> None:
+        direction, count = self._split_selection()
+        try:
+            options = ImageSplitOptions(
+                enabled=self.split_enable_check.isChecked(),
+                direction=direction,
+                count=count,
+                boundaries=tuple(boundaries),
+            )
+        except (TypeError, ValueError):
+            return
+        self._split_boundaries = options.boundaries
+        self._update_split_summary(options)
+        self.split_uniform_button.setEnabled(options.enabled)
+        self._update_info()
+        self._update_quick_clear_state()
+
+    @Slot()
+    def reset_split_boundaries(self) -> None:
+        if self._split_boundaries is None:
+            return
+        self._split_boundaries = None
+        self._update_split_preview_guides()
+        options = self.split_options()
+        self._update_split_summary(options)
+        self.split_uniform_button.setEnabled(False)
+        self._update_info()
+        self._update_quick_clear_state()
 
     @Slot()
     def _settings_changed(self) -> None:
@@ -1655,6 +1879,12 @@ class MainWindow(QMainWindow):
                     out_height,
                     split_options.direction,
                     split_options.count,
+                    split_options.boundaries,
+                    (
+                        MIN_SPLIT_PANEL_PIXELS
+                        if split_options.boundaries is not None
+                        else 1
+                    ),
                 )
             except ValueError:
                 split_info = "<br><br><b>画像分割</b><br>画像サイズが分割数に足りません"
@@ -1704,6 +1934,9 @@ class MainWindow(QMainWindow):
         self.metadata_check.setChecked(True)
         self.timestamp_check.setChecked(True)
         self.background_combo.setCurrentIndex(0)
+        self._split_boundaries = None
+        self._split_boundary_direction = SplitDirection.VERTICAL
+        self._split_boundary_count = 4
         self.split_enable_check.setChecked(False)
         self.split_direction_buttons[SplitDirection.VERTICAL].setChecked(True)
         self.split_count_buttons[4].setChecked(True)
@@ -2177,6 +2410,9 @@ class MainWindow(QMainWindow):
 
         self.split_direction_buttons[SplitDirection.VERTICAL].setChecked(True)
         self.split_count_buttons[4].setChecked(True)
+        self._split_boundaries = None
+        self._split_boundary_direction = SplitDirection.VERTICAL
+        self._split_boundary_count = 4
         self.split_enable_check.setChecked(True)
         self.split_section.toggle.setChecked(True)
         self.preview_zoom_buttons["全体表示"].setChecked(True)

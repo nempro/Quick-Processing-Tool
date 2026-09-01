@@ -8,7 +8,12 @@ from PIL import Image, UnidentifiedImageError
 
 from .errors import ProcessingError, TargetSizeUnreachable, UnsupportedImageError
 from .image_workspace import MISSING_SOURCE_MESSAGE, MissingSourceError, require_source_file
-from .image_splitting import ImageSplitOptions, SplitDirection, split_image
+from .image_splitting import (
+    MIN_SPLIT_PANEL_PIXELS,
+    ImageSplitOptions,
+    SplitDirection,
+    split_image,
+)
 from .models import ImageInfo, OutputFormat, ProcessedImage, ProcessingOptions, ResizeMode
 from .processors.encode import encode_best_quality
 from .processors.metadata import safe_metadata
@@ -137,6 +142,12 @@ def process_image_splits(
                     resized,
                     split_options.direction,
                     split_options.count,
+                    split_options.boundaries,
+                    (
+                        MIN_SPLIT_PANEL_PIXELS
+                        if split_options.boundaries is not None
+                        else 1
+                    ),
                 )
             except ValueError as exc:
                 axis = (

@@ -42,3 +42,11 @@
 - Pass a verified, already auto-saved Upscale output through a small `(path, target)` signal. This reuses the current file-path processing architecture without introducing another temporary file or a workflow engine.
 - An Upscale → Image Split handoff replaces only the Quick target queue, preserves Quick settings and the Upscale page result, sets the shared Current Source to the result, and opens the default vertical four-way split.
 - Apply the common 250 px settings-pane baseline to compatible tools. Retain Thumbnail's accepted 30/43/27 layout because forcing it to 250/340 breaks its title-entry workflow.
+
+## Phase 4E custom split boundaries
+
+- Store custom boundaries as strictly increasing normalized ratios, not Preview or source pixels. The same ratios therefore survive Fit/100%/200%, viewport resize, source thumbnails, output resize, and differing Batch dimensions.
+- Keep `None` as the equal-split state so existing equal edge rounding remains byte-for-byte compatible. Changing count/direction or using `均等に戻す` returns to this state.
+- Clamp dragged guides against neighboring ratios with a 16 px minimum panel on the Preview axis. For images too small to provide 16 px per panel, use the largest feasible equal minimum so every panel remains non-empty.
+- Resolve custom ratios again on each processed output axis, with endpoints fixed at 0 and the full length and sequential integer clamping. This preserves ordering and guarantees no missing, duplicated, or overlapping pixels.
+- Batch keeps the existing source-level failure/rollback contract and applies the same ratios independently to each source's post-transform/post-resize dimensions; it does not reuse absolute pixel positions.
