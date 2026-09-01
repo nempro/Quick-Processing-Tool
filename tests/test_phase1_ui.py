@@ -355,7 +355,8 @@ def test_metadata_removal_is_discoverable_while_privacy_section_is_closed(
 ) -> None:
     summary = window.findChild(QLabel, "metadata_privacy_summary")
     assert summary is not None
-    assert summary.text() == "メタ情報（EXIFなど）を保存時に削除できます"
+    assert "保存先:" in summary.text()
+    assert "メタ情報（EXIFなど）を保存時に削除できます" in summary.text()
     assert not summary.isHidden()
     assert window.metadata_check.text() == "メタ情報を削除"
     assert window.metadata_check.toolTip() == "EXIFなどの画像情報を保存時に削除します"

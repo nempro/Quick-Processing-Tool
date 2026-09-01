@@ -1,19 +1,23 @@
 # Current State
 
-- Task: Phase 4C equal image splitting acceptance and Quick preview zoom controls
+- Task: Phase 4D — unified tool operation placement and Upscale → Image Split handoff
 - Repository: `C:\product\Quick Processing Tool`
 - Branch: `main`
-- Start / current HEAD: `53d90ec14505bedbfe2448c7f8667a1a0ed3fdef`
-- Starting working tree: clean
-- Status: implementation, requested verification, and independent review complete; no blocking findings
-- Existing split core: exact 2–6 panel partitioning, PNG/JPEG/WebP encoding, collision-safe `_01` naming, and batch export were already present and were reused without duplication
-- Added scope: compact Quick preview controls for fit / 100% / 200% so split guides can be inspected at fixed zoom; focused coverage for 1003/6, formats, guide transforms, and compact layouts
-- Batch: enabled for multiple Quick source images through the existing ProcessingWorker; source failures remain isolated and partial panel groups roll back
-- Focused regression: PASS (66 related tests; 26 split tests)
-- Full regression: PASS (550 tests)
-- QT scale 1.25 / 1.5 split checks: PASS (26 tests each)
-- compileall / diff-check: PASS
-- Runtime GUI QA: PASS at 1180×720 and 900×620; horizontal overflow=0; PNG/JPEG/WebP each saved and reopened as four panels
-- Pixel QA: vertical and horizontal PNG rejoin exactly; PNG alpha channel exactly preserved
-- Computer Use helper: unavailable after initialization and the required recovery retry; visible Windows Qt GUI automation and screenshot review used instead
-- Git: Phase 4C changes intentionally remain uncommitted; no tag/push/release
+- Start / current HEAD: `f2e56f46c8116aa15c9b47a0d81e3e6671ca0ada`
+- Starting working tree: contained the immediately preceding, requested Quick save-destination UX changes; preserved and included in the current uncommitted worktree
+- Status: implementation and verification complete; no blocking findings
+- Shared operation roles: primary execution, secondary actions, and save-result cards now use reusable application styles
+- Placement: Quick/Edit use sticky reset + clear footers; Quick/Upscale/Thumbnail place add/clear beside their target list; save/open-folder actions are adjacent to result information
+- Pane/layout: Quick/Edit/Pixel/Upscale use the shared 250 px settings-pane baseline; Thumbnail keeps its accepted 30/43/27 splitter behavior; all tested settings panes and target trees have horizontal overflow 0
+- Upscale handoff: verified auto-saved 2x/4x output paths are passed internally through a small target-based signal, without a new temporary copy or file chooser
+- Handoff behavior: switches to Quick, replaces only the Quick target queue with the upscaled result, opens Image Split, selects vertical 4-way split, shows guides immediately, and marks the source as upscaled
+- State isolation: Upscale result remains available after handoff and after Quick clear; Quick settings and other tabs are not destroyed
+- Focused Phase 4D/Quick destination/layout tests: PASS (31)
+- DPI 125% / 150% related UI tests: PASS (42 each)
+- Full regression: PASS (563 collected tests)
+- compileall / git diff --check: PASS
+- Runtime GUI QA: PASS using the real Windows Qt GUI and the available RealESRGAN backend
+- End-to-end GUI result: RGBA 64×48 → actual 2x result 128×96 → direct handoff → four PNG panels; pixel rejoin and alpha both exactly matched; Upscale result remained intact
+- Layout GUI QA: PASS at 1180×720 and 900×620; horizontal scroll range 0 for Quick/Edit/Pixel/Thumbnail/Sound/Bubble
+- Computer Use helper: unavailable after initialization and the required reset/retry; visible Windows Qt GUI automation and output inspection were used instead
+- Git: Phase 4D and Quick save-destination UX are ready for their independent commit; no tag/push/release

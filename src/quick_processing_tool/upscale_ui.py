@@ -16,7 +16,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from .ui_styles import INPUT_CONTROL_STYLE
+from .ui_styles import (
+    INPUT_CONTROL_STYLE,
+    PRIMARY_SETTINGS_PANE_DEFAULT_WIDTH,
+    PRIMARY_SETTINGS_PANE_MAX_WIDTH,
+    PRIMARY_SETTINGS_PANE_MIN_WIDTH,
+    set_operation_role,
+)
 from .image_workspace import MISSING_SOURCE_MESSAGE, SourceImage
 from .source_ui import CurrentSourceCard
 from .upscaler import (
@@ -259,6 +265,7 @@ class ElidedPathLabel(QLabel):
 class UpscalePage(QWidget):
     processing_changed = Signal(bool)
     source_change_requested = Signal(object)
+    result_handoff_requested = Signal(object, str)
 
     def __init__(self, service: UpscaleService | None = None) -> None:
         super().__init__()
@@ -303,7 +310,8 @@ class UpscalePage(QWidget):
         splitter.setObjectName("upscaleWorkspace")
 
         left = QWidget()
-        left.setMinimumWidth(210); left.setMaximumWidth(330)
+        left.setMinimumWidth(PRIMARY_SETTINGS_PANE_MIN_WIDTH)
+        left.setMaximumWidth(PRIMARY_SETTINGS_PANE_MAX_WIDTH)
         ll = QVBoxLayout(left); ll.setContentsMargins(8, 8, 6, 8); ll.setSpacing(5)
         heading = QLabel("高画質化設定")
         heading.setStyleSheet("font-size: 18px; font-weight: 700;")
@@ -343,12 +351,15 @@ class UpscalePage(QWidget):
             self.format_combo.addItem(label, value)
         self.folder_label = ElidedPathLabel(); self.folder_label.set_value("元画像と同じフォルダー")
         self.folder_button = QPushButton("共通の保存先を選ぶ"); self.folder_button.clicked.connect(self.choose_folder)
+        set_operation_role(self.folder_button, "secondary")
         form.addRow("保存形式", self.format_combo); form.addRow("保存先", self.folder_label); form.addRow("", self.folder_button)
         ll.addWidget(output_box)
 
         self.start_button = QPushButton("画像を選んでください")
         self.start_button.setObjectName("upscaleStart"); self.start_button.setEnabled(False); self.start_button.clicked.connect(self.start)
         self.cancel_button = QPushButton("キャンセル"); self.cancel_button.hide(); self.cancel_button.clicked.connect(self.cancel)
+        set_operation_role(self.start_button, "primary")
+        set_operation_role(self.cancel_button, "secondary")
         ll.addWidget(self.start_button); ll.addWidget(self.cancel_button); ll.addStretch(); splitter.addWidget(left)
 
         center = QWidget(); cl = QVBoxLayout(center); cl.setContentsMargins(8, 8, 8, 8)
@@ -377,17 +388,23 @@ class UpscalePage(QWidget):
         queue_actions = QHBoxLayout()
         self.add_button = QPushButton("画像を追加"); self.clear_button = QPushButton("一覧をクリア")
         self.add_button.clicked.connect(self.choose_images); self.clear_button.clicked.connect(self.clear_queue)
+        set_operation_role(self.add_button, "secondary")
+        set_operation_role(self.clear_button, "secondary")
         queue_actions.addStretch()
         queue_actions.addWidget(self.add_button); queue_actions.addWidget(self.clear_button)
         rl.addLayout(queue_actions)
 
         self.queue = QTreeWidget(); self.queue.setObjectName("upscaleQueue")
         self.queue.setHeaderLabels(["#", "画像", "状態"]); self.queue.setRootIsDecorated(False)
+        self.queue.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.queue.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         header = self.queue.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setMinimumSectionSize(30)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.queue.setColumnWidth(0, 34)
+        self.queue.setColumnWidth(2, 72)
         self.queue.currentItemChanged.connect(self._queue_selection_changed)
         rl.addWidget(self.queue, 1)
         self.queue_feedback = QLabel("画像を追加すると、ここで順番と状態を確認できます")
@@ -405,14 +422,23 @@ class UpscalePage(QWidget):
         rl.addWidget(self.progress_label); rl.addWidget(self.progress)
         self.result_label = QLabel(); self.result_label.setWordWrap(True); rl.addWidget(self.result_label)
 
-        self.saved_box = QWidget(); saved = QVBoxLayout(self.saved_box); saved.setContentsMargins(0, 3, 0, 0)
+        self.saved_box = QWidget(); saved = QVBoxLayout(self.saved_box); saved.setContentsMargins(7, 6, 7, 7)
+        saved.setSpacing(4)
+        set_operation_role(self.saved_box, "saveResult")
         saved.addWidget(QLabel("保存先")); self.saved_path = ElidedPathLabel(); saved.addWidget(self.saved_path)
         self.open_folder_button = QPushButton("保存先を開く"); self.open_folder_button.clicked.connect(self.open_saved_folder)
-        saved.addWidget(self.open_folder_button); self.saved_box.hide(); rl.addWidget(self.saved_box)
+        self.split_result_button = QPushButton("画像分割へ")
+        self.split_result_button.setToolTip("選択中の高画質化済み画像を、かんたん変換の画像分割へ渡します")
+        self.split_result_button.clicked.connect(self.send_result_to_split)
+        set_operation_role(self.open_folder_button, "secondary")
+        set_operation_role(self.split_result_button, "secondary")
+        saved.addWidget(self.open_folder_button)
+        saved.addWidget(self.split_result_button)
+        self.saved_box.hide(); rl.addWidget(self.saved_box)
         splitter.addWidget(right)
 
         splitter.setStretchFactor(0, 24); splitter.setStretchFactor(1, 47); splitter.setStretchFactor(2, 29)
-        splitter.setSizes([280, 540, 340])
+        splitter.setSizes([PRIMARY_SETTINGS_PANE_DEFAULT_WIDTH, 570, 340])
         layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.addWidget(splitter)
         for button in (self.scale_2, self.scale_4, self.illustration, self.photo):
             button.toggled.connect(self._settings_changed)
@@ -545,6 +571,9 @@ class UpscalePage(QWidget):
             return
         item = self.items[self.current_index]
         result = item.result
+        self.split_result_button.setEnabled(
+            result is not None and result.output_path.is_file()
+        )
         preview_path = result.output_path if self._view_after and result else item.source_path
         if not self.drop_zone.preview.set_image_path(preview_path):
             self.drop_zone.preview.clear_image()
@@ -867,6 +896,14 @@ class UpscalePage(QWidget):
             folder = result.output_path.parent if result else None
         if not folder or not folder.is_dir() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
             QMessageBox.warning(self, "保存先を開けません", "完了した画像を選択してから、もう一度お試しください。")
+
+    @Slot()
+    def send_result_to_split(self) -> None:
+        result = self.result
+        if result is None or not result.output_path.is_file():
+            QMessageBox.warning(self, "画像分割へ渡せません", "完了した高画質化画像を選択してください。")
+            return
+        self.result_handoff_requested.emit(result.output_path, "quick_split")
 
     @Slot()
     def clear_queue(self) -> None:

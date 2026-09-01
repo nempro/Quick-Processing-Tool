@@ -8,8 +8,8 @@ import sys
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
-from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QCursor, QDragEnterEvent, QDropEvent, QGuiApplication, QImage, QPainter, QPen, QPixmap
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QDragEnterEvent, QDropEvent, QGuiApplication, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -58,7 +59,7 @@ from .pipeline import process_image, process_image_splits, read_image_info, writ
 from .processors.resize import output_dimensions
 from .processors.transform import normalize_orientation
 from .thumbnail_ui import ThumbnailPage
-from .edit_ui import QuickEditPage
+from .edit_ui import ElidedPathLabel, QuickEditPage
 from .upscale_ui import UpscalePage
 from .pixel_editor_ui import PixelEditorPage
 from .sound_effect_ui import SoundEffectPage
@@ -69,6 +70,7 @@ from .ui_styles import (
     PRIMARY_SETTINGS_PANE_DEFAULT_WIDTH,
     PRIMARY_SETTINGS_PANE_MAX_WIDTH,
     PRIMARY_SETTINGS_PANE_MIN_WIDTH,
+    set_operation_role,
 )
 from .preview_activity import PreviewActivityIndicator
 from .window_geometry import adaptive_minimum_size, centered_window_geometry
@@ -152,6 +154,37 @@ def desktop_folder() -> Path:
         if ctypes.windll.shell32.SHGetFolderPathW(None, 0x10, None, 0, buffer) == 0:
             return Path(buffer.value)
     return Path.home() / "Desktop"
+
+
+def quick_output_folder(
+    source: Path,
+    destination_mode: str,
+    custom_folder: Path | None,
+    processed_subfolder: bool,
+) -> Path:
+    """Resolve the shared Quick export folder for UI and worker use."""
+    if destination_mode == "Desktop":
+        return desktop_folder()
+    if destination_mode == "Custom folder":
+        if custom_folder is None:
+            raise ValueError("custom output folder is not selected")
+        return custom_folder
+    base = source.parent
+    return base / "Processed" if processed_subfolder else base
+
+
+def compact_folder_path(path: Path, max_chars: int = 38) -> str:
+    value = str(path)
+    if len(value) <= max_chars:
+        return value
+    parts = path.parts
+    if len(parts) >= 3:
+        prefix = path.anchor or parts[0]
+        compact = str(Path(prefix, "…", *parts[-2:]))
+        if len(compact) <= max_chars:
+            return compact
+    keep = max(8, (max_chars - 1) // 2)
+    return f"{value[:keep]}…{value[-keep:]}"
 
 
 class PreviewCanvas(QGraphicsView):
@@ -478,6 +511,7 @@ class ProcessingWorker(QObject):
     file_status = Signal(int, str, str)
     copy_ready = Signal(bytes)
     outputs_saved = Signal(int)
+    folder_saved = Signal(object)
     finished = Signal(int, int)
 
     def __init__(
@@ -502,12 +536,12 @@ class ProcessingWorker(QObject):
         self.split_options = split_options or ImageSplitOptions()
 
     def _folder_for(self, source: Path) -> Path:
-        if self.destination_mode == "Desktop":
-            return desktop_folder()
-        if self.destination_mode == "Custom folder" and self.custom_folder:
-            return self.custom_folder
-        base = source.parent
-        return base / "Processed" if self.processed_subfolder else base
+        return quick_output_folder(
+            source,
+            self.destination_mode,
+            self.custom_folder,
+            self.processed_subfolder,
+        )
 
     @Slot()
     def run(self) -> None:
@@ -545,6 +579,7 @@ class ProcessingWorker(QObject):
                             destination.unlink(missing_ok=True)
                         raise
                     saved_outputs += len(destinations)
+                    self.folder_saved.emit(folder)
                     detail = f"{len(destinations)}枚保存 · {folder}"
                 else:
                     result = process_image(path, self.options)
@@ -555,6 +590,7 @@ class ProcessingWorker(QObject):
                     )
                     write_processed(result, destination, self.options.preserve_timestamp)
                     saved_outputs += 1
+                    self.folder_saved.emit(destination.parent)
                     detail = str(destination)
                 succeeded += 1
                 self.file_status.emit(row, "Done", detail)
@@ -652,6 +688,8 @@ class MainWindow(QMainWindow):
         self._worker: ProcessingWorker | None = None
         self._active_split_options = ImageSplitOptions()
         self._saved_output_count = 0
+        self._saved_output_folders: set[Path] = set()
+        self._quick_source_origins: dict[str, str] = {}
         self._quick_preview_thread: QThread | None = None
         self._quick_preview_worker: QuickPreviewWorker | None = None
         self._quick_preview_generation = 0
@@ -705,6 +743,7 @@ class MainWindow(QMainWindow):
         self.upscale_page.set_workspace_managed(True)
         self.upscale_page.source_change_requested.connect(self.set_current_source)
         self.upscale_page.processing_changed.connect(self._upscale_processing_changed)
+        self.upscale_page.result_handoff_requested.connect(self._handoff_image_result)
         self.upscale_tab = self.navigation.addTab(self.upscale_page, "高画質化")
         self.pixel_page = PixelEditorPage()
         self.pixel_page.set_workspace_managed(True)
@@ -786,9 +825,31 @@ class MainWindow(QMainWindow):
         files_help.setWordWrap(True)
         files_help.setStyleSheet("color: #667085;")
         batch_layout.addWidget(files_help)
+        batch_actions = QHBoxLayout()
+        batch_actions.setContentsMargins(0, 0, 0, 0)
+        batch_actions.setSpacing(4)
+        self.quick_add_button = QPushButton("画像を追加")
+        self.quick_add_button.clicked.connect(self.open_files)
+        self.quick_queue_clear_button = QPushButton("一覧をクリア")
+        self.quick_queue_clear_button.clicked.connect(self.clear_quick_queue)
+        set_operation_role(self.quick_add_button, "secondary")
+        set_operation_role(self.quick_queue_clear_button, "secondary")
+        batch_actions.addWidget(self.quick_add_button, 1)
+        batch_actions.addWidget(self.quick_queue_clear_button, 1)
+        batch_layout.addLayout(batch_actions)
         self.file_tree = QTreeWidget()
         self.file_tree.setHeaderLabels(["ファイル名", "容量", "状態"])
         self.file_tree.setAlternatingRowColors(True)
+        self.file_tree.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        file_header = self.file_tree.header()
+        file_header.setMinimumSectionSize(32)
+        file_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        file_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        file_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.file_tree.setColumnWidth(1, 58)
+        self.file_tree.setColumnWidth(2, 68)
         self.file_tree.currentItemChanged.connect(self._tree_selection_changed)
         batch_layout.addWidget(self.file_tree, 1)
         self.progress = QProgressBar()
@@ -1008,13 +1069,13 @@ class MainWindow(QMainWindow):
         self.split_summary.setWordWrap(True)
         self.split_summary.setStyleSheet("color: #667085; padding: 2px;")
         split_layout.addWidget(self.split_summary)
-        split_section = CollapsibleSection(
+        self.split_section = CollapsibleSection(
             "画像分割",
             "画像全体を2〜6枚へ均等に分けます",
             split_content,
         )
         split_content.setObjectName("split_settings")
-        layout.addWidget(split_section)
+        layout.addWidget(self.split_section)
         destination_content = QWidget()
         self.destination_form = QFormLayout(destination_content)
         self.destination_combo = QComboBox()
@@ -1032,6 +1093,12 @@ class MainWindow(QMainWindow):
         self.folder_button = QPushButton("保存先を選ぶ…")
         self.folder_button.clicked.connect(self.choose_folder)
         self.destination_form.addRow("", self.folder_button)
+        self.current_destination_label = ElidedPathLabel()
+        self.current_destination_label.setObjectName("quick_current_destination")
+        self.current_destination_label.setAccessibleName("現在の保存先")
+        self.current_destination_label.setStyleSheet("color: #344054;")
+        self.destination_form.addRow("現在の保存先", self.current_destination_label)
+        self.processed_check.toggled.connect(self._update_current_destination_display)
         self.metadata_check = QCheckBox("メタ情報を削除")
         self.metadata_check.setChecked(True)
         self.metadata_check.setToolTip(
@@ -1046,14 +1113,14 @@ class MainWindow(QMainWindow):
         self.timestamp_check.setChecked(True)
         self.destination_form.addRow("", self.metadata_check)
         self.destination_form.addRow("", self.timestamp_check)
-        destination_section = CollapsibleSection(
+        self.destination_section = CollapsibleSection(
             "保存先とプライバシー",
             "メタ情報（EXIFなど）を保存時に削除できます",
             destination_content,
         )
-        destination_section.description.setObjectName("metadata_privacy_summary")
+        self.destination_section.description.setObjectName("metadata_privacy_summary")
         destination_content.setObjectName("destination_settings")
-        layout.addWidget(destination_section)
+        layout.addWidget(self.destination_section)
         layout.addStretch(1)
 
         self.quick_sections = [
@@ -1061,8 +1128,8 @@ class MainWindow(QMainWindow):
             resize_section,
             format_section,
             transform_section,
-            split_section,
-            destination_section,
+            self.split_section,
+            self.destination_section,
         ]
 
         self.quick_settings_scroll = QScrollArea()
@@ -1098,6 +1165,33 @@ class MainWindow(QMainWindow):
         footer_layout = QVBoxLayout(self.quick_settings_footer)
         footer_layout.setContentsMargins(8, 6, 8, 8)
         footer_layout.setSpacing(4)
+        self.quick_save_result_box = QFrame()
+        self.quick_save_result_box.setObjectName("quick_save_result_box")
+        set_operation_role(self.quick_save_result_box, "saveResult")
+        result_layout = QVBoxLayout(self.quick_save_result_box)
+        result_layout.setContentsMargins(7, 6, 7, 7)
+        result_layout.setSpacing(3)
+        self.quick_save_result_summary = QLabel()
+        self.quick_save_result_summary.setWordWrap(True)
+        self.quick_save_result_summary.setStyleSheet(
+            "color: #185c2b; font-weight: 700;"
+        )
+        result_layout.addWidget(self.quick_save_result_summary)
+        result_layout.addWidget(QLabel("保存先"))
+        self.quick_saved_folder_label = ElidedPathLabel()
+        self.quick_saved_folder_label.setObjectName("quick_saved_folder")
+        self.quick_saved_folder_label.setAccessibleName("実際の保存先")
+        self.quick_saved_folder_label.setStyleSheet("color: #344054;")
+        result_layout.addWidget(self.quick_saved_folder_label)
+        self.quick_open_folder_button = QPushButton("保存先を開く")
+        self.quick_open_folder_button.setMinimumWidth(0)
+        self.quick_open_folder_button.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.quick_open_folder_button.clicked.connect(self.open_quick_saved_folders)
+        result_layout.addWidget(self.quick_open_folder_button)
+        self.quick_save_result_box.hide()
         self.quick_save_hint = QLabel("画像を開くと保存できます")
         self.quick_save_hint.setObjectName("quick_save_hint")
         self.quick_save_hint.setWordWrap(True)
@@ -1107,13 +1201,25 @@ class MainWindow(QMainWindow):
         self.quick_save_button.setEnabled(False)
         self.quick_save_button.setToolTip("画像を開くと保存できます")
         self.quick_save_button.clicked.connect(self.export_all)
+        set_operation_role(self.quick_save_button, "primary")
+        self.quick_reset_button = QPushButton("設定をリセット")
+        self.quick_reset_button.setToolTip("画像一覧を残して、変換設定だけを初期値へ戻します")
+        self.quick_reset_button.clicked.connect(self.reset_settings)
         self.quick_clear_button = QPushButton("すべてクリア")
         self.quick_clear_button.setObjectName("quick_clear_button")
         self.quick_clear_button.setToolTip("現在の画像を残して、このタブの作業状態を初期化します")
         self.quick_clear_button.clicked.connect(self.clear_quick_all)
+        set_operation_role(self.quick_reset_button, "secondary")
+        set_operation_role(self.quick_clear_button, "secondary")
+        clear_row = QHBoxLayout()
+        clear_row.setContentsMargins(0, 0, 0, 0)
+        clear_row.setSpacing(4)
+        clear_row.addWidget(self.quick_reset_button, 1)
+        clear_row.addWidget(self.quick_clear_button, 1)
+        footer_layout.addWidget(self.quick_save_result_box)
         footer_layout.addWidget(self.quick_save_hint)
         footer_layout.addWidget(self.quick_save_button)
-        footer_layout.addWidget(self.quick_clear_button)
+        footer_layout.addLayout(clear_row)
         panel_layout.addWidget(self.quick_settings_footer, 0)
 
         for section in self.quick_sections:
@@ -1268,6 +1374,7 @@ class MainWindow(QMainWindow):
             was_empty = not self.files
             first_new_row = len(self.files)
             self.files.extend(valid)
+            self._update_current_destination_display()
             for info in valid:
                 item = QTreeWidgetItem([info.path.name, human_bytes(info.size_bytes), "待機中"])
                 item.setToolTip(0, str(info.path))
@@ -1574,6 +1681,7 @@ class MainWindow(QMainWindow):
             f"{html.escape(info.path.name)}<br>"
             f"{info.width} × {info.height} / {info.format} / "
             f"{human_bytes(info.size_bytes)}"
+            f"{self._quick_source_origin_html(info.path)}"
             f"<br><br><b>保存後（見込み）</b><br>"
             f"{out_width} × {out_height} / {out_format} / {size_plan}"
             f"{split_info}"
@@ -1610,24 +1718,7 @@ class MainWindow(QMainWindow):
     def clear_quick_all(self) -> None:
         if self._thread is not None:
             return
-        self._quick_preview_generation += 1
-        self._quick_preview_request_id += 1
-        self._quick_preview_pending_request = None
-        self._quick_preview_active_result = None
-        self.quick_preview_activity.invalidate()
-        self._quick_preview_activity_token = None
-
-        self.files.clear()
-        self.current_index = -1
-        self.file_tree.clear()
-        self.files_heading.setText("読み込んだ画像　0枚")
-        self.drop_zone.clear_image()
-        self.preview_zoom_buttons["全体表示"].setChecked(True)
-        self.preview.set_zoom_factor(None)
-        self.info_label.clear()
-        self.info_label.hide()
-        self.progress.setValue(0)
-        self.export_action.setText("画像を保存")
+        self._clear_quick_queue_state()
 
         self.reset_settings()
         self.custom_kb.setValue(1024)
@@ -1647,10 +1738,48 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("かんたん変換の作業をクリアしました。現在の画像は保持されています")
         self._update_quick_actions()
 
+    @Slot()
+    def clear_quick_queue(self) -> None:
+        if self._thread is not None or not self.files:
+            return
+        self._clear_quick_queue_state()
+        self.statusBar().showMessage("かんたん変換の対象一覧をクリアしました。設定は保持されています")
+        self._update_quick_actions()
+
+    def _clear_quick_queue_state(self) -> None:
+        self._quick_preview_generation += 1
+        self._quick_preview_request_id += 1
+        self._quick_preview_pending_request = None
+        self._quick_preview_active_result = None
+        self.quick_preview_activity.invalidate()
+        self._quick_preview_activity_token = None
+
+        self.files.clear()
+        self._quick_source_origins.clear()
+        self.current_index = -1
+        self.file_tree.clear()
+        self.files_heading.setText("読み込んだ画像　0枚")
+        self.drop_zone.clear_image()
+        self.preview_zoom_buttons["全体表示"].setChecked(True)
+        self.preview.set_zoom_factor(None)
+        self.info_label.clear()
+        self.info_label.hide()
+        self.progress.setValue(0)
+        self.export_action.setText("画像を保存")
+        self._clear_quick_save_result()
+
+    def _quick_source_origin_html(self, path: Path) -> str:
+        key = str(path.resolve()).casefold()
+        origin = self._quick_source_origins.get(key)
+        if not origin:
+            return ""
+        return f"<br><span style='color:#2457b2;font-weight:600'>{html.escape(origin)}</span>"
+
     def _destination_changed(self, *_args) -> None:
         value = self.destination_combo.currentData()
         self.folder_button.setEnabled(value == "Custom folder")
         self.processed_check.setEnabled(value == "Same folder")
+        self._update_current_destination_display()
         self._update_quick_clear_state()
 
     @Slot()
@@ -1662,7 +1791,112 @@ class MainWindow(QMainWindow):
                 self.custom_folder.name or str(self.custom_folder)
             )
             self.folder_button.setToolTip(str(self.custom_folder))
+            self._update_current_destination_display()
             self._update_quick_clear_state()
+
+    def _planned_quick_output_folders(self) -> list[Path]:
+        mode = self.destination_combo.currentData()
+        if mode == "Custom folder" and self.custom_folder is None:
+            return []
+        if self.files:
+            folders = {
+                quick_output_folder(
+                    info.path,
+                    mode,
+                    self.custom_folder,
+                    self.processed_check.isChecked(),
+                )
+                for info in self.files
+            }
+            return sorted(folders, key=lambda folder: str(folder).casefold())
+        if mode == "Desktop":
+            return [desktop_folder()]
+        if mode == "Custom folder" and self.custom_folder is not None:
+            return [self.custom_folder]
+        return []
+
+    def _update_current_destination_display(self, *_args) -> None:
+        if not hasattr(self, "current_destination_label"):
+            return
+        folders = self._planned_quick_output_folders()
+        if not folders:
+            value = (
+                "保存先を選んでください"
+                if self.destination_combo.currentData() == "Custom folder"
+                else "画像を開くと表示します"
+            )
+            tooltip = value
+        elif len(folders) == 1:
+            value = str(folders[0])
+            tooltip = value
+        else:
+            value = f"{len(folders)}か所（元画像ごと）"
+            tooltip = "\n".join(str(folder) for folder in folders)
+        self.current_destination_label.set_value(value, tooltip)
+        summary_value = compact_folder_path(folders[0]) if len(folders) == 1 else value
+        self.destination_section.description.setText(
+            f"保存先: {summary_value}\n"
+            "メタ情報（EXIFなど）を保存時に削除できます"
+        )
+        self.destination_section.description.setToolTip(tooltip)
+
+    def _clear_quick_save_result(self) -> None:
+        self._saved_output_folders.clear()
+        self.quick_save_result_summary.clear()
+        self.quick_saved_folder_label.set_value("")
+        self.quick_open_folder_button.setEnabled(False)
+        self.quick_open_folder_button.setToolTip("")
+        self.quick_save_result_box.hide()
+
+    @Slot(object)
+    def _record_saved_output_folder(self, folder) -> None:
+        self._saved_output_folders.add(Path(folder))
+
+    def _show_quick_save_result(self, failed: int) -> None:
+        folders = sorted(
+            self._saved_output_folders,
+            key=lambda folder: str(folder).casefold(),
+        )
+        if self._saved_output_count <= 0 or not folders:
+            self.quick_save_result_box.hide()
+            self.quick_open_folder_button.setEnabled(False)
+            return
+        summary = f"{self._saved_output_count}枚の画像を保存しました"
+        if failed:
+            summary += f"（{failed}件失敗）"
+        self.quick_save_result_summary.setText(summary)
+        tooltip = "\n".join(str(folder) for folder in folders)
+        if len(folders) == 1:
+            self.quick_saved_folder_label.set_path(folders[0])
+        else:
+            self.quick_saved_folder_label.set_value(
+                f"{len(folders)}か所へ保存",
+                tooltip,
+            )
+        self.quick_open_folder_button.setToolTip(tooltip)
+        self.quick_open_folder_button.setEnabled(
+            any(folder.is_dir() for folder in folders)
+        )
+        self.quick_save_result_box.show()
+
+    @Slot()
+    def open_quick_saved_folders(self) -> None:
+        folders = sorted(
+            self._saved_output_folders,
+            key=lambda folder: str(folder).casefold(),
+        )
+        opened = 0
+        for folder in folders:
+            if folder.is_dir() and QDesktopServices.openUrl(
+                QUrl.fromLocalFile(str(folder))
+            ):
+                opened += 1
+        if opened != len(folders):
+            QMessageBox.warning(
+                self,
+                "保存先を開けません",
+                "Windows Explorerで保存先を開けませんでした。",
+            )
 
     @Slot()
     def export_all(self) -> None:
@@ -1725,6 +1959,8 @@ class MainWindow(QMainWindow):
         self.navigation.setTabEnabled(self.image_edit_tab, False)
         self.navigation.setTabEnabled(self.pixel_tab, False)
         self._saved_output_count = 0
+        if not copy_mode:
+            self._clear_quick_save_result()
         self._active_split_options = (
             ImageSplitOptions() if copy_mode else copy.deepcopy(self.split_options())
         )
@@ -1746,6 +1982,7 @@ class MainWindow(QMainWindow):
         self._worker.file_status.connect(self._on_file_status)
         self._worker.copy_ready.connect(self._set_clipboard)
         self._worker.outputs_saved.connect(self._set_saved_output_count)
+        self._worker.folder_saved.connect(self._record_saved_output_folder)
         self._worker.finished.connect(self._on_finished)
         self._worker.finished.connect(self._thread.quit)
         self._thread.finished.connect(self._worker.deleteLater)
@@ -1811,6 +2048,9 @@ class MainWindow(QMainWindow):
         self.quick_add_source_button.setEnabled(
             global_open_enabled and self.workspace.current is not None
         )
+        self.quick_add_button.setEnabled(quick_enabled and global_open_enabled)
+        self.quick_queue_clear_button.setEnabled(quick_enabled and bool(self.files))
+        self.quick_reset_button.setEnabled(quick_enabled)
         save_enabled = quick_enabled and bool(self.files)
         self.quick_save_button.setEnabled(save_enabled)
         if self._thread is not None:
@@ -1821,10 +2061,13 @@ class MainWindow(QMainWindow):
             save_hint = "かんたん変換タブで保存できます"
         elif split_options.enabled:
             output_count = len(self.files) * split_options.count
-            save_hint = (
-                f"各画像を{split_options.count}分割し、"
-                f"合計{output_count}枚を保存します"
-            )
+            if len(self.files) == 1:
+                save_hint = f"{split_options.count}枚の画像として保存します"
+            else:
+                save_hint = (
+                    f"{len(self.files)}枚をそれぞれ{split_options.count}分割し、"
+                    f"合計{output_count}枚を保存します"
+                )
         else:
             save_hint = "すべての設定をまとめて適用します"
         self.quick_save_hint.setText(save_hint)
@@ -1890,6 +2133,57 @@ class MainWindow(QMainWindow):
     def _open_pixel_tab_from_edit(self) -> None:
         self.navigation.setCurrentIndex(self.pixel_tab)
 
+    @Slot(object, str)
+    def _handoff_image_result(self, path, target: str) -> None:
+        """Route a verified tool result without introducing a workflow engine."""
+
+        if target != "quick_split":
+            QMessageBox.warning(self, "画像を渡せません", "指定された移動先は利用できません。")
+            return
+        if not self._source_change_available():
+            QMessageBox.information(self, "処理中です", "現在の処理が終わってから、もう一度お試しください。")
+            return
+        result_path = Path(path).resolve()
+        if not result_path.is_file():
+            QMessageBox.warning(self, "高画質化画像が見つかりません", "保存済みの高画質化画像を確認できませんでした。")
+            return
+
+        self.navigation.setCurrentIndex(self.quick_tab)
+        self._clear_quick_queue_state()
+        key = str(result_path).casefold()
+        self._quick_source_origins[key] = "高画質化済みの画像"
+        self.set_current_source(result_path)
+
+        row_index = next(
+            (
+                index
+                for index, info in enumerate(self.files)
+                if str(info.path.resolve()).casefold() == key
+            ),
+            -1,
+        )
+        if row_index < 0:
+            self.load_paths([result_path], update_workspace=False)
+            row_index = next(
+                (
+                    index
+                    for index, info in enumerate(self.files)
+                    if str(info.path.resolve()).casefold() == key
+                ),
+                -1,
+            )
+        if row_index >= 0:
+            self.file_tree.setCurrentItem(self.file_tree.topLevelItem(row_index))
+
+        self.split_direction_buttons[SplitDirection.VERTICAL].setChecked(True)
+        self.split_count_buttons[4].setChecked(True)
+        self.split_enable_check.setChecked(True)
+        self.split_section.toggle.setChecked(True)
+        self.preview_zoom_buttons["全体表示"].setChecked(True)
+        self.preview.set_zoom_factor(None)
+        self._split_settings_changed()
+        self.statusBar().showMessage("高画質化済みの画像を画像分割へ渡しました")
+
     @Slot(bool)
     def _edit_processing_changed(self, processing: bool) -> None:
         self.navigation.setTabEnabled(self.quick_tab, not processing)
@@ -1947,6 +2241,7 @@ class MainWindow(QMainWindow):
     @Slot(int, int)
     def _on_finished(self, succeeded: int, failed: int) -> None:
         split_active = self._active_split_options.enabled
+        self._show_quick_save_result(failed)
         if failed:
             if split_active:
                 status = f"完了 · {self._saved_output_count}枚保存 · エラー {failed}件"

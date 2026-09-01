@@ -63,7 +63,11 @@ from .thumbnail_storage import (
     ThumbnailTemplateStore,
     settings_to_dict,
 )
-from .ui_styles import INPUT_CONTROL_STYLE
+from .ui_styles import (
+    INPUT_CONTROL_STYLE,
+    PRIMARY_SETTINGS_PANE_MIN_WIDTH,
+    set_operation_role,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -416,7 +420,7 @@ class ThumbnailPage(QWidget):
         settings_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        settings_scroll.setMinimumWidth(220)
+        settings_scroll.setMinimumWidth(PRIMARY_SETTINGS_PANE_MIN_WIDTH)
         settings_scroll.setMaximumWidth(560)
         settings_content = QWidget()
         self.settings_content = settings_content
@@ -639,6 +643,7 @@ class ThumbnailPage(QWidget):
         )
         self.folder_button = QPushButton("保存先を選ぶ…")
         self.folder_button.clicked.connect(self.choose_output_folder)
+        set_operation_role(self.folder_button, "secondary")
         self.export_form.addRow("保存先", self.folder_label)
         self.export_form.addRow("", self.folder_button)
         settings_layout.addWidget(self.export_group)
@@ -697,7 +702,13 @@ class ThumbnailPage(QWidget):
         self.titles_heading.setStyleSheet(
             "font-size: 19px; font-weight: 750; color: #182230;"
         )
-        batch_layout.addWidget(self.titles_heading)
+        titles_header = QHBoxLayout()
+        titles_header.setContentsMargins(0, 0, 0, 0)
+        self.clear_titles_button = QPushButton("入力をクリア")
+        set_operation_role(self.clear_titles_button, "secondary")
+        titles_header.addWidget(self.titles_heading, 1)
+        titles_header.addWidget(self.clear_titles_button)
+        batch_layout.addLayout(titles_header)
         titles_help = QLabel("1行につき1枚のサムネイルを作成します")
         titles_help.setStyleSheet("color: #667085;")
         batch_layout.addWidget(titles_help)
@@ -712,6 +723,7 @@ class ThumbnailPage(QWidget):
         )
         self.titles_edit.setMinimumHeight(210)
         self.titles_edit.textChanged.connect(self._titles_changed)
+        self.clear_titles_button.clicked.connect(self.titles_edit.clear)
         batch_layout.addWidget(self.titles_edit, 2)
 
         self.title_count = QLabel("0枚生成予定")
@@ -725,6 +737,7 @@ class ThumbnailPage(QWidget):
         self.generate_button.setObjectName("generateButton")
         self.generate_button.clicked.connect(self.generate_all)
         self.generate_button.setEnabled(False)
+        set_operation_role(self.generate_button, "primary")
         batch_layout.addWidget(self.generate_button)
 
         self.result_label = QLabel("")
@@ -732,8 +745,9 @@ class ThumbnailPage(QWidget):
         batch_layout.addWidget(self.result_label)
 
         self.result_destination = QWidget()
+        set_operation_role(self.result_destination, "saveResult")
         destination_layout = QVBoxLayout(self.result_destination)
-        destination_layout.setContentsMargins(0, 2, 0, 4)
+        destination_layout.setContentsMargins(7, 6, 7, 7)
         destination_layout.setSpacing(4)
         destination_heading = QLabel("保存先")
         destination_heading.setStyleSheet("font-weight: 700; color: #344054;")
@@ -742,6 +756,7 @@ class ThumbnailPage(QWidget):
         self.open_result_folder_button.clicked.connect(
             self.open_result_folder
         )
+        set_operation_role(self.open_result_folder_button, "secondary")
         destination_layout.addWidget(destination_heading)
         destination_layout.addWidget(self.result_folder_label)
         destination_layout.addWidget(self.open_result_folder_button)
@@ -754,6 +769,9 @@ class ThumbnailPage(QWidget):
         self.result_tree = QTreeWidget()
         self.result_tree.setHeaderLabels(["番号", "タイトル", "状態"])
         self.result_tree.setAlternatingRowColors(True)
+        self.result_tree.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self.result_tree.setMinimumHeight(140)
         header = self.result_tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
@@ -1303,6 +1321,7 @@ class ThumbnailPage(QWidget):
             else "タイトルを入力してください"
         )
         self.generate_button.setEnabled(bool(records) and not self._processing)
+        self.clear_titles_button.setEnabled(bool(records) and not self._processing)
         self.progress.setValue(0)
         self.progress_count.setText(f"0 / {count}")
         self._reset_result_summary()
@@ -1434,6 +1453,7 @@ class ThumbnailPage(QWidget):
         self._processing = processing
         for widget in (
             self.titles_edit,
+            self.clear_titles_button,
             self.generate_button,
             self.template_combo,
             self.template_save_button,

@@ -27,3 +27,18 @@
 - Reuse the existing Phase 4A split core, batch worker, naming, destination, and encoding paths; do not introduce a second split-only export pipeline.
 - Quick preview zoom is explicit view state: `None` means fit, while `1.0` and `2.0` mean 100% and 200%. Image refresh preserves the selected fixed zoom and guides remain scene-coordinate overlays with cosmetic pens.
 - Do not add panel thumbnails in the compact three-column workspace. The source overlay guides, ordered filename preview, and saved-panel verification provide sufficient confirmation without reducing the central preview or increasing left-pane density.
+
+## Quick save destination result UX
+
+- Normal, split, and batch Quick exports share one result contract. The worker reports an output folder only after an output has been written successfully; total failure never presents a successful destination action.
+- `保存先とプライバシー` shows the planned destination both while expanded and as a compact collapsed summary. Long paths are elided for layout safety and remain available in full through tooltips.
+- A compact result card outside the accordion retains the last successful output count and actual folder access. Multiple successful folders are represented as multiple destinations and `保存先を開く` opens each one.
+- Starting a new file-save operation or using `すべてクリア` clears stale save-result state. Clipboard-only processing does not create a save result.
+
+## Phase 4D operation placement and result handoff
+
+- Use shared visual operation roles for primary execution, secondary actions, and save-result cards while preserving tool-specific action wording where it conveys the operation.
+- Keep reset and clear in sticky settings footers and keep target-list add/clear actions adjacent to the list. Save results pair the result summary, actual destination, and open-folder action.
+- Pass a verified, already auto-saved Upscale output through a small `(path, target)` signal. This reuses the current file-path processing architecture without introducing another temporary file or a workflow engine.
+- An Upscale → Image Split handoff replaces only the Quick target queue, preserves Quick settings and the Upscale page result, sets the shared Current Source to the result, and opens the default vertical four-way split.
+- Apply the common 250 px settings-pane baseline to compatible tools. Retain Thumbnail's accepted 30/43/27 layout because forcing it to 250/340 breaks its title-entry workflow.

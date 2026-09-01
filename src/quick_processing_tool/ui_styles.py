@@ -43,4 +43,52 @@ QComboBox QAbstractItemView {
     selection-color: #182230;
     outline: 0;
 }
+QPushButton[operationRole="primary"] {
+    background-color: #315fbd;
+    color: #ffffff;
+    border: 1px solid #244b99;
+    border-radius: 8px;
+    font-weight: 700;
+    padding: 3px 10px;
+    min-height: 24px;
+}
+QPushButton[operationRole="primary"]:hover {
+    background-color: #284fa1;
+}
+QPushButton[operationRole="primary"]:pressed {
+    background-color: #1f3f82;
+}
+QPushButton[operationRole="primary"]:disabled {
+    background-color: #d9dee7;
+    color: #8a94a3;
+    border-color: #c8ced8;
+}
+QPushButton[operationRole="secondary"] {
+    background-color: #f8fafc;
+    color: #344054;
+    border: 1px solid #aeb9c7;
+    border-radius: 7px;
+    min-height: 24px;
+    padding: 3px 8px;
+}
+QPushButton[operationRole="secondary"]:hover {
+    background-color: #edf2f7;
+    border-color: #66788c;
+}
+QPushButton[operationRole="secondary"]:disabled {
+    background-color: #f3f4f6;
+    color: #9aa1aa;
+    border-color: #d4d8de;
+}
+QWidget[operationRole="saveResult"] {
+    background-color: #edf7ed;
+    border: 1px solid #a8d5ad;
+    border-radius: 8px;
+}
 """
+
+
+def set_operation_role(widget, role: str) -> None:
+    """Apply a shared visual role without coupling page modules together."""
+
+    widget.setProperty("operationRole", role)

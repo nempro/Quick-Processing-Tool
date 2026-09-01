@@ -18,7 +18,12 @@ from .pixel_editor.importers import SUPPORTED_IMAGE_FORMATS, load_reference, loa
 from .pixel_editor.models import PixelExportResult, PixelTool, ReferenceImage
 from .pixel_editor.service import PixelExportError, save_png
 from .naming import normalize_filename_stem
-from .ui_styles import INPUT_CONTROL_STYLE
+from .ui_styles import (
+    INPUT_CONTROL_STYLE,
+    PRIMARY_SETTINGS_PANE_MAX_WIDTH,
+    PRIMARY_SETTINGS_PANE_MIN_WIDTH,
+    set_operation_role,
+)
 from .color_picker import choose_color
 from .errors import ProcessingError
 from .image_workspace import MISSING_SOURCE_MESSAGE, MissingSourceError, SourceImage, read_source_image
@@ -350,6 +355,8 @@ class PixelEditorPage(QWidget):
         left.setObjectName("pixelSettingsScroll")
         left.setWidgetResizable(True)
         left.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left.setMinimumWidth(PRIMARY_SETTINGS_PANE_MIN_WIDTH)
+        left.setMaximumWidth(PRIMARY_SETTINGS_PANE_MAX_WIDTH)
         left_widget = QWidget()
         left_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         left_layout = QVBoxLayout(left_widget)
@@ -684,6 +691,7 @@ class PixelEditorPage(QWidget):
         rl.addWidget(self.output_folder_value)
         self.choose_folder_button = QPushButton("保存先を選ぶ")
         self.choose_folder_button.clicked.connect(self.choose_output_folder)
+        set_operation_role(self.choose_folder_button, "secondary")
         rl.addWidget(self.choose_folder_button)
         rl.addWidget(QLabel("保存予定"))
         self.planned_output_value = ElidedValueLabel()
@@ -696,13 +704,22 @@ class PixelEditorPage(QWidget):
         self.save_button = QPushButton("PNGで保存")
         self.save_button.setObjectName("pixelSave")
         self.save_button.clicked.connect(self.save)
+        set_operation_role(self.save_button, "primary")
         rl.addWidget(self.save_button)
+        self.saved_box = QWidget()
+        set_operation_role(self.saved_box, "saveResult")
+        saved_layout = QVBoxLayout(self.saved_box)
+        saved_layout.setContentsMargins(7, 6, 7, 7)
+        saved_layout.setSpacing(4)
         self.saved_label = QLabel()
         self.saved_label.setWordWrap(True)
-        rl.addWidget(self.saved_label)
+        saved_layout.addWidget(self.saved_label)
         self.open_folder_button = QPushButton("保存先を開く")
         self.open_folder_button.clicked.connect(self.open_saved_folder)
-        rl.addWidget(self.open_folder_button)
+        set_operation_role(self.open_folder_button, "secondary")
+        saved_layout.addWidget(self.open_folder_button)
+        self.saved_box.hide()
+        rl.addWidget(self.saved_box)
 
         splitter.addWidget(left)
         splitter.addWidget(center)
@@ -1296,6 +1313,7 @@ class PixelEditorPage(QWidget):
             self.save_hint_label.setText("同名ファイルがある場合は自動で連番を付けます。")
             self.save_button.setEnabled(True)
         self.open_folder_button.setEnabled(self._last_saved_result is not None and self._last_saved_result.output_path.parent.is_dir())
+        self.saved_box.setVisible(self._last_saved_result is not None)
 
     def choose_output_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "保存先を選ぶ", str(self.output_folder or ""))

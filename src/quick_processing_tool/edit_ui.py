@@ -98,6 +98,7 @@ from .ui_styles import (
     PRIMARY_SETTINGS_PANE_DEFAULT_WIDTH,
     PRIMARY_SETTINGS_PANE_MAX_WIDTH,
     PRIMARY_SETTINGS_PANE_MIN_WIDTH,
+    set_operation_role,
 )
 from .preview_activity import PreviewActivityIndicator
 
@@ -1353,8 +1354,6 @@ class QuickEditPage(QWidget):
         self.clear_all_button.clicked.connect(self.clear_all)
         history_row.addWidget(self.undo_button, 0, 0)
         history_row.addWidget(self.redo_button, 0, 1)
-        history_row.addWidget(self.reset_button, 1, 0)
-        history_row.addWidget(self.clear_all_button, 1, 1)
         ll.addLayout(history_row)
 
         filter_content = QWidget()
@@ -1837,7 +1836,28 @@ class QuickEditPage(QWidget):
         ll.addWidget(self.material_section)
         ll.addStretch()
         self.settings_scroll.setWidget(left)
-        splitter.addWidget(self.settings_scroll)
+        self.settings_panel = QWidget()
+        self.settings_panel.setObjectName("edit_settings_panel")
+        self.settings_panel.setMinimumWidth(PRIMARY_SETTINGS_PANE_MIN_WIDTH)
+        self.settings_panel.setMaximumWidth(PRIMARY_SETTINGS_PANE_MAX_WIDTH)
+        settings_panel_layout = QVBoxLayout(self.settings_panel)
+        settings_panel_layout.setContentsMargins(0, 0, 0, 0)
+        settings_panel_layout.setSpacing(0)
+        settings_panel_layout.addWidget(self.settings_scroll, 1)
+        self.settings_footer = QFrame()
+        self.settings_footer.setObjectName("edit_settings_footer")
+        self.settings_footer.setStyleSheet(
+            "QFrame#edit_settings_footer { background:#f8fafc; border-top:1px solid #cbd5e1; }"
+        )
+        settings_footer_layout = QHBoxLayout(self.settings_footer)
+        settings_footer_layout.setContentsMargins(8, 6, 8, 8)
+        settings_footer_layout.setSpacing(4)
+        set_operation_role(self.reset_button, "secondary")
+        set_operation_role(self.clear_all_button, "secondary")
+        settings_footer_layout.addWidget(self.reset_button, 1)
+        settings_footer_layout.addWidget(self.clear_all_button, 1)
+        settings_panel_layout.addWidget(self.settings_footer)
+        splitter.addWidget(self.settings_panel)
 
         center = QWidget()
         cl = QVBoxLayout(center)
@@ -2000,16 +2020,18 @@ class QuickEditPage(QWidget):
         self.save_hint_label.setWordWrap(True)
         self.save_hint_label.setStyleSheet("color: #667085;")
         rl.addWidget(self.save_hint_label)
-        self.save_button = QPushButton("加工した画像を保存")
+        self.save_button = QPushButton("現在の設定で保存")
         self.save_button.setObjectName("editSave")
         self.save_button.clicked.connect(self.save_image)
+        set_operation_role(self.save_button, "primary")
         rl.addWidget(self.save_button)
         self.result_label = QLabel()
         self.result_label.setWordWrap(True)
         rl.addWidget(self.result_label)
         self.saved_box = QWidget()
+        set_operation_role(self.saved_box, "saveResult")
         saved_layout = QVBoxLayout(self.saved_box)
-        saved_layout.setContentsMargins(0, 2, 0, 0)
+        saved_layout.setContentsMargins(7, 6, 7, 7)
         saved_layout.setSpacing(4)
         self.saved_filename = ElidedPathLabel()
         self.saved_filename.setObjectName("editSavedFilename")
@@ -2032,6 +2054,8 @@ class QuickEditPage(QWidget):
         self.open_folder_button.setMinimumWidth(0)
         self.open_folder_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.open_folder_button.clicked.connect(self.open_saved_folder)
+        set_operation_role(self.open_image_button, "secondary")
+        set_operation_role(self.open_folder_button, "secondary")
         saved_actions.addWidget(self.open_image_button, 1)
         saved_actions.addWidget(self.open_folder_button, 1)
         saved_layout.addLayout(saved_actions)

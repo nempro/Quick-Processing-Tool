@@ -22,7 +22,12 @@ from .speech_bubble import (
     BubbleGeometry, BubbleShape, SpeechBubbleSettings, TailPreset,
     render_speech_bubble, save_speech_bubble,
 )
-from .ui_styles import INPUT_CONTROL_STYLE
+from .ui_styles import (
+    INPUT_CONTROL_STYLE,
+    PRIMARY_SETTINGS_PANE_MAX_WIDTH,
+    PRIMARY_SETTINGS_PANE_MIN_WIDTH,
+    set_operation_role,
+)
 
 
 BUBBLE_STYLE = INPUT_CONTROL_STYLE + """
@@ -216,8 +221,8 @@ class SpeechBubblePage(QWidget):
         self.settings_scroll = QScrollArea()
         self.settings_scroll.setWidgetResizable(True)
         self.settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.settings_scroll.setMinimumWidth(210)
-        self.settings_scroll.setMaximumWidth(340)
+        self.settings_scroll.setMinimumWidth(PRIMARY_SETTINGS_PANE_MIN_WIDTH)
+        self.settings_scroll.setMaximumWidth(PRIMARY_SETTINGS_PANE_MAX_WIDTH)
         host = QWidget()
         host.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         left = QVBoxLayout(host)
@@ -232,6 +237,7 @@ class SpeechBubblePage(QWidget):
         self.clear_all_button = QPushButton("すべてクリア")
         for button in (self.reset_button, self.clear_all_button):
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            set_operation_role(button, "secondary")
             reset_layout.addWidget(button)
         left.addWidget(reset_actions)
         left.addStretch(1)
@@ -268,6 +274,7 @@ class SpeechBubblePage(QWidget):
         self.filename_edit = QLineEdit()
         save.addWidget(self.filename_edit)
         self.folder_button = QPushButton("保存先を選ぶ…")
+        set_operation_role(self.folder_button, "secondary")
         save.addWidget(self.folder_button)
         self.folder_label = ElidedPathLabel()
         save.addWidget(self.folder_label)
@@ -277,12 +284,15 @@ class SpeechBubblePage(QWidget):
         save.addStretch(1)
         self.save_button = QPushButton("透明PNGで保存")
         self.save_button.setObjectName("bubbleSave")
+        set_operation_role(self.save_button, "primary")
         save.addWidget(self.save_button)
         self.save_result = QLabel()
         self.save_result.setWordWrap(True)
         save.addWidget(self.save_result)
         self.open_image_button = QPushButton("画像を開く")
         self.open_folder_button = QPushButton("保存先を開く")
+        set_operation_role(self.open_image_button, "secondary")
+        set_operation_role(self.open_folder_button, "secondary")
         self.open_image_button.hide()
         self.open_folder_button.hide()
         save.addWidget(self.open_image_button)
