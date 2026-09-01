@@ -16,6 +16,7 @@ from .image_splitting import (
 )
 from .models import ImageInfo, OutputFormat, ProcessedImage, ProcessingOptions, ResizeMode
 from .processors.encode import encode_best_quality
+from .processors.crop import crop_image
 from .processors.metadata import safe_metadata
 from .processors.resize import resize_image
 from .processors.transform import apply_transforms, normalize_orientation
@@ -57,7 +58,8 @@ def process_image(path: Path, options: ProcessingOptions) -> ProcessedImage:
                 raise UnsupportedImageError("PNG / JPEG / WebP のみ開けます。")
             metadata = safe_metadata(opened, options.remove_metadata)
             normalized = normalize_orientation(opened)
-            transformed = apply_transforms(normalized, options.transforms)
+            cropped = crop_image(normalized, options.crop_rect)
+            transformed = apply_transforms(cropped, options.transforms)
             resized = resize_image(transformed, options)
             output_format = resolve_output_format(original_format, options.output_format)
 
@@ -134,7 +136,8 @@ def process_image_splits(
                 raise UnsupportedImageError("PNG / JPEG / WebP のみ開けます。")
             metadata = safe_metadata(opened, options.remove_metadata)
             normalized = normalize_orientation(opened)
-            transformed = apply_transforms(normalized, options.transforms)
+            cropped = crop_image(normalized, options.crop_rect)
+            transformed = apply_transforms(cropped, options.transforms)
             resized = resize_image(transformed, options)
             output_format = resolve_output_format(original_format, options.output_format)
             try:

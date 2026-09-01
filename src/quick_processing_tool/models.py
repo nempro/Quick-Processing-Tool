@@ -42,6 +42,8 @@ class ProcessingOptions:
     preserve_timestamp: bool = True
     jpeg_background: tuple[int, int, int] = (255, 255, 255)
     transforms: list[Transform] = field(default_factory=list)
+    # (x, y, width, height), normalized to the oriented source image.
+    crop_rect: tuple[float, float, float, float] | None = None
 
 
 @dataclass(slots=True)

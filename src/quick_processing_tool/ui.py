@@ -8,8 +8,8 @@ import sys
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
-from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, Qt, QThread, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QDragEnterEvent, QDropEvent, QGuiApplication, QImage, QPainter, QPainterPath, QPainterPathStroker, QPen, QPixmap
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QDragEnterEvent, QDropEvent, QGuiApplication, QImage, QKeySequence, QPainter, QPainterPath, QPainterPathStroker, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGraphicsLineItem,
     QGraphicsPixmapItem,
+    QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsView,
     QGroupBox,
@@ -65,6 +66,7 @@ from .models import ImageInfo, OutputFormat, ProcessingOptions, ResizeMode, Tran
 from .naming import unique_output_path, unique_split_output_paths
 from .pipeline import process_image, process_image_splits, read_image_info, write_processed
 from .processors.resize import output_dimensions
+from .processors.crop import crop_box_for_image, normalize_crop_rect
 from .processors.transform import normalize_orientation
 from .thumbnail_ui import ThumbnailPage
 from .edit_ui import ElidedPathLabel, QuickEditPage
@@ -204,10 +206,11 @@ class SplitGuideItem(QGraphicsLineItem):
         self._index = index
         self.setAcceptHoverEvents(True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
-        self.setZValue(10)
+        self.setZValue(30)
         self.setToolTip("ドラッグして分割位置を調整します（各パネルは最低16px）")
 
     def _hit_width(self) -> float:
+        """Keep a 24px-wide target on screen while the visible guide stays thin."""
         scale = (
             self._preview.transform().m11()
             if self._preview._split_direction is SplitDirection.VERTICAL
@@ -277,10 +280,107 @@ class SplitGuideItem(QGraphicsLineItem):
         super().mouseReleaseEvent(event)
 
 
+class CropOverlayItem(QGraphicsRectItem):
+    """Interactive crop frame; the PreviewCanvas owns its normalized state."""
+
+    def __init__(self, preview: "PreviewCanvas") -> None:
+        super().__init__()
+        self._preview = preview
+        self._mode = ""
+        self._start_rect = QRectF()
+        self._start_point = QPointF()
+        pen = QPen(QColor("#61d6a6"))
+        pen.setWidthF(2.0)
+        pen.setCosmetic(True)
+        self.setPen(pen)
+        self.setBrush(QColor(68, 196, 144, 28))
+        self.setAcceptHoverEvents(True)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+        self.setZValue(20)
+        self.setToolTip("辺・角をドラッグして切り抜き、内側をドラッグして移動します")
+
+    def _hit_margin(self) -> float:
+        scale = max(0.01, abs(self._preview.transform().m11()))
+        return 10.0 / scale
+
+    def _mode_for(self, point: QPointF) -> str:
+        rect = self.rect()
+        margin = self._hit_margin()
+        left = abs(point.x() - rect.left()) <= margin
+        right = abs(point.x() - rect.right()) <= margin
+        top = abs(point.y() - rect.top()) <= margin
+        bottom = abs(point.y() - rect.bottom()) <= margin
+        if top and left:
+            return "top_left"
+        if top and right:
+            return "top_right"
+        if bottom and left:
+            return "bottom_left"
+        if bottom and right:
+            return "bottom_right"
+        if left:
+            return "left"
+        if right:
+            return "right"
+        if top:
+            return "top"
+        if bottom:
+            return "bottom"
+        return "move" if rect.contains(point) else ""
+
+    @staticmethod
+    def _cursor(mode: str) -> Qt.CursorShape:
+        if mode in {"left", "right"}:
+            return Qt.CursorShape.SizeHorCursor
+        if mode in {"top", "bottom"}:
+            return Qt.CursorShape.SizeVerCursor
+        if mode in {"top_left", "bottom_right"}:
+            return Qt.CursorShape.SizeFDiagCursor
+        if mode in {"top_right", "bottom_left"}:
+            return Qt.CursorShape.SizeBDiagCursor
+        return Qt.CursorShape.SizeAllCursor
+
+    def hoverMoveEvent(self, event) -> None:  # noqa: N802
+        mode = self._mode_for(event.pos())
+        if mode:
+            self.setCursor(self._cursor(mode))
+        super().hoverMoveEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() is Qt.MouseButton.LeftButton:
+            self._mode = self._mode_for(event.pos())
+            if self._mode:
+                self._start_rect = QRectF(self.rect())
+                self._start_point = event.scenePos()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._mode:
+            self._preview._drag_crop_overlay(
+                self._mode, self._start_rect, self._start_point, event.scenePos()
+            )
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._mode and event.button() is Qt.MouseButton.LeftButton:
+            self._preview._drag_crop_overlay(
+                self._mode, self._start_rect, self._start_point, event.scenePos()
+            )
+            self._mode = ""
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class PreviewCanvas(QGraphicsView):
     """A scene-based preview, ready for future editable overlay layers."""
 
     split_boundaries_changed = Signal(object)
+    crop_rect_changed = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -293,16 +393,26 @@ class PreviewCanvas(QGraphicsView):
         self._split_count = 4
         self._split_boundaries: tuple[float, ...] | None = None
         self._guide_items: list[SplitGuideItem] = []
+        self._hovered_split_guide_index: int | None = None
+        self._dragging_split_guide_index: int | None = None
+        self._crop_enabled = False
+        self._crop_rect: tuple[float, float, float, float] | None = None
+        self._crop_aspect: float | None = None
+        self._crop_item: CropOverlayItem | None = None
         self._zoom_factor: float | None = None
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setBackgroundBrush(QColor("#202124"))
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+        self.viewport().installEventFilter(self)
 
     def set_image(self, image: QImage) -> None:
         self._image_item.setPixmap(QPixmap.fromImage(image))
         self.scene().setSceneRect(self._image_item.boundingRect())
         self._update_split_guides()
+        self._update_crop_overlay()
         self._apply_zoom()
 
     def clear_image(self) -> None:
@@ -322,11 +432,133 @@ class PreviewCanvas(QGraphicsView):
         self._split_count = count
         self._split_boundaries = boundaries
         self._update_split_guides()
+        self._update_crop_overlay()
 
     def _clear_split_guides(self) -> None:
         for item in self._guide_items:
             self.scene().removeItem(item)
         self._guide_items.clear()
+        self._hovered_split_guide_index = None
+        self._dragging_split_guide_index = None
+
+    def set_crop_overlay(
+        self,
+        enabled: bool,
+        rect: tuple[float, float, float, float] | None,
+        aspect: float | None,
+    ) -> None:
+        self._crop_enabled = enabled
+        self._crop_rect = rect
+        self._crop_aspect = aspect
+        self._update_crop_overlay()
+
+    def _update_crop_overlay(self) -> None:
+        if self._crop_item is not None:
+            self.scene().removeItem(self._crop_item)
+            self._crop_item = None
+        pixmap = self._image_item.pixmap()
+        if pixmap.isNull() or not self._crop_enabled:
+            return
+        x, y, width, height = self._crop_rect or (0.0, 0.0, 1.0, 1.0)
+        item = CropOverlayItem(self)
+        item.setRect(
+            x * pixmap.width(),
+            y * pixmap.height(),
+            width * pixmap.width(),
+            height * pixmap.height(),
+        )
+        self.scene().addItem(item)
+        self._crop_item = item
+
+    def _drag_crop_overlay(
+        self,
+        mode: str,
+        start: QRectF,
+        start_point: QPointF,
+        point: QPointF,
+    ) -> None:
+        pixmap = self._image_item.pixmap()
+        if pixmap.isNull():
+            return
+        bounds = QRectF(0, 0, pixmap.width(), pixmap.height())
+        minimum = min(16.0, float(min(pixmap.width(), pixmap.height())))
+        delta = point - start_point
+        rect = QRectF(start)
+        if mode == "move":
+            rect.translate(delta)
+            if rect.left() < bounds.left():
+                rect.moveLeft(bounds.left())
+            if rect.right() > bounds.right():
+                rect.moveRight(bounds.right())
+            if rect.top() < bounds.top():
+                rect.moveTop(bounds.top())
+            if rect.bottom() > bounds.bottom():
+                rect.moveBottom(bounds.bottom())
+        else:
+            if "left" in mode:
+                rect.setLeft(max(bounds.left(), min(start.right() - minimum, point.x())))
+            if "right" in mode:
+                rect.setRight(min(bounds.right(), max(start.left() + minimum, point.x())))
+            if "top" in mode:
+                rect.setTop(max(bounds.top(), min(start.bottom() - minimum, point.y())))
+            if "bottom" in mode:
+                rect.setBottom(min(bounds.bottom(), max(start.top() + minimum, point.y())))
+            if self._crop_aspect is not None:
+                rect = self._aspect_crop_rect(rect, start, mode, bounds, minimum)
+        rect = rect.intersected(bounds)
+        if rect.width() < minimum or rect.height() < minimum:
+            return
+        self._crop_rect = (
+            rect.x() / pixmap.width(),
+            rect.y() / pixmap.height(),
+            rect.width() / pixmap.width(),
+            rect.height() / pixmap.height(),
+        )
+        if self._crop_item is not None:
+            self._crop_item.setRect(rect)
+        self.crop_rect_changed.emit(self._crop_rect)
+
+    def _aspect_crop_rect(
+        self,
+        rect: QRectF,
+        start: QRectF,
+        mode: str,
+        bounds: QRectF,
+        minimum: float,
+    ) -> QRectF:
+        ratio = self._crop_aspect
+        if ratio is None:
+            return rect
+        if mode in {"top", "bottom"}:
+            height = max(minimum, rect.height())
+            width = height * ratio
+        elif mode in {"left", "right"}:
+            width = max(minimum, rect.width())
+            height = width / ratio
+        else:
+            width = max(minimum, rect.width())
+            height = width / ratio
+            if height < minimum:
+                height = minimum
+                width = height * ratio
+        scale = min(1.0, bounds.width() / width, bounds.height() / height)
+        width *= scale
+        height *= scale
+        if "left" in mode:
+            x = start.right() - width
+        elif "right" in mode:
+            x = start.left()
+        else:
+            x = rect.center().x() - width / 2
+        if "top" in mode:
+            y = start.bottom() - height
+        elif "bottom" in mode:
+            y = start.top()
+        else:
+            y = rect.center().y() - height / 2
+        x = min(max(bounds.left(), x), bounds.right() - width)
+        y = min(max(bounds.top(), y), bounds.bottom() - height)
+        return QRectF(x, y, width, height)
 
     def _update_split_guides(self) -> None:
         self._clear_split_guides()
@@ -554,7 +786,7 @@ class DropZone(QWidget):
         stack.setContentsMargins(0, 0, 0, 0)
         stack.addWidget(self.preview)
 
-        self.overlay = QFrame()
+        self.overlay = RoundedDropOverlay()
         self.overlay.setObjectName("dropOverlay")
         self.overlay.setAcceptDrops(True)
         self.overlay.installEventFilter(self)
@@ -932,6 +1164,7 @@ class MainWindow(QMainWindow):
         self._split_boundaries: tuple[float, ...] | None = None
         self._split_boundary_direction = SplitDirection.VERTICAL
         self._split_boundary_count = 4
+        self._crop_rect: tuple[float, float, float, float] | None = None
         self._saved_output_count = 0
         self._saved_output_folders: set[Path] = set()
         self._quick_source_origins: dict[str, str] = {}
@@ -1023,6 +1256,7 @@ class MainWindow(QMainWindow):
         self.preview.split_boundaries_changed.connect(
             self._split_boundaries_changed
         )
+        self.preview.crop_rect_changed.connect(self._crop_rect_changed)
         self._update_split_preview_guides()
         zoom_row = QHBoxLayout()
         zoom_row.setContentsMargins(0, 0, 0, 0)
@@ -1079,11 +1313,15 @@ class MainWindow(QMainWindow):
         batch_actions.setSpacing(4)
         self.quick_add_button = QPushButton("画像を追加")
         self.quick_add_button.clicked.connect(self.open_files)
+        self.quick_remove_button = QPushButton("選択を削除")
+        self.quick_remove_button.clicked.connect(self.remove_selected_quick_file)
         self.quick_queue_clear_button = QPushButton("一覧をクリア")
         self.quick_queue_clear_button.clicked.connect(self.clear_quick_queue)
         set_operation_role(self.quick_add_button, "secondary")
+        set_operation_role(self.quick_remove_button, "secondary")
         set_operation_role(self.quick_queue_clear_button, "secondary")
         batch_actions.addWidget(self.quick_add_button, 1)
+        batch_actions.addWidget(self.quick_remove_button, 1)
         batch_actions.addWidget(self.quick_queue_clear_button, 1)
         batch_layout.addLayout(batch_actions)
         self.file_tree = QTreeWidget()
@@ -1100,6 +1338,8 @@ class MainWindow(QMainWindow):
         self.file_tree.setColumnWidth(1, 58)
         self.file_tree.setColumnWidth(2, 68)
         self.file_tree.currentItemChanged.connect(self._tree_selection_changed)
+        self.quick_remove_shortcut = QShortcut(QKeySequence("Delete"), self.file_tree)
+        self.quick_remove_shortcut.activated.connect(self.remove_selected_quick_file)
         batch_layout.addWidget(self.file_tree, 1)
         self.progress = QProgressBar()
         self.progress.setValue(0)
@@ -1338,6 +1578,46 @@ class MainWindow(QMainWindow):
         )
         split_content.setObjectName("split_settings")
         layout.addWidget(self.split_section)
+
+        crop_content = QWidget()
+        crop_layout = QVBoxLayout(crop_content)
+        crop_layout.setContentsMargins(0, 2, 0, 0)
+        crop_layout.setSpacing(5)
+        self.crop_ratio_combo = QComboBox()
+        for label, value in (
+            ("自由", None),
+            ("1:1", 1.0),
+            ("3:4", 3 / 4),
+            ("4:3", 4 / 3),
+            ("16:9", 16 / 9),
+            ("9:16", 9 / 16),
+        ):
+            self.crop_ratio_combo.addItem(label, value)
+        self.crop_ratio_combo.currentIndexChanged.connect(self._crop_ratio_changed)
+        crop_layout.addWidget(QLabel("比率"))
+        crop_layout.addWidget(self.crop_ratio_combo)
+        crop_summary_row = QHBoxLayout()
+        self.crop_summary = QLabel("画像全体")
+        self.crop_summary.setWordWrap(True)
+        self.crop_summary.setStyleSheet("color: #667085; padding: 2px;")
+        crop_summary_row.addWidget(self.crop_summary, 1)
+        self.crop_reset_button = QPushButton("全体に戻す")
+        self.crop_reset_button.clicked.connect(self.reset_crop)
+        set_operation_role(self.crop_reset_button, "secondary")
+        crop_summary_row.addWidget(self.crop_reset_button)
+        crop_layout.addLayout(crop_summary_row)
+        crop_hint = QLabel("枠の辺・角をドラッグして調整し、内側をドラッグして移動できます")
+        crop_hint.setWordWrap(True)
+        crop_hint.setStyleSheet("color: #667085; font-size: 11px;")
+        crop_layout.addWidget(crop_hint)
+        self.crop_section = CollapsibleSection(
+            "画像を切り抜く",
+            "保存時に必要な範囲だけを切り抜きます",
+            crop_content,
+        )
+        crop_content.setObjectName("crop_settings")
+        self.crop_section.toggle.toggled.connect(self._crop_section_toggled)
+        layout.addWidget(self.crop_section)
         destination_content = QWidget()
         self.destination_form = QFormLayout(destination_content)
         self.destination_combo = QComboBox()
@@ -1391,6 +1671,7 @@ class MainWindow(QMainWindow):
             format_section,
             transform_section,
             self.split_section,
+            self.crop_section,
             self.destination_section,
         ]
 
@@ -1492,6 +1773,7 @@ class MainWindow(QMainWindow):
             )
         self._destination_changed()
         self._split_settings_changed()
+        self._update_crop_summary()
         return panel
 
     def _quick_section_toggled(
@@ -1773,6 +2055,8 @@ class MainWindow(QMainWindow):
         kind, payload = result
         if kind == "success" and self._quick_preview_request_is_current(request):
             self.drop_zone.set_image(payload[-1])
+            self._update_crop_preview_overlay()
+            self._update_crop_summary()
             if self._quick_preview_activity_token is not None:
                 self.quick_preview_activity.complete(self._quick_preview_activity_token)
         else:
@@ -1806,7 +2090,83 @@ class MainWindow(QMainWindow):
             preserve_timestamp=self.timestamp_check.isChecked(),
             jpeg_background=background,
             transforms=list(self.transform_queue),
+            crop_rect=self._crop_rect,
         )
+
+    def _crop_aspect(self) -> float | None:
+        value = self.crop_ratio_combo.currentData()
+        return None if value is None else float(value)
+
+    def _crop_section_toggled(self, _expanded: bool) -> None:
+        self._update_crop_preview_overlay()
+
+    def _update_crop_preview_overlay(self) -> None:
+        if not hasattr(self, "preview"):
+            return
+        self.preview.set_crop_overlay(
+            self.crop_section.toggle.isChecked(),
+            self._crop_rect,
+            self._crop_aspect(),
+        )
+
+    def _current_crop_rect_pixels(self) -> tuple[int, int, int, int] | None:
+        if not 0 <= self.current_index < len(self.files):
+            return None
+        info = self.files[self.current_index]
+        return crop_box_for_image((info.width, info.height), self._crop_rect)
+
+    def _update_crop_summary(self) -> None:
+        box = self._current_crop_rect_pixels()
+        if box is None:
+            self.crop_summary.setText("画像を読み込むと範囲を調整できます")
+            self.crop_reset_button.setEnabled(False)
+            return
+        left, top, right, bottom = box
+        if self._crop_rect is None:
+            self.crop_summary.setText(f"画像全体 · {right - left} × {bottom - top} px")
+        else:
+            self.crop_summary.setText(f"{right - left} × {bottom - top} px")
+        self.crop_reset_button.setEnabled(
+            self._crop_rect is not None or self._crop_aspect() is not None
+        )
+
+    @Slot(int)
+    def _crop_ratio_changed(self, _index: int) -> None:
+        if not 0 <= self.current_index < len(self.files):
+            self._update_crop_summary()
+            return
+        aspect = self._crop_aspect()
+        if aspect is not None:
+            info = self.files[self.current_index]
+            source_ratio = info.width / info.height
+            if source_ratio >= aspect:
+                width = aspect / source_ratio
+                rect = ((1 - width) / 2, 0.0, width, 1.0)
+            else:
+                height = source_ratio / aspect
+                rect = (0.0, (1 - height) / 2, 1.0, height)
+            self._crop_rect = normalize_crop_rect(rect)
+        self._update_crop_preview_overlay()
+        self._update_crop_summary()
+        self._settings_changed()
+
+    @Slot(object)
+    def _crop_rect_changed(self, rect) -> None:
+        try:
+            self._crop_rect = normalize_crop_rect(tuple(rect))
+        except (TypeError, ValueError):
+            return
+        self._update_crop_summary()
+        self._settings_changed()
+
+    @Slot()
+    def reset_crop(self) -> None:
+        if self.crop_ratio_combo.currentIndex() != 0:
+            self.crop_ratio_combo.setCurrentIndex(0)
+        self._crop_rect = None
+        self._update_crop_preview_overlay()
+        self._update_crop_summary()
+        self._settings_changed()
 
     def _split_selection(self) -> tuple[SplitDirection, int]:
         direction = next(
@@ -1947,7 +2307,10 @@ class MainWindow(QMainWindow):
         if not 0 <= self.current_index < len(self.files):
             return
         info = self.files[self.current_index]
-        width, height = info.width, info.height
+        left, top, right, bottom = crop_box_for_image(
+            (info.width, info.height), self._crop_rect
+        )
+        width, height = right - left, bottom - top
         for transform in self.transform_queue:
             if transform in (Transform.ROTATE_LEFT, Transform.ROTATE_RIGHT):
                 width, height = height, width
@@ -1960,6 +2323,7 @@ class MainWindow(QMainWindow):
             ResizeMode(self.resize_mode.currentData()) is ResizeMode.NONE
             and selected is OutputFormat.SAME
             and not self.transform_queue
+            and self._crop_rect is None
         )
         if self.options().target_bytes:
             size_plan = self.target_combo.currentText()
@@ -2036,6 +2400,8 @@ class MainWindow(QMainWindow):
         self.metadata_check.setChecked(True)
         self.timestamp_check.setChecked(True)
         self.background_combo.setCurrentIndex(0)
+        self._crop_rect = None
+        self.crop_ratio_combo.setCurrentIndex(0)
         self._split_boundaries = None
         self._split_boundary_direction = SplitDirection.VERTICAL
         self._split_boundary_count = 4
@@ -2044,10 +2410,13 @@ class MainWindow(QMainWindow):
         self.split_count_buttons[4].setChecked(True)
         self.transform_queue.clear()
         self.transform_label.setText("変更なし")
+        self._update_crop_preview_overlay()
+        self._update_crop_summary()
         self.progress.setValue(0)
         for index in range(self.file_tree.topLevelItemCount()):
             self.file_tree.topLevelItem(index).setText(2, "待機中")
         self._split_settings_changed()
+        self._reset_quick_scroll_position()
 
     @Slot()
     def clear_quick_all(self) -> None:
@@ -2079,6 +2448,27 @@ class MainWindow(QMainWindow):
             return
         self._clear_quick_queue_state()
         self.statusBar().showMessage("かんたん変換の対象一覧をクリアしました。設定は保持されています")
+        self._update_quick_actions()
+
+    @Slot()
+    def remove_selected_quick_file(self) -> None:
+        if self._thread is not None or not 0 <= self.current_index < len(self.files):
+            return
+        index = self.current_index
+        info = self.files.pop(index)
+        self._quick_source_origins.pop(str(info.path.resolve()).casefold(), None)
+        self.file_tree.takeTopLevelItem(index)
+        if not self.files:
+            self._clear_quick_queue_state()
+            self.statusBar().showMessage("選択した画像を一覧から外しました。元ファイルは残っています")
+            self._update_quick_actions()
+            return
+        next_index = min(index, len(self.files) - 1)
+        self.files_heading.setText(f"読み込んだ画像　{len(self.files)}枚")
+        self.current_index = next_index
+        self.file_tree.setCurrentItem(self.file_tree.topLevelItem(next_index))
+        self._show_current()
+        self.statusBar().showMessage("選択した画像を一覧から外しました。元ファイルは残っています")
         self._update_quick_actions()
 
     def _clear_quick_queue_state(self) -> None:
@@ -2345,6 +2735,8 @@ class MainWindow(QMainWindow):
             self.edit_page.finish_ime(clear_focus=True)
             self.edit_page.cancel_palette_extraction()
         self._last_navigation_index = index
+        if index == self.quick_tab:
+            self._reset_quick_scroll_position()
         self._update_quick_actions()
         if index == self.sound_effect_tab:
             self.statusBar().showMessage("文字を入力するとプレビューされます")
@@ -2384,6 +2776,7 @@ class MainWindow(QMainWindow):
             global_open_enabled and self.workspace.current is not None
         )
         self.quick_add_button.setEnabled(quick_enabled and global_open_enabled)
+        self.quick_remove_button.setEnabled(quick_enabled and 0 <= self.current_index < len(self.files))
         self.quick_queue_clear_button.setEnabled(quick_enabled and bool(self.files))
         self.quick_reset_button.setEnabled(quick_enabled)
         save_enabled = quick_enabled and bool(self.files)

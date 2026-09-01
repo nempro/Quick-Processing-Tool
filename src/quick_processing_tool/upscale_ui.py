@@ -7,7 +7,7 @@ from threading import Event
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 from PySide6.QtCore import QObject, QSize, Qt, QThread, QUrl, Signal, Slot
-from PySide6.QtGui import QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QImage, QImageReader, QPainter, QPixmap
+from PySide6.QtGui import QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QImage, QImageReader, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFileDialog, QFormLayout, QFrame,
     QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
@@ -24,6 +24,7 @@ from .ui_styles import (
     set_operation_role,
 )
 from .image_workspace import MISSING_SOURCE_MESSAGE, SourceImage
+from .drop_overlay import RoundedDropOverlay
 from .source_ui import CurrentSourceCard
 from .upscaler import (
     RealESRGANNCNNBackend, UpscaleMode, UpscaleOptions, UpscaleOutputFormat,
@@ -132,7 +133,7 @@ class UpscaleDropZone(QWidget):
         self.preview.setAcceptDrops(False)
         self.preview.viewport().setAcceptDrops(False)
         self._stack.addWidget(self.preview)
-        self.overlay = QFrame()
+        self.overlay = RoundedDropOverlay()
         self.overlay.setObjectName("upscaleDropOverlay")
         box = QVBoxLayout(self.overlay)
         box.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -163,12 +164,7 @@ class UpscaleDropZone(QWidget):
         self.overlay.setVisible(active or self._empty)
         self._stack.setCurrentWidget(self.overlay if active or self._empty else self.preview)
         self.title.setText("ここにドロップして画像を読み込み" if active else "画像をここにドロップ")
-        style = (
-            "QFrame#upscaleDropOverlay { background: rgba(226,237,255,245); border: 3px dashed #2457b2; border-radius: 12px; }"
-            if active else
-            "QFrame#upscaleDropOverlay { background: #f8fafc; border: 2px dashed #8da2b8; border-radius: 12px; }"
-        )
-        self.overlay.setStyleSheet(style)
+        self.overlay.set_drop_active(active)
 
     @staticmethod
     def _paths(event) -> list[Path]:
@@ -386,12 +382,13 @@ class UpscalePage(QWidget):
         queue_head.addStretch()
         rl.addLayout(queue_head)
         queue_actions = QHBoxLayout()
-        self.add_button = QPushButton("画像を追加"); self.clear_button = QPushButton("一覧をクリア")
-        self.add_button.clicked.connect(self.choose_images); self.clear_button.clicked.connect(self.clear_queue)
+        self.add_button = QPushButton("画像を追加"); self.remove_button = QPushButton("選択を削除"); self.clear_button = QPushButton("一覧をクリア")
+        self.add_button.clicked.connect(self.choose_images); self.remove_button.clicked.connect(self.remove_selected); self.clear_button.clicked.connect(self.clear_queue)
         set_operation_role(self.add_button, "secondary")
+        set_operation_role(self.remove_button, "secondary")
         set_operation_role(self.clear_button, "secondary")
         queue_actions.addStretch()
-        queue_actions.addWidget(self.add_button); queue_actions.addWidget(self.clear_button)
+        queue_actions.addWidget(self.add_button); queue_actions.addWidget(self.remove_button); queue_actions.addWidget(self.clear_button)
         rl.addLayout(queue_actions)
 
         self.queue = QTreeWidget(); self.queue.setObjectName("upscaleQueue")
@@ -406,6 +403,8 @@ class UpscalePage(QWidget):
         self.queue.setColumnWidth(0, 34)
         self.queue.setColumnWidth(2, 72)
         self.queue.currentItemChanged.connect(self._queue_selection_changed)
+        self.remove_shortcut = QShortcut(QKeySequence("Delete"), self.queue)
+        self.remove_shortcut.activated.connect(self.remove_selected)
         rl.addWidget(self.queue, 1)
         self.queue_feedback = QLabel("画像を追加すると、ここで順番と状態を確認できます")
         self.queue_feedback.setWordWrap(True); self.queue_feedback.setStyleSheet("color: #667085;")
@@ -421,19 +420,26 @@ class UpscalePage(QWidget):
         self.progress = QProgressBar(); self.progress.hide()
         rl.addWidget(self.progress_label); rl.addWidget(self.progress)
         self.result_label = QLabel(); self.result_label.setWordWrap(True); rl.addWidget(self.result_label)
+        self.next_actions = QWidget()
+        next_layout = QVBoxLayout(self.next_actions)
+        next_layout.setContentsMargins(0, 2, 0, 2)
+        next_layout.setSpacing(3)
+        next_layout.addWidget(QLabel("次の処理"))
+        self.split_result_button = QPushButton("画像分割へ")
+        self.split_result_button.setToolTip("選択中の高画質化済み画像を、かんたん変換の画像分割へ渡します")
+        self.split_result_button.clicked.connect(self.send_result_to_split)
+        set_operation_role(self.split_result_button, "secondary")
+        next_layout.addWidget(self.split_result_button)
+        self.next_actions.hide()
+        rl.addWidget(self.next_actions)
 
         self.saved_box = QWidget(); saved = QVBoxLayout(self.saved_box); saved.setContentsMargins(7, 6, 7, 7)
         saved.setSpacing(4)
         set_operation_role(self.saved_box, "saveResult")
         saved.addWidget(QLabel("保存先")); self.saved_path = ElidedPathLabel(); saved.addWidget(self.saved_path)
         self.open_folder_button = QPushButton("保存先を開く"); self.open_folder_button.clicked.connect(self.open_saved_folder)
-        self.split_result_button = QPushButton("画像分割へ")
-        self.split_result_button.setToolTip("選択中の高画質化済み画像を、かんたん変換の画像分割へ渡します")
-        self.split_result_button.clicked.connect(self.send_result_to_split)
         set_operation_role(self.open_folder_button, "secondary")
-        set_operation_role(self.split_result_button, "secondary")
         saved.addWidget(self.open_folder_button)
-        saved.addWidget(self.split_result_button)
         self.saved_box.hide(); rl.addWidget(self.saved_box)
         splitter.addWidget(right)
 
@@ -574,6 +580,7 @@ class UpscalePage(QWidget):
         self.split_result_button.setEnabled(
             result is not None and result.output_path.is_file()
         )
+        self.next_actions.setVisible(self.split_result_button.isEnabled())
         preview_path = result.output_path if self._view_after and result else item.source_path
         if not self.drop_zone.preview.set_image_path(preview_path):
             self.drop_zone.preview.clear_image()
@@ -838,7 +845,7 @@ class UpscalePage(QWidget):
         for widget in (
             self.scale_2, self.scale_4, self.illustration, self.photo,
             self.format_combo, self.folder_button, self.start_button,
-            self.drop_zone, self.add_button, self.clear_button,
+            self.drop_zone, self.add_button, self.remove_button, self.clear_button,
             self.add_current_source_button,
             self.current_source_card.change_button,
         ):
@@ -852,7 +859,7 @@ class UpscalePage(QWidget):
         idle = self._thread is None
         count = len(self.items)
         self.start_button.setEnabled(bool(count) and self._engine_available and idle)
-        self.add_button.setEnabled(idle); self.clear_button.setEnabled(bool(count) and idle)
+        self.add_button.setEnabled(idle); self.remove_button.setEnabled(bool(count) and idle and self.current_index >= 0); self.clear_button.setEnabled(bool(count) and idle)
         self.add_current_source_button.setEnabled(self._current_source is not None and idle)
         self.current_source_card.change_button.setEnabled(idle)
         if not count:
@@ -919,9 +926,28 @@ class UpscalePage(QWidget):
         self.output_info.setText("高画質化後\n—")
         self._clear_summary(); self._update_actions()
 
+    @Slot()
+    def remove_selected(self) -> None:
+        if self._thread is not None or not 0 <= self.current_index < len(self.items):
+            return
+        index = self.current_index
+        self.items.pop(index)
+        self.queue.takeTopLevelItem(index)
+        for row_index in range(self.queue.topLevelItemCount()):
+            self.queue.topLevelItem(row_index).setText(0, str(row_index + 1))
+        self._clear_summary()
+        if not self.items:
+            self.clear_queue()
+            return
+        self.queue.setCurrentItem(self.queue.topLevelItem(min(index, len(self.items) - 1)))
+        self.queue_title.setText(f"高画質化する画像　{len(self.items)}枚")
+        self.queue_feedback.setText("選択した画像を一覧から外しました。元ファイルは残っています")
+        self._refresh_large_warnings()
+        self._update_actions()
+
     def _clear_summary(self) -> None:
         self._last_outcome = None; self._saved_folder_target = None; self._saved_output = None
-        self.result_label.clear(); self.saved_box.hide()
+        self.result_label.clear(); self.saved_box.hide(); self.next_actions.hide()
         if self._thread is None:
             self.progress.hide(); self.progress_label.hide()
 
