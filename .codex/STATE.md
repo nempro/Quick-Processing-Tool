@@ -1,37 +1,8 @@
 # Current State
 
-- Task: Phase 4F/4G — operation-flow fixes, Crop, and queue removal (implementation complete; uncommitted)
-- Repository: `C:\product\Quick Processing Tool`
-- Branch: `main`
-- Phase 4E start HEAD: `f2e56f46c8116aa15c9b47a0d81e3e6671ca0ada`
-- Current HEAD: `8585582ab0d05f4f78d23c3725aa6a6e9cd8058e` (Phase 4E adjustable image-split guides committed)
-- Starting working tree: contained the requested uncommitted Quick save-destination and Phase 4D operation-flow changes; all were preserved
-- Status: Phase 4F/4G implementation is uncommitted. Crop pipeline/Preview, selected Queue removal, result handoff, and rounded Drop overlays are implemented. The Thumbnail tool has title records rather than input-image Queue entries, so its matching action is 一覧をクリア for entered titles; it never deletes generated images.
-- Split state: custom guide positions are normalized ratios on the active split axis; equal positions remain the default
-- Drag UX: cosmetic yellow guides retain a thin visible stroke but now have a 24px zoom-aware hit area (±12px), directional resize cursors, hover/drag emphasis, nearest-guide selection when hit areas overlap, crossing prevention, and a 16px panel minimum when feasible. This latest usability fix is uncommitted alongside the Phase 4F/4G work.
-- Quick split scroll UX: accordion expansion scrolls from the header geometry, never pushes the expanded header above the viewport, and handoff defers that geometry calculation until the quick tab is laid out. Normal quick-tab entry and settings reset return the settings pane to its top rather than preserving a stale partial position. This fix is also uncommitted.
-- Reset UX: split-count or direction changes restore equal positions; `均等に戻す` restores equal positions without changing the count/direction
-- View behavior: Fit / 100% / 200% and Preview resize preserve the same normalized boundaries
-- Export behavior: the existing split pipeline converts ratios to ordered integer edges after existing transform/resize processing; endpoints remain 0 and the full image axis, with no gaps or overlap
-- Batch contract: the same ratios are applied independently to each source image's post-processing dimensions; integer rounding and feasible minimum-size clamping happen per source
-- Existing source-level failure isolation, output naming, order, rollback, PNG/JPEG/WebP encoding, and Alpha behavior remain unchanged
-- Focused Phase 4E + image split tests: PASS (47), including 10px-offset mouse drags at Fit / 100% / 200% and overlapping-guide nearest selection
-- Focused Quick UI / handoff / split tests: PASS (77); the new 900×620 and 1180×720 handoff check passes at 100%, plus 125% and 150% scale-factor runs.
-- DPI 125% / 150% related tests: PASS (61 each)
-- Full regression: PASS (577 collected tests)
-- compileall / git diff --check: PASS
-- Runtime GUI QA: PASS using the visible Windows Qt GUI
-- GUI drag QA: Fit / 100% / 200% all reached the same 20% boundary; horizontal drag also reached 20%
-- GUI export QA: custom vertical ratios about 18% / 55% / 82% produced widths 43 / 89 / 65 / 43 on a 240 px RGBA source; pixel rejoin and Alpha matched exactly
-- Illustration QA: PASS with an 800×600 RGBA person illustration; equal vertical guides at x=400 / 600 crossed the face box, then direct guide drags moved the boundaries to x=239 / 660 / 741 so no guide crossed the face
-- Illustration horizontal QA: custom boundaries y=60 / 540 / 570 also avoided the face box
-- Illustration export order: vertical `_01` → `_04` matched left → right source crops, horizontal `_01` → `_04` matched top → bottom source crops
-- Illustration rejoin: vertical and horizontal output panels both rejoined to pixel- and Alpha-identical copies of the source
-- Layout GUI QA: PASS at 1180×720 and 900×620; Quick horizontal scroll range 0 and custom positions survived resize
-- Computer Use helper: unavailable after initialization, reset, and retry because of the Windows sandbox helper error; visible Qt GUI mouse automation and output inspection were used instead
-- Latest split batch incident (2026-09-01): the Queue entry 00004-257042179.png had been moved or deleted before saving. The worker correctly isolated it as MissingSourceError, then saved all three vertical PNG panels of 00004-257042179_edited_4x.png under the existing Processed destination. This was not a custom-boundary, mixed-resolution, handoff, naming, or rollback failure. The Quick failure dialog now records source filenames/reasons from worker statuses and reports them directly; focused regressions cover a missing source beside a mixed-resolution custom-ratio source, all-success 2×3 output with pixel/Alpha rejoin, and per-source rollback continuation. This change remains uncommitted with the current Phase 4F/4G work.
-- Phase 4F final checks: Image editing now distinguishes 加工をリセット (settings only), 作業をリセット (tab-local work/history/result, source retained), and 画像をクリア (only this tab becomes empty; shared Current Source remains). A verified saved edit can hand off to Upscale; a selected completed upscale result exposes the compact 次の処理 > 画像分割へ action. QSS rounded dashed Drop frames were replaced by a shared QPainter overlay whose opaque background and rounded dashed path render without black corner fragments at 100/125/150% scale.
-- Phase 4G final checks: Crop uses normalized (x, y, width, height) ratios, an interactive Preview frame, ratio presets, and crop-before-transform/split encoding. Split guides are frontmost when Crop is also visible. Quick and Upscale target queues support selected-item removal without deleting input files; Quick deterministically selects/previews the next remaining item.
-- Phase 4F/4G verification: Phase focused suite PASS (62); 125% PASS (53); 150% PASS (53); full regression PASS (607); compileall and diff --check PASS. GUI starts normally (PID 51924). Computer Use remains unavailable after initialization/reset/retry owing to the Windows sandbox helper error, so automated visual mouse QA is not available in this environment.
-- Commit-separation audit (corrected 2026-09-01): HEAD is the committed Phase 4E baseline 8585582 (feat: add adjustable image split guides); Phase 4D is the preceding committed 576fe9d (feat: unify workflow actions and handoff). The current tree can safely be split as three ordered commits without altering code: (1) Phase 4F common operation flow and split usability; (2) Phase 4G Crop and queue removal; then (3) MissingSourceError UX. ui.py contains independent hunks for all three, so shared file ownership is not a blocker. No index changes were made; do not stage until a commit is explicitly requested.
-- Git: changes intentionally remain uncommitted; no tag/push/release
+- Repository: `C:\product\Quick Processing Tool` (`main`). The v0.3.0 release candidate is committed; no tag, push, or GitHub Release exists.
+- The committed application implements seven Japanese-first tools: Quick conversion (including crop and split), image editing, sound-effect and speech-bubble material makers, upscaling, pixel editing, and thumbnail generation.
+- The v0.3.0 release changes are split into `fix: guard upscale queue selection` and `chore: prepare v0.3.0 release`. The latter synchronizes version/documentation/Windows metadata and improves optional-Runtime guidance.
+- The formal release environment is an isolated 64-bit CPython 3.12.13 venv with the exact `constraints-release.txt` dependencies. The pre-existing CPython 3.12.14 development venv remains unchanged.
+- A fresh v0.3.0 package has been built from the committed RC. The formal icon, package version information, runtime exclusion, single-EXE/development-payload audit, and setup-script inclusion pass.
+- The optional User-scope Real-ESRGAN Runtime is available. Fresh-package code-path smoke passed: real 2x upscale, four-way split save, and pixel-identical rejoin. The fresh EXE started, created its main window, and closed normally.

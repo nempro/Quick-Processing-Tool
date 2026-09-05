@@ -272,7 +272,8 @@ def test_unavailable_backend_disables_start(
     page = UpscalePage(UpscaleService(MockBackend(available=False)))
     page.load_image(source)
     assert not page.start_button.isEnabled()
-    assert "準備されていません" in page.engine_label.text()
+    assert "Runtimeが導入されていません" in page.engine_label.text()
+    assert "再起動してください" in page.engine_label.text()
     page.close()
 
 def test_upscale_page_auto_saves_verified_result(

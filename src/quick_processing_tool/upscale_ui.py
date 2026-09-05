@@ -452,7 +452,13 @@ class UpscalePage(QWidget):
 
     def _update_availability(self) -> None:
         available = self.service.backend.check_availability()
-        self.engine_label.setText(("● " if available.available else "⚠ ") + available.user_message)
+        message = available.user_message
+        if available.code == "backend_not_found":
+            message = (
+                "高画質化Runtimeが導入されていません。\n"
+                "Runtimeを導入後、アプリを再起動してください。"
+            )
+        self.engine_label.setText(("● " if available.available else "⚠ ") + message)
         self.engine_label.setStyleSheet("color: #137333;" if available.available else "color: #9a6700;")
         self.engine_label.setToolTip(available.detail)
         self._engine_available = available.available
