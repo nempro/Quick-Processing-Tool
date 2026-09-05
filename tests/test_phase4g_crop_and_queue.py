@@ -194,5 +194,37 @@ def test_upscale_removes_selected_queue_item_without_deleting_source(
         page.remove_selected()
         assert [item.source_path for item in page.items] == [second.resolve()]
         assert first.is_file()
+        assert page.current_index == 0
+        assert page.source_path == second.resolve()
+        page.remove_selected()
+        assert not page.items
+        assert page.queue.topLevelItemCount() == 0
+        assert page.current_index == -1
+        assert page.source_path is None
+    finally:
+        page.close()
+
+
+def test_upscale_ignores_stale_tree_selection_during_queue_removal(
+    qt_app: QApplication, tmp_path: Path
+) -> None:
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    _rgba().save(first)
+    _rgba().save(second)
+    page = UpscalePage()
+    try:
+        page.load_paths([first, second], update_workspace=False)
+
+        detached_row = page.queue.takeTopLevelItem(1)
+        page._queue_selection_changed(detached_row, None)
+        assert page.current_index == -1
+        stale_row = page.queue.topLevelItem(1)
+        page.items.pop(0)
+
+        page._queue_selection_changed(stale_row, None)
+
+        assert page.current_index == -1
+        assert not page._view_after
     finally:
         page.close()

@@ -568,7 +568,14 @@ class UpscalePage(QWidget):
         if current is None:
             self.current_index = -1
             return
-        self.current_index = self.queue.indexOfTopLevelItem(current)
+        current_index = self.queue.indexOfTopLevelItem(current)
+        if not 0 <= current_index < len(self.items):
+            # Qt can briefly select a still-present tree row while a queue
+            # removal has already removed its matching model item.
+            self.current_index = -1
+            self._view_after = False
+            return
+        self.current_index = current_index
         self._view_after = bool(self.items[self.current_index].result)
         self._show_selected()
 
@@ -939,7 +946,8 @@ class UpscalePage(QWidget):
         if not self.items:
             self.clear_queue()
             return
-        self.queue.setCurrentItem(self.queue.topLevelItem(min(index, len(self.items) - 1)))
+        next_row = self.queue.topLevelItem(min(index, len(self.items) - 1))
+        self.queue.setCurrentItem(next_row); self._queue_selection_changed(next_row, None)
         self.queue_title.setText(f"高画質化する画像　{len(self.items)}枚")
         self.queue_feedback.setText("選択した画像を一覧から外しました。元ファイルは残っています")
         self._refresh_large_warnings()
