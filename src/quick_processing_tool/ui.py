@@ -83,6 +83,7 @@ from .ui_styles import (
     set_operation_role,
 )
 from .preview_activity import PreviewActivityIndicator
+from .preview_zoom import create_preview_zoom_row, zoom_factor_for_mode
 from .window_geometry import adaptive_minimum_size, centered_window_geometry
 
 
@@ -1259,31 +1260,10 @@ class MainWindow(QMainWindow):
         )
         self.preview.crop_rect_changed.connect(self._crop_rect_changed)
         self._update_split_preview_guides()
-        zoom_row = QHBoxLayout()
-        zoom_row.setContentsMargins(0, 0, 0, 0)
-        zoom_row.setSpacing(4)
-        zoom_label = QLabel("表示")
-        zoom_label.setStyleSheet("color: #667085; font-weight: 600;")
-        zoom_row.addWidget(zoom_label)
-        self.preview_zoom_group = QButtonGroup(self)
-        self.preview_zoom_buttons: dict[str, QPushButton] = {}
-        for label, factor in (("全体表示", None), ("100%", 1.0), ("200%", 2.0)):
-            button = QPushButton(label)
-            button.setCheckable(True)
-            button.setMinimumWidth(0)
-            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            button.setStyleSheet(
-                "QPushButton { padding: 4px 6px; }"
-                "QPushButton:checked { background: #dbeafe; color: #174ea6;"
-                "border: 2px solid #315fbd; font-weight: 700; }"
-            )
-            button.clicked.connect(
-                lambda _checked=False, current=factor: self.preview.set_zoom_factor(current)
-            )
-            self.preview_zoom_group.addButton(button)
-            self.preview_zoom_buttons[label] = button
-            zoom_row.addWidget(button, 1)
-        self.preview_zoom_buttons["全体表示"].setChecked(True)
+        zoom_row, self.preview_zoom_group, self.preview_zoom_buttons = create_preview_zoom_row(
+            self,
+            lambda mode: self.preview.set_zoom_factor(zoom_factor_for_mode(mode)),
+        )
         center_layout.addLayout(zoom_row)
         center_layout.addWidget(self.drop_zone, 1)
         self.info_label = QLabel("")

@@ -492,12 +492,12 @@ def test_split_guides_stay_on_exact_boundaries_at_fit_and_zoom(
         axis_length = image.width() if direction is SplitDirection.VERTICAL else image.height()
         expected_positions = partition_edges(axis_length, 4)[1:-1]
 
-        for view_mode in ("fit", "100%", "200%"):
+        for view_mode in ("fit", "100%", "200%", "400%"):
             if view_mode == "fit":
                 preview.set_zoom_factor(None)
                 expected_scale = None
             else:
-                expected_scale = 1.0 if view_mode == "100%" else 2.0
+                expected_scale = {"100%": 1.0, "200%": 2.0, "400%": 4.0}[view_mode]
                 preview.set_zoom_factor(expected_scale)
             app.processEvents()
 
@@ -574,7 +574,7 @@ def test_quick_split_controls_keep_compact_layout_without_horizontal_scroll(
         assert split_section.content.width() <= window.quick_settings_scroll.viewport().width()
         assert len(window.preview._guide_items) == 3
 
-        for label, expected_scale in (("100%", 1.0), ("200%", 2.0)):
+        for label, expected_scale in (("100%", 1.0), ("200%", 2.0), ("400%", 4.0)):
             window.preview_zoom_buttons[label].click()
             app.processEvents()
             assert window.preview.transform().m11() == pytest.approx(expected_scale)

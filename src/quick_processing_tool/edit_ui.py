@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
-from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -102,6 +102,7 @@ from .ui_styles import (
     set_operation_role,
 )
 from .preview_activity import PreviewActivityIndicator
+from .preview_zoom import create_preview_zoom_row, zoom_factor_for_mode
 
 
 LOGGER = logging.getLogger(__name__)
@@ -518,6 +519,10 @@ class EditPreview(QGraphicsView):
         self.scene().addItem(self._cursor_item)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.viewport().installEventFilter(self)
         self._image = QImage()
         self._picking = False
@@ -528,6 +533,8 @@ class EditPreview(QGraphicsView):
         self._full_size = (0, 0)
         self._geometry_generation: int | None = None
         self._zoom_mode = "fit"
+        self._pan_start = None
+        self._pan_scroll_values: tuple[int, int] | None = None
         self._committed_overlay_key = None
         self._committed_overlay_image = QImage()
         self._active_last_canvas: HandPoint | None = None
@@ -607,8 +614,7 @@ class EditPreview(QGraphicsView):
         self._brush_width = max(1.0, float(width))
 
     def set_zoom_mode(self, mode: str) -> None:
-        if mode not in {"fit", "100", "200"}:
-            raise ValueError(f"Unsupported preview zoom mode: {mode}")
+        zoom_factor_for_mode(mode)
         self._zoom_mode = mode
         self._apply_zoom()
 
@@ -858,7 +864,25 @@ class EditPreview(QGraphicsView):
         self.hand_cancelled.emit()
         return True
 
+    def _cancel_pan(self) -> None:
+        self._pan_start = None
+        self._pan_scroll_values = None
+        self._update_viewport_cursor()
+
     def mousePressEvent(self, event) -> None:  # noqa: N802
+        if (
+            event.button() == Qt.MouseButton.MiddleButton
+            and self._zoom_mode != "fit"
+            and not self._image.isNull()
+        ):
+            self._pan_start = event.position().toPoint()
+            self._pan_scroll_values = (
+                self.horizontalScrollBar().value(),
+                self.verticalScrollBar().value(),
+            )
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             temporary_hand_pick = bool(
                 self._drawing_enabled
@@ -882,6 +906,13 @@ class EditPreview(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._pan_start is not None and self._pan_scroll_values is not None:
+            delta = event.position().toPoint() - self._pan_start
+            horizontal, vertical = self._pan_scroll_values
+            self.horizontalScrollBar().setValue(horizontal - delta.x())
+            self.verticalScrollBar().setValue(vertical - delta.y())
+            event.accept()
+            return
         if self._pointer_active and not (event.buttons() & Qt.MouseButton.LeftButton):
             self._cancel_pointer()
             event.accept()
@@ -892,6 +923,10 @@ class EditPreview(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.MiddleButton and self._pan_start is not None:
+            self._cancel_pan()
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._end_pointer(event.position()):
             event.accept()
             return
@@ -921,6 +956,7 @@ class EditPreview(QGraphicsView):
             return True
         if event.type() in (QEvent.Type.FocusOut, QEvent.Type.WindowDeactivate):
             self._cancel_pointer()
+            self._cancel_pan()
         elif (
             event.type() == QEvent.Type.Leave
             and self._pointer_active
@@ -941,6 +977,7 @@ class EditPreview(QGraphicsView):
                 return True
             if event.type() in (QEvent.Type.FocusOut, QEvent.Type.WindowDeactivate):
                 self._cancel_pointer()
+                self._cancel_pan()
             elif (
                 event.type() == QEvent.Type.Leave
                 and self._pointer_active
@@ -958,12 +995,30 @@ class EditPreview(QGraphicsView):
 
     def focusOutEvent(self, event) -> None:  # noqa: N802
         self._cancel_pointer()
+        self._cancel_pan()
         super().focusOutEvent(event)
 
     def changeEvent(self, event) -> None:  # noqa: N802
         if event.type() == QEvent.Type.WindowDeactivate:
             self._cancel_pointer()
+            self._cancel_pan()
         super().changeEvent(event)
+
+    def _scene_center(self) -> QPointF | None:
+        if self._item.pixmap().isNull() or self.viewport().rect().isEmpty():
+            return None
+        return self.mapToScene(self.viewport().rect().center())
+
+    def _bounded_scene_center(self, point: QPointF | None) -> QPointF | None:
+        if point is None:
+            return None
+        bounds = self._item.sceneBoundingRect()
+        if bounds.isEmpty():
+            return None
+        return QPointF(
+            min(bounds.right(), max(bounds.left(), point.x())),
+            min(bounds.bottom(), max(bounds.top(), point.y())),
+        )
 
     def _fit(self) -> None:
         if not self._item.pixmap().isNull():
@@ -972,21 +1027,33 @@ class EditPreview(QGraphicsView):
     def _apply_zoom(self) -> None:
         if self._item.pixmap().isNull():
             return
+        center = self._scene_center()
         if self._zoom_mode == "fit":
             self._fit()
             return
         self.resetTransform()
         full_width = max(1, self._full_size[0])
         display_width = max(1, self._image.width())
-        scale = full_width / display_width
-        if self._zoom_mode == "200":
-            scale *= 2
+        scale = full_width / display_width * (zoom_factor_for_mode(self._zoom_mode) or 1.0)
         self.scale(scale, scale)
+        if bounded_center := self._bounded_scene_center(center):
+            self.centerOn(bounded_center)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
+        center = self._scene_center()
+        if self._zoom_mode != "fit" and event.oldSize().isValid():
+            size_delta = event.oldSize() - event.size()
+            old_center_position = self.viewport().rect().center() + QPoint(
+                size_delta.width() // 2,
+                size_delta.height() // 2,
+            )
+            center = self.mapToScene(old_center_position)
         super().resizeEvent(event)
         if self._zoom_mode == "fit":
             self._fit()
+
+        elif bounded_center := self._bounded_scene_center(center):
+            self.centerOn(bounded_center)
 
 
 class EditDropZone(QWidget):
@@ -1871,17 +1938,6 @@ class QuickEditPage(QWidget):
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
         preview_head.addWidget(title)
         preview_head.addStretch()
-        self.preview_zoom_combo = QComboBox()
-        self.preview_zoom_combo.setAccessibleName("プレビュー倍率")
-        self.preview_zoom_combo.setToolTip("プレビューの表示倍率を選びます")
-        self.preview_zoom_combo.addItem("全体", "fit")
-        self.preview_zoom_combo.addItem("100%", "100")
-        self.preview_zoom_combo.addItem("200%", "200")
-        self.preview_zoom_combo.setMinimumWidth(72)
-        self.preview_zoom_combo.currentIndexChanged.connect(
-            lambda _index: self.drop_zone.preview.set_zoom_mode(self.preview_zoom_combo.currentData())
-        )
-        preview_head.addWidget(self.preview_zoom_combo)
         self.original_button = QPushButton("元画像")
         self.edited_button = QPushButton("加工後")
         self.original_button.clicked.connect(self.show_original)
@@ -1889,6 +1945,11 @@ class QuickEditPage(QWidget):
         preview_head.addWidget(self.original_button)
         preview_head.addWidget(self.edited_button)
         cl.addLayout(preview_head)
+        zoom_row, self.preview_zoom_group, self.preview_zoom_buttons = create_preview_zoom_row(
+            self,
+            lambda mode: self.drop_zone.preview.set_zoom_mode(mode),
+        )
+        cl.addLayout(zoom_row)
         self.preview_activity = PreviewActivityIndicator()
         cl.addWidget(self.preview_activity)
         self.drop_zone = EditDropZone()

@@ -7,7 +7,7 @@ from threading import Event
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QColor, QFocusEvent, QImage, QMouseEvent, QPainter, QPointingDevice, QTabletEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -57,6 +57,11 @@ def _viewport_position(page: QuickEditPage, canvas_x: float, canvas_y: float):
         canvas_y * preview._image.height() / full_height,
     )
     return preview.mapFromScene(preview._item.mapToScene(item))
+
+
+def _set_preview_zoom(page: QuickEditPage, mode: str) -> None:
+    labels = {"fit": "全体表示", "100": "100%", "200": "200%", "400": "400%"}
+    page.preview_zoom_buttons[labels[mode]].click()
 
 
 def test_hand_section_is_compact_ordered_and_processing_safe(qt_app, tmp_path: Path) -> None:
@@ -202,7 +207,7 @@ def test_hand_eyedropper_samples_visible_composite_returns_to_pen_without_histor
     page.close()
 
 
-@pytest.mark.parametrize("zoom", ["fit", "100", "200"])
+@pytest.mark.parametrize("zoom", ["fit", "100", "200", "400"])
 def test_alt_click_is_temporary_zoom_safe_eyedropper(
     qt_app, tmp_path: Path, zoom: str
 ) -> None:
@@ -687,8 +692,12 @@ def test_transient_overlay_has_no_worker_and_visibility_clear_share_history(qt_a
 def test_zoom_scroll_mapping_and_canvas_resize_scale_one_action(qt_app, tmp_path: Path) -> None:
     page, _source = _loaded_page(qt_app, tmp_path, (100, 50))
     preview = page.drop_zone.preview
-    for mode in ("fit", "100", "200"):
-        page.preview_zoom_combo.setCurrentIndex(page.preview_zoom_combo.findData(mode))
+    assert set(page.preview_zoom_buttons) == {"全体表示", "100%", "200%", "400%"}
+    assert page.preview_zoom_buttons["全体表示"].isChecked()
+    assert preview._zoom_mode == "fit"
+
+    for mode in ("fit", "100", "200", "400"):
+        _set_preview_zoom(page, mode)
         qt_app.processEvents()
         viewport = _viewport_position(page, 50, 25)
         point = preview.viewport_to_canvas(QPointF(viewport))
@@ -716,6 +725,67 @@ def test_zoom_scroll_mapping_and_canvas_resize_scale_one_action(qt_app, tmp_path
     restored = page.settings().hand_draw
     assert (restored.base_width, restored.base_height) == (100, 50)
     assert restored.strokes[0].points[0] == HandPoint(20, 10)
+    page.close()
+
+
+@pytest.mark.parametrize("mode", ["fit", "100", "200", "400"])
+def test_hand_pen_and_eraser_coordinates_stay_exact_at_each_zoom(
+    qt_app, tmp_path: Path, mode: str
+) -> None:
+    page, _source = _loaded_page(qt_app, tmp_path, (160, 120))
+    preview = page.drop_zone.preview
+    _set_preview_zoom(page, mode)
+    qt_app.processEvents()
+
+    pen_position = _viewport_position(page, 80, 60)
+    QTest.mouseClick(preview.viewport(), Qt.MouseButton.LeftButton, pos=pen_position)
+    pen_stroke = page.settings().hand_draw.strokes[-1]
+    assert pen_stroke.tool is HandTool.PEN
+    assert pen_stroke.points[0].x == pytest.approx(80, abs=0.7)
+    assert pen_stroke.points[0].y == pytest.approx(60, abs=0.7)
+
+    page.hand_eraser_button.click()
+    eraser_position = _viewport_position(page, 82, 62)
+    QTest.mouseClick(preview.viewport(), Qt.MouseButton.LeftButton, pos=eraser_position)
+    eraser_stroke = page.settings().hand_draw.strokes[-1]
+    assert eraser_stroke.tool is HandTool.ERASER
+    assert eraser_stroke.points[0].x == pytest.approx(82, abs=0.7)
+    assert eraser_stroke.points[0].y == pytest.approx(62, abs=0.7)
+    page.close()
+
+
+def test_fixed_zoom_middle_pan_and_resize_keep_view_center(qt_app, tmp_path: Path) -> None:
+    page, _source = _loaded_page(qt_app, tmp_path, (800, 600))
+    page.resize(920, 680)
+    page.show()
+    qt_app.processEvents()
+    preview = page.drop_zone.preview
+    _set_preview_zoom(page, "400")
+    target = preview._item.mapToScene(
+        QPointF(preview._item.boundingRect().width() * 0.7, preview._item.boundingRect().height() * 0.7)
+    )
+    preview.centerOn(target)
+    qt_app.processEvents()
+    assert preview.horizontalScrollBar().maximum() > 0
+    assert preview.verticalScrollBar().maximum() > 0
+
+    start = preview.viewport().rect().center()
+    end = start + QPoint(24, 18)
+    previous_values = (preview.horizontalScrollBar().value(), preview.verticalScrollBar().value())
+    QTest.mousePress(preview.viewport(), Qt.MouseButton.MiddleButton, pos=start)
+    QTest.mouseMove(preview.viewport(), end)
+    QTest.mouseRelease(preview.viewport(), Qt.MouseButton.MiddleButton, pos=end)
+    qt_app.processEvents()
+    current_values = (preview.horizontalScrollBar().value(), preview.verticalScrollBar().value())
+    assert current_values[0] < previous_values[0]
+    assert current_values[1] < previous_values[1]
+
+    before_resize = preview.mapToScene(preview.viewport().rect().center())
+    page.resize(780, 560)
+    qt_app.processEvents()
+    after_resize = preview.mapToScene(preview.viewport().rect().center())
+    assert after_resize.x() == pytest.approx(before_resize.x(), abs=2.0)
+    assert after_resize.y() == pytest.approx(before_resize.y(), abs=2.0)
     page.close()
 
 
@@ -755,8 +825,8 @@ def test_preview_history_buttons_share_history_and_stay_outside_canvas(qt_app, t
     assert page.preview_history_bar.geometry().top() >= page.drop_zone.geometry().bottom()
 
     bar_position = page.preview_history_bar.pos()
-    for mode in ("fit", "100", "200"):
-        page.preview_zoom_combo.setCurrentIndex(page.preview_zoom_combo.findData(mode))
+    for mode in ("fit", "100", "200", "400"):
+        _set_preview_zoom(page, mode)
         qt_app.processEvents()
         assert page.preview_history_bar.pos() == bar_position
 
