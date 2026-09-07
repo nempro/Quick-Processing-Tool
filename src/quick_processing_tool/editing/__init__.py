@@ -11,6 +11,9 @@ from .models import (
     HandPoint,
     HandStroke,
     HandTool,
+    MosaicSettings,
+    MosaicStroke,
+    MosaicTool,
     LineArtAmount,
     LineArtBackground,
     LineArtSettings,
@@ -37,6 +40,7 @@ from .palette import (
 )
 from .sticker import apply_sticker
 from .hand_draw import compose_hand_draw, render_hand_overlay, scale_hand_draw
+from .mosaic import compose_mosaic, render_mosaic_overlay, scale_mosaic
 
 __all__ = [
     "CanvasBackground",
@@ -50,6 +54,9 @@ __all__ = [
     "HandPoint",
     "HandStroke",
     "HandTool",
+    "MosaicSettings",
+    "MosaicStroke",
+    "MosaicTool",
     "LineArtAmount",
     "LineArtBackground",
     "LineArtSettings",
@@ -75,4 +82,7 @@ __all__ = [
     "compose_hand_draw",
     "render_hand_overlay",
     "scale_hand_draw",
+    "compose_mosaic",
+    "render_mosaic_overlay",
+    "scale_mosaic",
 ]

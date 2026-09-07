@@ -72,6 +72,9 @@ from .editing import (
     HandPoint,
     HandStroke,
     HandTool,
+    MosaicSettings,
+    MosaicStroke,
+    MosaicTool,
     LineArtAmount,
     LineArtBackground,
     LineArtSettings,
@@ -1342,6 +1345,12 @@ class QuickEditPage(QWidget):
         self._line_art_color = QColor("#000000")
         self._line_art_background_color = QColor("#FFFFFF")
         self._hand_draw_settings = HandDrawSettings()
+        self._mosaic_settings = MosaicSettings()
+        self._mosaic_tool = MosaicTool.MOSAIC
+        self._mosaic_size = 36
+        self._mosaic_block_size = 12
+        self._active_mosaic_points: list[HandPoint] = []
+        self._active_mosaic_generation: int | None = None
         self._hand_tool = HandTool.PEN
         self._hand_color = QColor("#000000")
         self._hand_size = 8
@@ -1581,6 +1590,56 @@ class QuickEditPage(QWidget):
         )
         self.hand_section.toggle.setToolTip("プレビューへ直接描き、加工結果の一番上へ重ねます")
         ll.addWidget(self.hand_section)
+
+        mosaic_content = QWidget()
+        mosaic_layout = QVBoxLayout(mosaic_content)
+        mosaic_layout.setContentsMargins(5, 1, 3, 1)
+        mosaic_layout.setSpacing(3)
+        mosaic_mode_row = QHBoxLayout()
+        mosaic_mode_row.addWidget(QLabel("描画モード"))
+        mosaic_mode_row.addStretch()
+        self.mosaic_mode_enabled = QCheckBox("ON")
+        self.mosaic_mode_enabled.setToolTip("プレビュー上をなぞった部分にモザイクをかけます")
+        self.mosaic_mode_enabled.setAccessibleName("モザイクの描画モード")
+        mosaic_mode_row.addWidget(self.mosaic_mode_enabled)
+        self.mosaic_details = QWidget()
+        mosaic_form = QFormLayout(self.mosaic_details)
+        self._configure_form(mosaic_form)
+        mosaic_tool_row = QHBoxLayout()
+        mosaic_tool_row.setContentsMargins(0, 0, 0, 0)
+        self.mosaic_tool_group = QButtonGroup(self)
+        self.mosaic_pen_button = QPushButton("モザイク")
+        self.mosaic_eraser_button = QPushButton("消しゴム")
+        for button, tool in ((self.mosaic_pen_button, MosaicTool.MOSAIC), (self.mosaic_eraser_button, MosaicTool.ERASER)):
+            button.setCheckable(True)
+            button.setMinimumHeight(28)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self.mosaic_tool_group.addButton(button)
+            mosaic_tool_row.addWidget(button, 1)
+            button.clicked.connect(lambda _checked=False, selected=tool: self._select_mosaic_tool(selected))
+        self.mosaic_pen_button.setChecked(True)
+        self.mosaic_size_spin = self._spin(4, 240, 36, " px")
+        self.mosaic_size_spin.setAccessibleName("モザイクの大きさ")
+        self.mosaic_block_spin = self._spin(2, 128, 12, " px")
+        self.mosaic_block_spin.setAccessibleName("モザイクの粗さ")
+        self.mosaic_visible_check = QCheckBox("表示")
+        self.mosaic_visible_check.setChecked(True)
+        self.mosaic_visible_check.setToolTip("モザイクレイヤーをプレビューと保存画像へ表示します")
+        self.mosaic_clear_button = QPushButton("全消去")
+        self.mosaic_clear_button.setToolTip("モザイクをすべて消します")
+        self.mosaic_clear_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.mosaic_clear_button.clicked.connect(self.clear_mosaic)
+        mosaic_form.addRow("道具", mosaic_tool_row)
+        mosaic_form.addRow("範囲", self.mosaic_size_spin)
+        mosaic_form.addRow("粗さ", self.mosaic_block_spin)
+        mosaic_mode_row.addWidget(self.mosaic_visible_check)
+        mosaic_mode_row.addWidget(self.mosaic_clear_button, 1)
+        mosaic_layout.addLayout(mosaic_mode_row)
+        mosaic_layout.addWidget(self.mosaic_details)
+        mosaic_content.setStyleSheet("QPushButton:checked { background: #315fbd; color: white; border: 2px solid #173a82; font-weight: 700; }")
+        self.mosaic_section = CollapsibleSection("モザイク", "", mosaic_content)
+        self.mosaic_section.toggle.setToolTip("プレビューをなぞった範囲を非破壊でモザイク加工します")
+        ll.addWidget(self.mosaic_section)
 
         transparency_content = QWidget()
         transparency_layout = QVBoxLayout(transparency_content)
@@ -2205,6 +2264,10 @@ class QuickEditPage(QWidget):
             spin.valueChanged.connect(self._control_changed)
         self.text_enabled.toggled.connect(self._text_toggled)
         self.hand_mode_enabled.toggled.connect(self._hand_mode_toggled)
+        self.mosaic_mode_enabled.toggled.connect(self._mosaic_mode_toggled)
+        self.mosaic_visible_check.toggled.connect(self._mosaic_visibility_changed)
+        self.mosaic_size_spin.valueChanged.connect(self._mosaic_size_changed)
+        self.mosaic_block_spin.valueChanged.connect(self._mosaic_block_changed)
         self.hand_visible_check.toggled.connect(self._hand_visibility_changed)
         self.hand_size_spin.valueChanged.connect(self._hand_size_changed)
         self.hand_opacity_spin.valueChanged.connect(self._hand_opacity_changed)
@@ -2277,9 +2340,42 @@ class QuickEditPage(QWidget):
 
     @Slot(bool)
     def _hand_mode_toggled(self, enabled: bool) -> None:
-        if not enabled:
+        if enabled:
+            self.mosaic_mode_enabled.setChecked(False)
+        else:
             self._cancel_hand_stroke()
         self._update_visibility()
+        self._update_hand_drawing_state()
+
+    @Slot(bool)
+    def _mosaic_mode_toggled(self, enabled: bool) -> None:
+        if enabled:
+            self.hand_mode_enabled.setChecked(False)
+        else:
+            self._cancel_mosaic_stroke()
+        self._update_visibility()
+        self._update_hand_drawing_state()
+
+    @Slot(bool)
+    def _mosaic_visibility_changed(self, visible: bool) -> None:
+        if self._applying:
+            return
+        self._cancel_mosaic_stroke()
+        self._commit_mosaic(replace(self._mosaic_settings, visible=visible))
+        self._update_visibility()
+        self._update_actions()
+        self.schedule_preview()
+
+    def _mosaic_size_changed(self, value: int) -> None:
+        self._mosaic_size = int(value)
+        self.drop_zone.preview.set_brush_width(self._mosaic_size if self.mosaic_mode_enabled.isChecked() else self._hand_size)
+
+    def _mosaic_block_changed(self, value: int) -> None:
+        self._mosaic_block_size = int(value)
+
+    def _select_mosaic_tool(self, tool: MosaicTool) -> None:
+        self._cancel_mosaic_stroke()
+        self._mosaic_tool = tool
         self._update_hand_drawing_state()
 
     @Slot(bool)
@@ -2339,11 +2435,10 @@ class QuickEditPage(QWidget):
         )
 
     def _update_hand_drawing_state(self) -> None:
-        self.preview_history_bar.setVisible(self.hand_mode_enabled.isChecked())
+        self.preview_history_bar.setVisible(self.hand_mode_enabled.isChecked() or self.mosaic_mode_enabled.isChecked())
         interaction_ready = (
             self.source_path is not None
-            and self.hand_mode_enabled.isChecked()
-            and self._hand_draw_settings.visible
+            and ((self.hand_mode_enabled.isChecked() and self._hand_draw_settings.visible) or (self.mosaic_mode_enabled.isChecked() and self._mosaic_settings.visible))
             and not self._show_original
             and not self.eyedropper_button.isChecked()
             and self._thread is None
@@ -2351,8 +2446,8 @@ class QuickEditPage(QWidget):
             and not self._processing_controls_locked
             and self.drop_zone.preview.geometry_generation() == self._preview_geometry_key()
         )
-        hand_color_picking = self.hand_eyedropper_button.isChecked()
-        self.drop_zone.preview.set_brush_width(self._hand_size)
+        hand_color_picking = self.hand_mode_enabled.isChecked() and self.hand_eyedropper_button.isChecked()
+        self.drop_zone.preview.set_brush_width(self._mosaic_size if self.mosaic_mode_enabled.isChecked() else self._hand_size)
         self.drop_zone.preview.set_drawing_enabled(
             interaction_ready and not hand_color_picking
         )
@@ -2385,6 +2480,8 @@ class QuickEditPage(QWidget):
 
     @Slot(object)
     def _begin_hand_stroke(self, point: HandPoint) -> None:
+        if self.mosaic_mode_enabled.isChecked():
+            return self._begin_mosaic_stroke(point)
         if self.drop_zone.preview.geometry_generation() != self._preview_geometry_key():
             return
         self._active_hand_tool = self._hand_tool
@@ -2401,6 +2498,8 @@ class QuickEditPage(QWidget):
 
     @Slot(object)
     def _append_hand_point(self, point: HandPoint) -> None:
+        if self.mosaic_mode_enabled.isChecked():
+            return self._append_mosaic_point(point)
         if not self._active_hand_points or self._active_hand_generation != self._preview_generation:
             return
         previous = self._active_hand_points[-1]
@@ -2414,6 +2513,8 @@ class QuickEditPage(QWidget):
 
     @Slot()
     def _finish_hand_stroke(self) -> None:
+        if self.mosaic_mode_enabled.isChecked():
+            return self._finish_mosaic_stroke()
         stroke = self._transient_hand_stroke()
         generation = self._active_hand_generation
         self._active_hand_points = []
@@ -2435,6 +2536,8 @@ class QuickEditPage(QWidget):
 
     @Slot()
     def _cancel_hand_stroke(self) -> None:
+        if self.mosaic_mode_enabled.isChecked() and self._active_mosaic_points:
+            return self._cancel_mosaic_stroke()
         had_points = bool(self._active_hand_points)
         self._active_hand_points = []
         self._active_hand_generation = None
@@ -2467,6 +2570,79 @@ class QuickEditPage(QWidget):
             return
         self._cancel_hand_stroke()
         self._commit_hand_draw(replace(self._hand_draw_settings, strokes=()))
+
+    def _begin_mosaic_stroke(self, point: HandPoint) -> None:
+        if self.drop_zone.preview.geometry_generation() != self._preview_geometry_key():
+            return
+        self._active_mosaic_points = [point]
+        self._active_mosaic_generation = self._preview_generation
+        active_color = QColor(49, 95, 189, 120) if self._mosaic_tool is MosaicTool.MOSAIC else QColor(190, 60, 60, 120)
+        self.drop_zone.preview.begin_active_hand(point, HandTool.PEN, active_color, float(self._mosaic_size))
+
+    def _append_mosaic_point(self, point: HandPoint) -> None:
+        if not self._active_mosaic_points or self._active_mosaic_generation != self._preview_generation:
+            return
+        previous = self._active_mosaic_points[-1]
+        if math.hypot(point.x - previous.x, point.y - previous.y) <= max(0.5, self._mosaic_size * 0.08):
+            return
+        self._active_mosaic_points.append(point)
+        self.drop_zone.preview.append_active_hand(point)
+
+    def _finish_mosaic_stroke(self) -> None:
+        if not self._active_mosaic_points:
+            self.drop_zone.preview.cancel_active_hand()
+            return
+        points = tuple(self._active_mosaic_points)
+        generation = self._active_mosaic_generation
+        self._active_mosaic_points = []
+        self._active_mosaic_generation = None
+        width, height = self._final_canvas_size()
+        if generation != self._preview_generation or width <= 0 or height <= 0:
+            self.drop_zone.preview.cancel_active_hand()
+            return
+        current = self._mosaic_settings
+        if current.base_width != width or current.base_height != height:
+            from .editing.mosaic import scale_mosaic
+            current = scale_mosaic(current, width, height)
+        stroke = MosaicStroke(self._mosaic_tool, points, float(self._mosaic_size), int(self._mosaic_block_size))
+        self._commit_mosaic(replace(current, strokes=current.strokes + (stroke,)))
+        self.drop_zone.preview.cancel_active_hand()
+        self._show_original = False
+        self.saved_box.hide()
+        self.result_label.clear()
+        self.schedule_preview()
+        self._update_actions()
+
+    def _commit_mosaic(self, updated: MosaicSettings) -> None:
+        if self._applying or updated == self._mosaic_settings:
+            return
+        self._flush_text_history()
+        self._mosaic_settings = updated
+        current = self.settings()
+        self._history = self._history[: self._history_index + 1]
+        if not self._history or current != self._history[-1]:
+            self._history.append(current)
+            if len(self._history) > 60:
+                self._history.pop(0)
+            self._history_index = len(self._history) - 1
+        self._show_original = False
+        self.saved_box.hide()
+        self.result_label.clear()
+
+    def _cancel_mosaic_stroke(self) -> None:
+        self._active_mosaic_points = []
+        self._active_mosaic_generation = None
+        self.drop_zone.preview.cancel_active_hand()
+
+    @Slot()
+    def clear_mosaic(self) -> None:
+        if not self._mosaic_settings.strokes:
+            return
+        self._cancel_mosaic_stroke()
+        self._commit_mosaic(replace(self._mosaic_settings, strokes=()))
+        self._update_visibility()
+        self.schedule_preview()
+        self._update_actions()
 
     @Slot()
     def choose_image(self) -> None:
@@ -2621,6 +2797,7 @@ class QuickEditPage(QWidget):
                 blend_mode=RecolorBlendMode(self.palette_blend_mode_combo.currentData()),
             ),
             hand_draw=self._hand_draw_settings,
+            mosaic=self._mosaic_settings,
         )
 
     def _default_settings(self) -> EditSettings:
@@ -2704,6 +2881,8 @@ class QuickEditPage(QWidget):
         self.line_art_background_combo.setCurrentIndex(self.line_art_background_combo.findData(settings.line_art.background.value))
         self._line_art_background_color = QColor(*settings.line_art.custom_background)
         self._hand_draw_settings = settings.hand_draw
+        self._mosaic_settings = settings.mosaic
+        self.mosaic_visible_check.setChecked(settings.mosaic.visible)
         self.hand_visible_check.setChecked(settings.hand_draw.visible)
         self.palette_enabled.setChecked(settings.palette.enabled)
         self.palette_quantize_enabled.setChecked(settings.palette.quantize_enabled)
@@ -3190,6 +3369,9 @@ class QuickEditPage(QWidget):
             and (self._hand_draw_settings.base_width, self._hand_draw_settings.base_height) != (width, height)
         ):
             self._hand_draw_settings = scale_hand_draw(self._hand_draw_settings, width, height)
+        if (self._mosaic_settings.strokes and width > 0 and height > 0 and (self._mosaic_settings.base_width, self._mosaic_settings.base_height) != (width, height)):
+            from .editing.mosaic import scale_mosaic
+            self._mosaic_settings = scale_mosaic(self._mosaic_settings, width, height)
         self._update_visibility()
         current = self.settings()
         if self._history_index < 0 or current != self._history[self._history_index]:
@@ -3280,6 +3462,15 @@ class QuickEditPage(QWidget):
         has_hand_layer = self.source_path is not None and bool(self._hand_draw_settings.strokes)
         self.hand_visible_check.setEnabled(has_hand_layer)
         self.hand_clear_button.setEnabled(has_hand_layer)
+        mosaic_mode = self.mosaic_mode_enabled.isChecked()
+        self.mosaic_details.setVisible(mosaic_mode)
+        has_mosaic_layer = self.source_path is not None and bool(self._mosaic_settings.strokes)
+        self.mosaic_visible_check.setEnabled(has_mosaic_layer)
+        self.mosaic_clear_button.setEnabled(has_mosaic_layer)
+        self.mosaic_pen_button.setEnabled(mosaic_mode and self._mosaic_settings.visible)
+        self.mosaic_eraser_button.setEnabled(mosaic_mode and self._mosaic_settings.visible)
+        self.mosaic_size_spin.setEnabled(mosaic_mode and self._mosaic_settings.visible)
+        self.mosaic_block_spin.setEnabled(mosaic_mode and self._mosaic_settings.visible)
         self.transparency_details.setVisible(self.transparency_enabled.isChecked())
         self.custom_canvas.setVisible(self.canvas_preset_combo.currentData() == "custom")
         self.canvas_color_button.setVisible(
@@ -3477,7 +3668,7 @@ class QuickEditPage(QWidget):
 
     @Slot()
     def undo(self) -> None:
-        if self._active_hand_points:
+        if self._active_hand_points or self._active_mosaic_points:
             return
         self._flush_text_history()
         self._canonicalize_line_expression_history()
@@ -3487,7 +3678,7 @@ class QuickEditPage(QWidget):
 
     @Slot()
     def redo(self) -> None:
-        if self._active_hand_points:
+        if self._active_hand_points or self._active_mosaic_points:
             return
         self._flush_text_history()
         self._canonicalize_line_expression_history()
@@ -3498,6 +3689,7 @@ class QuickEditPage(QWidget):
     @Slot()
     def reset_edits(self) -> None:
         self._cancel_hand_stroke()
+        self._cancel_mosaic_stroke()
         self.cancel_palette_extraction()
         self._flush_text_history()
         self.finish_ime(clear_focus=True)
@@ -3515,6 +3707,7 @@ class QuickEditPage(QWidget):
         if self.source_path is None or self._thread is not None or self._palette_thread is not None:
             return
         self._cancel_hand_stroke()
+        self._cancel_mosaic_stroke()
         self.finish_ime(clear_focus=True)
         self.cancel_palette_extraction()
         self._clear_palette_preview_handoff(clear_refresh=True)
@@ -3531,6 +3724,11 @@ class QuickEditPage(QWidget):
         self.canvas_width_spin.setValue(320)
         self.canvas_height_spin.setValue(320)
         self.hand_mode_enabled.setChecked(False)
+        self.mosaic_mode_enabled.setChecked(False)
+        self._mosaic_tool = MosaicTool.MOSAIC
+        self.mosaic_pen_button.setChecked(True)
+        self.mosaic_size_spin.setValue(36)
+        self.mosaic_block_spin.setValue(12)
         self._hand_tool = HandTool.PEN
         self.hand_pen_button.setChecked(True)
         self._hand_color = QColor("#000000")
@@ -3565,6 +3763,7 @@ class QuickEditPage(QWidget):
         if self._thread is not None or self._palette_thread is not None:
             return
         self._cancel_hand_stroke()
+        self._cancel_mosaic_stroke()
         self.finish_ime(clear_focus=True)
         self.cancel_palette_extraction()
         self._preview_timer.stop()
@@ -3936,6 +4135,14 @@ class QuickEditPage(QWidget):
             self.hand_opacity_spin,
             self.hand_visible_check,
             self.hand_clear_button,
+            self.mosaic_mode_enabled,
+            self.mosaic_details,
+            self.mosaic_pen_button,
+            self.mosaic_eraser_button,
+            self.mosaic_size_spin,
+            self.mosaic_block_spin,
+            self.mosaic_visible_check,
+            self.mosaic_clear_button,
             self.transparency_enabled,
             self.transparency_details,
             self.canvas_preset_combo,
@@ -3986,6 +4193,7 @@ class QuickEditPage(QWidget):
             self.palette_extract_button.setEnabled(True)
         for section in self.sections:
             section.toggle.setEnabled(not processing)
+        self.mosaic_section.toggle.setEnabled(not processing)
         self._update_hand_drawing_state()
 
     def _set_processing(self, processing: bool, *, palette_requeue: bool = False) -> None:

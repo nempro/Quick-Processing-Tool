@@ -78,6 +78,11 @@ class HandTool(str, Enum):
     ERASER = "eraser"
 
 
+class MosaicTool(str, Enum):
+    MOSAIC = "mosaic"
+    ERASER = "eraser"
+
+
 @dataclass(frozen=True, slots=True)
 class TransparencySettings:
     enabled: bool = False
@@ -243,6 +248,49 @@ class HandDrawSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class MosaicStroke:
+    tool: MosaicTool = MosaicTool.MOSAIC
+    points: tuple[HandPoint, ...] = ()
+    width: float = 24.0
+    block_size: int = 12
+
+    def __post_init__(self) -> None:
+        try:
+            object.__setattr__(self, "tool", MosaicTool(self.tool))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Unsupported mosaic tool") from exc
+        points = tuple(self.points)
+        if not points or any(not isinstance(point, HandPoint) for point in points):
+            raise ValueError("A mosaic stroke needs at least one HandPoint")
+        if not isinstance(self.width, (int, float)) or isinstance(self.width, bool) or not math.isfinite(self.width) or self.width <= 0:
+            raise ValueError("Mosaic stroke width must be positive")
+        if type(self.block_size) is not int or not 1 <= self.block_size <= 256:
+            raise ValueError("Mosaic block size must be between 1 and 256")
+        object.__setattr__(self, "points", points)
+        object.__setattr__(self, "width", float(self.width))
+
+
+@dataclass(frozen=True, slots=True)
+class MosaicSettings:
+    visible: bool = True
+    strokes: tuple[MosaicStroke, ...] = ()
+    base_width: int = 0
+    base_height: int = 0
+
+    def __post_init__(self) -> None:
+        strokes = tuple(self.strokes)
+        if any(not isinstance(stroke, MosaicStroke) for stroke in strokes):
+            raise TypeError("Mosaic settings require MosaicStroke values")
+        if type(self.base_width) is not int or type(self.base_height) is not int:
+            raise TypeError("Mosaic canvas dimensions must be integers")
+        if self.base_width < 0 or self.base_height < 0 or bool(self.base_width) != bool(self.base_height):
+            raise ValueError("Mosaic canvas dimensions must both be set")
+        if strokes and (self.base_width <= 0 or self.base_height <= 0):
+            raise ValueError("Mosaic strokes require positive canvas dimensions")
+        object.__setattr__(self, "visible", bool(self.visible))
+        object.__setattr__(self, "strokes", strokes)
+
+@dataclass(frozen=True, slots=True)
 class EditSettings:
     filter_preset: FilterPreset = FilterPreset.NONE
     transparency: TransparencySettings = field(default_factory=TransparencySettings)
@@ -252,6 +300,7 @@ class EditSettings:
     line_art: LineArtSettings = field(default_factory=LineArtSettings)
     palette: PaletteSettings = field(default_factory=PaletteSettings)
     hand_draw: HandDrawSettings = field(default_factory=HandDrawSettings)
+    mosaic: MosaicSettings = field(default_factory=MosaicSettings)
 
 
 @dataclass(frozen=True, slots=True)
