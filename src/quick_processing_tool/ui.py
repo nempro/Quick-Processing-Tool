@@ -385,6 +385,7 @@ class PreviewCanvas(QGraphicsView):
 
     def __init__(self) -> None:
         super().__init__()
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self.setScene(QGraphicsScene(self))
         self._image_item = QGraphicsPixmapItem()
         self._image_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
@@ -401,6 +402,9 @@ class PreviewCanvas(QGraphicsView):
         self._crop_aspect: float | None = None
         self._crop_item: CropOverlayItem | None = None
         self._zoom_factor: float | None = None
+        self._pan_start: QPoint | None = None
+        self._pan_scroll_values: tuple[int, int] | None = None
+        self._pan_button: Qt.MouseButton | None = None
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setBackgroundBrush(QColor("#202124"))
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
@@ -410,6 +414,7 @@ class PreviewCanvas(QGraphicsView):
         self.viewport().installEventFilter(self)
 
     def set_image(self, image: QImage) -> None:
+        self._cancel_pan()
         self._image_item.setPixmap(QPixmap.fromImage(image))
         self.scene().setSceneRect(self._image_item.boundingRect())
         self._update_split_guides()
@@ -417,6 +422,7 @@ class PreviewCanvas(QGraphicsView):
         self._apply_zoom()
 
     def clear_image(self) -> None:
+        self._cancel_pan()
         self._image_item.setPixmap(QPixmap())
         self.scene().setSceneRect(0, 0, 1, 1)
         self._update_split_guides()
@@ -668,19 +674,7 @@ class PreviewCanvas(QGraphicsView):
         self._hovered_split_guide_index = self._nearest_split_guide_index(scene_position)
         self._refresh_split_guide_interaction()
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        if self._split_enabled and self._dragging_split_guide_index is None:
-            self._set_hover_split_guide(self.mapToScene(event.position().toPoint()))
-        super().mouseMoveEvent(event)
 
-    def eventFilter(self, watched, event) -> bool:  # noqa: N802
-        if watched is self.viewport():
-            if event.type() is QEvent.Type.MouseMove and self._split_enabled:
-                self._set_hover_split_guide(self.mapToScene(event.position().toPoint()))
-            elif event.type() is QEvent.Type.Leave and self._dragging_split_guide_index is None:
-                self._hovered_split_guide_index = None
-                self._refresh_split_guide_interaction()
-        return super().eventFilter(watched, event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
         if self._dragging_split_guide_index is None:
@@ -758,6 +752,75 @@ class PreviewCanvas(QGraphicsView):
                 self.fitInView(self._image_item, Qt.AspectRatioMode.KeepAspectRatio)
             else:
                 self.scale(self._zoom_factor, self._zoom_factor)
+
+    def _cancel_pan(self) -> None:
+        self._pan_start = None
+        self._pan_scroll_values = None
+        self._pan_button = None
+        self._refresh_split_guide_interaction()
+
+    def _begin_pan(self, event) -> bool:
+        if self._zoom_factor is None or self._image_item.pixmap().isNull():
+            return False
+        self._pan_start = event.position().toPoint()
+        self._pan_scroll_values = (
+            self.horizontalScrollBar().value(),
+            self.verticalScrollBar().value(),
+        )
+        self._pan_button = event.button()
+        self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+        return True
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() in (
+            Qt.MouseButton.MiddleButton,
+            Qt.MouseButton.RightButton,
+        ):
+            # Right-click is intentionally consumed, including at fit zoom,
+            # so the preview never shows a context menu.
+            if self._begin_pan(event) or event.button() == Qt.MouseButton.RightButton:
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._pan_start is not None and self._pan_scroll_values is not None:
+            delta = event.position().toPoint() - self._pan_start
+            horizontal, vertical = self._pan_scroll_values
+            self.horizontalScrollBar().setValue(horizontal - delta.x())
+            self.verticalScrollBar().setValue(vertical - delta.y())
+            event.accept()
+            return
+        if self._split_enabled and self._dragging_split_guide_index is None:
+            self._set_hover_split_guide(self.mapToScene(event.position().toPoint()))
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.RightButton:
+            if self._pan_start is not None and self._pan_button == event.button():
+                self._cancel_pan()
+            event.accept()
+            return
+        if (
+            event.button() == Qt.MouseButton.MiddleButton
+            and self._pan_start is not None
+            and event.button() == self._pan_button
+        ):
+            self._cancel_pan()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if watched is self.viewport():
+            if event.type() is QEvent.Type.MouseMove and self._split_enabled and self._pan_start is None:
+                self._set_hover_split_guide(self.mapToScene(event.position().toPoint()))
+            elif event.type() in (QEvent.Type.FocusOut, QEvent.Type.WindowDeactivate):
+                self._cancel_pan()
+            elif event.type() is QEvent.Type.Leave and self._dragging_split_guide_index is None:
+                self._hovered_split_guide_index = None
+                self._refresh_split_guide_interaction()
+        return super().eventFilter(watched, event)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)

@@ -496,6 +496,7 @@ class EditPreview(QGraphicsView):
 
     def __init__(self) -> None:
         super().__init__()
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self.setScene(QGraphicsScene(self))
         self._item = QGraphicsPixmapItem()
         self._item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
@@ -538,6 +539,7 @@ class EditPreview(QGraphicsView):
         self._zoom_mode = "fit"
         self._pan_start = None
         self._pan_scroll_values: tuple[int, int] | None = None
+        self._pan_button: Qt.MouseButton | None = None
         self._committed_overlay_key = None
         self._committed_overlay_image = QImage()
         self._active_last_canvas: HandPoint | None = None
@@ -569,6 +571,7 @@ class EditPreview(QGraphicsView):
         )
         if not same_geometry:
             self._cancel_pointer()
+            self._cancel_pan()
         self._image = image.copy()
         self._item.setPixmap(QPixmap.fromImage(image))
         self._overlay_item.setPos(self._item.pos())
@@ -585,6 +588,7 @@ class EditPreview(QGraphicsView):
         self._apply_zoom()
 
     def clear_image(self) -> None:
+        self._cancel_pan()
         self._image = QImage()
         self._item.setPixmap(QPixmap())
         self._overlay_item.setPixmap(QPixmap())
@@ -870,22 +874,34 @@ class EditPreview(QGraphicsView):
     def _cancel_pan(self) -> None:
         self._pan_start = None
         self._pan_scroll_values = None
+        self._pan_button = None
         self._update_viewport_cursor()
 
+    def _begin_pan(self, event) -> bool:
+        if self._zoom_mode == "fit" or self._image.isNull():
+            return False
+        self._pan_start = event.position().toPoint()
+        self._pan_scroll_values = (
+            self.horizontalScrollBar().value(),
+            self.verticalScrollBar().value(),
+        )
+        self._pan_button = event.button()
+        self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+        return True
+
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        if (
-            event.button() == Qt.MouseButton.MiddleButton
-            and self._zoom_mode != "fit"
-            and not self._image.isNull()
+        if event.button() in (
+            Qt.MouseButton.MiddleButton,
+            Qt.MouseButton.RightButton,
         ):
-            self._pan_start = event.position().toPoint()
-            self._pan_scroll_values = (
-                self.horizontalScrollBar().value(),
-                self.verticalScrollBar().value(),
-            )
-            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
-            event.accept()
-            return
+            # Consume right-clicks even at fit zoom so Qt never opens a
+            # context menu. At a fixed zoom, both buttons pan the canvas.
+            if self._begin_pan(event):
+                event.accept()
+                return
+            if event.button() == Qt.MouseButton.RightButton:
+                event.accept()
+                return
         if event.button() == Qt.MouseButton.LeftButton:
             temporary_hand_pick = bool(
                 self._drawing_enabled
@@ -926,7 +942,16 @@ class EditPreview(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.MiddleButton and self._pan_start is not None:
+        if event.button() == Qt.MouseButton.RightButton:
+            if self._pan_start is not None and self._pan_button == event.button():
+                self._cancel_pan()
+            event.accept()
+            return
+        if (
+            event.button() == Qt.MouseButton.MiddleButton
+            and self._pan_start is not None
+            and event.button() == self._pan_button
+        ):
             self._cancel_pan()
             event.accept()
             return
