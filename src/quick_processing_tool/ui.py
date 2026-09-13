@@ -72,6 +72,7 @@ from .thumbnail_ui import ThumbnailPage
 from .edit_ui import ElidedPathLabel, QuickEditPage
 from .upscale_ui import UpscalePage
 from .pixel_editor_ui import PixelEditorPage
+from .metadata_removal_ui import MetadataRemovalDialog
 from .sound_effect_ui import SoundEffectPage
 from .speech_bubble_ui import SpeechBubblePage
 from .source_ui import CurrentSourceCard
@@ -1242,6 +1243,7 @@ class MainWindow(QMainWindow):
         self._quick_preview_active_result = None
         self._quick_preview_activity_token: int | None = None
         self._last_navigation_index = -1
+        self._metadata_removal_dialog: MetadataRemovalDialog | None = None
 
         self._build_toolbar()
         self._build_content()
@@ -1263,6 +1265,23 @@ class MainWindow(QMainWindow):
         self.reset_action = QAction("設定をリセット", self)
         self.reset_action.triggered.connect(self.reset_settings)
         toolbar.addActions([self.open_action, self.export_action, self.copy_action, self.reset_action])
+        toolbar_spacer = QWidget()
+        toolbar_spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(toolbar_spacer)
+        self.metadata_removal_button = QPushButton("メタ情報削除")
+        self.metadata_removal_button.setObjectName("metadata_removal_button")
+        self.metadata_removal_button.setToolTip("画像のEXIF・GPS・コメントなどをまとめて削除します")
+        self.metadata_removal_button.clicked.connect(self.open_metadata_removal_dialog)
+        set_operation_role(self.metadata_removal_button, "secondary")
+        toolbar.addWidget(self.metadata_removal_button)
+
+    @Slot()
+    def open_metadata_removal_dialog(self) -> None:
+        if self._metadata_removal_dialog is None:
+            self._metadata_removal_dialog = MetadataRemovalDialog(self)
+        self._metadata_removal_dialog.show()
+        self._metadata_removal_dialog.raise_()
+        self._metadata_removal_dialog.activateWindow()
 
     def _build_content(self) -> None:
         self.navigation = QTabWidget()
