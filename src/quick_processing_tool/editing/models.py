@@ -82,6 +82,26 @@ class MosaicTool(str, Enum):
     MOSAIC = "mosaic"
     ERASER = "eraser"
 
+@dataclass(frozen=True, slots=True)
+class ColorAdjustmentSettings:
+    """Non-destructive color adjustments applied before compositing layers."""
+
+    brightness: int = 0
+    contrast: int = 0
+    saturation: int = 0
+    temperature: int = 0
+    tint: int = 0
+    hue: int = 0
+    fade: int = 0
+
+    def __post_init__(self) -> None:
+        for name in ("brightness", "contrast", "saturation", "temperature", "tint", "fade"):
+            value = getattr(self, name)
+            if type(value) is not int or not -100 <= value <= 100:
+                raise ValueError(f"{name} must be between -100 and 100")
+        if type(self.hue) is not int or not -180 <= self.hue <= 180:
+            raise ValueError("hue must be between -180 and 180")
+
 
 @dataclass(frozen=True, slots=True)
 class TransparencySettings:
@@ -293,6 +313,8 @@ class MosaicSettings:
 @dataclass(frozen=True, slots=True)
 class EditSettings:
     filter_preset: FilterPreset = FilterPreset.NONE
+    color_adjustments: ColorAdjustmentSettings = field(default_factory=ColorAdjustmentSettings)
+    flip_horizontal: bool = False
     transparency: TransparencySettings = field(default_factory=TransparencySettings)
     canvas: CanvasSettings = field(default_factory=CanvasSettings)
     text: TextSettings = field(default_factory=TextSettings)

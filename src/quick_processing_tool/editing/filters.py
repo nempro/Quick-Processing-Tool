@@ -55,3 +55,41 @@ def apply_filter(image: Image.Image, preset: FilterPreset) -> Image.Image:
         adjusted = ImageEnhance.Brightness(adjusted).enhance(1.07)
         return _with_alpha(adjusted, alpha)
     raise ValueError(f"Unknown filter preset: {preset}")
+
+
+def apply_color_adjustments(image: Image.Image, adjustments) -> Image.Image:
+    """Apply compact color controls while preserving the original alpha channel."""
+    rgba = image.convert("RGBA")
+    alpha = rgba.getchannel("A")
+    rgb = rgba.convert("RGB")
+    if adjustments is None:
+        return rgba.copy()
+    if adjustments.brightness:
+        rgb = ImageEnhance.Brightness(rgb).enhance(max(0.0, 1.0 + adjustments.brightness / 100.0))
+    if adjustments.contrast:
+        rgb = ImageEnhance.Contrast(rgb).enhance(max(0.0, 1.0 + adjustments.contrast / 100.0))
+    if adjustments.saturation:
+        rgb = ImageEnhance.Color(rgb).enhance(max(0.0, 1.0 + adjustments.saturation / 100.0))
+    if adjustments.temperature or adjustments.tint:
+        red, green, blue = rgb.split()
+        warm = adjustments.temperature / 100.0
+        tint = adjustments.tint / 100.0
+        red_factor = 1.0 + 0.20 * warm + 0.10 * tint
+        green_factor = 1.0 - 0.05 * abs(warm) - 0.12 * tint
+        blue_factor = 1.0 - 0.20 * warm - 0.10 * tint
+        rgb = Image.merge("RGB", (
+            _channel_scale(red, max(0.0, red_factor)),
+            _channel_scale(green, max(0.0, green_factor)),
+            _channel_scale(blue, max(0.0, blue_factor)),
+        ))
+    if adjustments.hue:
+        hsv = rgb.convert("HSV")
+        shift = round(adjustments.hue * 255 / 360)
+        hue, sat, value = hsv.split()
+        hue = hue.point(lambda channel: (channel + shift) % 256)
+        hsv = Image.merge("HSV", (hue, sat, value))
+        rgb = hsv.convert("RGB")
+    if adjustments.fade:
+        amount = max(0.0, min(1.0, adjustments.fade / 100.0))
+        rgb = Image.blend(rgb, Image.new("RGB", rgb.size, (255, 255, 255)), amount * 0.45)
+    return _with_alpha(rgb, alpha)

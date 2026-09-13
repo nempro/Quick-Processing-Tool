@@ -3,6 +3,7 @@
 from .models import (
     CanvasBackground,
     CanvasSettings,
+    ColorAdjustmentSettings,
     EditOutputFormat,
     EditResult,
     EditSettings,
@@ -45,6 +46,7 @@ from .mosaic import compose_mosaic, render_mosaic_overlay, scale_mosaic
 __all__ = [
     "CanvasBackground",
     "CanvasSettings",
+    "ColorAdjustmentSettings",
     "EditOutputFormat",
     "EditResult",
     "EditService",

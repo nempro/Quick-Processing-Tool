@@ -63,6 +63,7 @@ from .color_picker import choose_color
 from .editing import (
     CanvasBackground,
     CanvasSettings,
+    ColorAdjustmentSettings,
     EditOutputFormat,
     EditResult,
     EditService,
@@ -1477,6 +1478,33 @@ class QuickEditPage(QWidget):
         self.filter_section.toggle.setToolTip("画像の色合いや雰囲気を選びます")
         ll.addWidget(self.filter_section)
 
+        color_content = QWidget()
+        color_content.setMinimumWidth(0)
+        color_content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        color_form = QFormLayout(color_content)
+        self._configure_form(color_form)
+        self._color_controls = {}
+        self.brightness_slider, self.brightness_spin = self._add_adjustment_control(color_form, "明るさ", "brightness", -100, 100)
+        self.contrast_slider, self.contrast_spin = self._add_adjustment_control(color_form, "コントラスト", "contrast", -100, 100)
+        self.saturation_slider, self.saturation_spin = self._add_adjustment_control(color_form, "彩度", "saturation", -100, 100)
+        self.temperature_slider, self.temperature_spin = self._add_adjustment_control(color_form, "色温度", "temperature", -100, 100)
+        self.tint_slider, self.tint_spin = self._add_adjustment_control(color_form, "色かぶり", "tint", -100, 100)
+        self.hue_slider, self.hue_spin = self._add_adjustment_control(color_form, "色相", "hue", -180, 180)
+        self.fade_slider, self.fade_spin = self._add_adjustment_control(color_form, "フェード", "fade", -100, 100)
+        color_actions = QHBoxLayout()
+        self.color_reset_button = QPushButton("色調補正をリセット")
+        self.color_reset_button.clicked.connect(self.reset_color_adjustments)
+        self.flip_horizontal_check = QCheckBox("左右反転")
+        self.flip_horizontal_check.setToolTip("画像全体を左右反転します。元画像は変更しません")
+        self.flip_horizontal_check.setAccessibleName("左右反転")
+        color_actions.addWidget(self.flip_horizontal_check)
+        color_actions.addWidget(self.color_reset_button, 1)
+        color_form.addRow("", color_actions)
+        self.color_section = CollapsibleSection("色調補正", "明るさ・色味を非破壊で調整します", color_content)
+        self.color_section.toggle.setToolTip("明るさ、色味、色相をスライダーで調整します")
+        self.color_section.toggle.setFixedHeight(26)
+        filter_form.addRow(self.color_section)
+
         text_content = QWidget()
         text_layout = QVBoxLayout(text_content)
         text_layout.setContentsMargins(6, 1, 3, 4)
@@ -2254,6 +2282,20 @@ class QuickEditPage(QWidget):
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
+    def _add_adjustment_control(self, form: QFormLayout, label: str, key: str, minimum: int, maximum: int):
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(minimum, maximum)
+        slider.setValue(0)
+        slider.setMinimumHeight(24)
+        spin = self._spin(minimum, maximum, 0)
+        spin.setMinimumWidth(0)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(slider, 1)
+        row.addWidget(spin)
+        form.addRow(label, row)
+        self._color_controls[key] = (slider, spin)
+        return slider, spin
     @staticmethod
     def _spin(minimum: int, maximum: int, value: int, suffix: str = "") -> QSpinBox:
         spin = QSpinBox()
@@ -2279,6 +2321,9 @@ class QuickEditPage(QWidget):
         ):
             combo.currentIndexChanged.connect(self._control_changed)
         self.palette_count_combo.currentIndexChanged.connect(self._palette_count_changed)
+        for key, (slider, spin) in self._color_controls.items():
+            slider.valueChanged.connect(lambda value, name=key: self._color_slider_changed(name, value))
+            spin.valueChanged.connect(lambda value, name=key: self._color_spin_changed(name, value))
         for spin in (
             self.font_size_spin,
             self.outline_width_spin,
@@ -2305,6 +2350,7 @@ class QuickEditPage(QWidget):
             self.line_art_enabled,
             self.palette_enabled,
             self.palette_quantize_enabled,
+            self.flip_horizontal_check,
         ):
             check.toggled.connect(self._control_changed)
         self.text_edit.textChanged.connect(self._text_changed)
@@ -2770,6 +2816,8 @@ class QuickEditPage(QWidget):
             canvas_width, canvas_height = canvas_data
         return EditSettings(
             filter_preset=FilterPreset(self.filter_combo.currentData()),
+            color_adjustments=ColorAdjustmentSettings(**{key: spin.value() for key, (_slider, spin) in self._color_controls.items()}),
+            flip_horizontal=self.flip_horizontal_check.isChecked(),
             transparency=TransparencySettings(
                 self.transparency_enabled.isChecked(),
                 (self._target_color.red(), self._target_color.green(), self._target_color.blue()),
@@ -2865,6 +2913,11 @@ class QuickEditPage(QWidget):
         was_applying = self._applying
         self._applying = True
         self.filter_combo.setCurrentIndex(self.filter_combo.findData(settings.filter_preset.value))
+        for key, (slider, spin) in self._color_controls.items():
+            value = getattr(settings.color_adjustments, key)
+            slider.setValue(value)
+            spin.setValue(value)
+        self.flip_horizontal_check.setChecked(settings.flip_horizontal)
         self.transparency_enabled.setChecked(settings.transparency.enabled)
         self._target_color = QColor(*settings.transparency.target_color)
         self.tolerance_slider.setValue(settings.transparency.tolerance)
@@ -3141,7 +3194,7 @@ class QuickEditPage(QWidget):
                 self._preview_refresh_without_activity = True
                 self.schedule_preview()
             return
-        signature = (settings.filter_preset.value, settings.transparency, settings.palette.color_count)
+        signature = (settings.filter_preset.value, settings.transparency, settings.color_adjustments, settings.palette.color_count)
         generation = self._palette_generation
         request = (source, settings, generation, request_id, identity, signature)
         if self._palette_thread is not None:
@@ -3190,8 +3243,9 @@ class QuickEditPage(QWidget):
                 self._palette_activity_token = None
             return
         current = self.settings()
-        current_signature = (current.filter_preset.value, current.transparency, current.palette.color_count)
-        if current_signature != signature:
+        current_signature = (current.filter_preset.value, current.transparency, current.color_adjustments, current.palette.color_count)
+        legacy_signature = (current.filter_preset.value, current.transparency, current.palette.color_count)
+        if current_signature != signature and legacy_signature != signature:
             if self._palette_activity_token is not None:
                 self.preview_activity.cancel(self._palette_activity_token)
                 self._palette_activity_token = None
@@ -3204,7 +3258,7 @@ class QuickEditPage(QWidget):
         self._palette_mapping_size = (mapping.width, mapping.height)
         self._palette_mapping_digest = mapping.digest
         self._palette_needs_reextract = False
-        self._palette_extracted_color_count = int(signature[2])
+        self._palette_extracted_color_count = int(signature[-1])
         self._palette_status_message = ""
         self.palette_enabled.setChecked(True)
         self._set_palette_feedback("", "success")
@@ -3345,7 +3399,7 @@ class QuickEditPage(QWidget):
         self._choose_material_color("輪郭・線表現の背景色を選ぶ", "_line_art_background_color", self.line_art_background_color_button)
 
     def _upstream_signature(self, settings: EditSettings):
-        return settings.filter_preset, settings.transparency
+        return settings.filter_preset, settings.transparency, settings.color_adjustments
 
     def _invalidate_palette_for_upstream_change(self, settings: EditSettings) -> None:
         signature = self._upstream_signature(settings)
@@ -3411,6 +3465,21 @@ class QuickEditPage(QWidget):
         self.schedule_preview()
         self._update_actions()
 
+    def _color_slider_changed(self, key: str, value: int) -> None:
+        slider, spin = self._color_controls[key]
+        if spin.value() != value:
+            blocked = spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(blocked)
+        self._control_changed()
+
+    def _color_spin_changed(self, key: str, value: int) -> None:
+        slider, spin = self._color_controls[key]
+        if slider.value() != value:
+            blocked = slider.blockSignals(True)
+            slider.setValue(value)
+            slider.blockSignals(blocked)
+        self._control_changed()
     @Slot(int)
     def _tolerance_slider_changed(self, value: int) -> None:
         if self.tolerance_spin.value() != value:
@@ -3710,6 +3779,18 @@ class QuickEditPage(QWidget):
         if self._history_index + 1 < len(self._history):
             self._history_index += 1
             self.apply_settings(self._history[self._history_index])
+
+    @Slot()
+    def reset_color_adjustments(self) -> None:
+        changed = any(spin.value() for _key, (_slider, spin) in self._color_controls.items())
+        if not changed:
+            return
+        self._applying = True
+        for slider, spin in self._color_controls.values():
+            slider.setValue(0)
+            spin.setValue(0)
+        self._applying = False
+        self._control_changed()
 
     @Slot()
     def reset_edits(self) -> None:
@@ -4188,6 +4269,7 @@ class QuickEditPage(QWidget):
             self.line_art_background_color_button,
             self.palette_enabled,
             self.palette_quantize_enabled,
+            self.flip_horizontal_check,
             self.palette_blend_mode_combo,
             self.palette_count_combo,
             self.palette_extract_button,

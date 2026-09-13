@@ -19,7 +19,7 @@ from .palette import (
 from .sticker import apply_sticker
 from .hand_draw import compose_hand_draw
 from .mosaic import compose_mosaic
-from .filters import apply_filter
+from .filters import apply_color_adjustments, apply_filter
 from .models import EditSettings, RecolorBlendMode
 
 
@@ -36,7 +36,8 @@ def load_normalized(path: Path) -> Image.Image:
 
 def prepare_palette_source(source: Image.Image, settings: EditSettings) -> Image.Image:
     filtered = apply_filter(source, settings.filter_preset)
-    return apply_color_transparency(filtered, settings.transparency)
+    adjusted = apply_color_adjustments(filtered, settings.color_adjustments)
+    return apply_color_transparency(adjusted, settings.transparency)
 
 
 def extract_palette_for_settings(source: Image.Image, settings: EditSettings):
@@ -85,13 +86,15 @@ def _apply_palette_stage(image: Image.Image, settings: EditSettings) -> Image.Im
 
 def render_edit(source: Image.Image, settings: EditSettings) -> Image.Image:
     filtered = apply_filter(source, settings.filter_preset)
-    transparent = apply_color_transparency(filtered, settings.transparency)
+    adjusted = apply_color_adjustments(filtered, settings.color_adjustments)
+    transparent = apply_color_transparency(adjusted, settings.transparency)
     paletted = _apply_palette_stage(transparent, settings)
     line_art = apply_line_art(paletted, settings.line_art)
     composed = place_on_canvas(line_art, settings.canvas)
     sticker = apply_sticker(composed, settings.sticker)
     text = draw_text(sticker, settings.text)
-    return compose_hand_draw(compose_mosaic(text, settings.mosaic), settings.hand_draw)
+    composed_layers = compose_hand_draw(compose_mosaic(text, settings.mosaic), settings.hand_draw)
+    return ImageOps.mirror(composed_layers) if settings.flip_horizontal else composed_layers
 
 
 def render_preview(
