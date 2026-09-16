@@ -20,6 +20,19 @@ SOURCE_FORMATS = {"PNG": "PNG", "JPEG": "JPEG", "WEBP": "WEBP"}
 class EditProcessingError(ProcessingError):
     """The quick edit pipeline or its strict save validation failed."""
 
+class _OutputVerificationError(OSError):
+    def __init__(self, message: str, user_message: str) -> None:
+        super().__init__(message)
+        self.user_message = user_message
+
+
+def _requires_alpha(image: Image.Image) -> bool:
+    """Return whether the rendered pixels actually need alpha preservation."""
+    if "A" not in image.getbands():
+        return False
+    minimum, _maximum = image.getchannel("A").getextrema()
+    return minimum < 255
+
 
 class EditService:
     def export(
@@ -63,31 +76,54 @@ class EditService:
                 raise MissingSourceError(MISSING_SOURCE_MESSAGE) from exc
             raise EditProcessingError("加工した画像を保存できませんでした。") from exc
 
+        rendered_requires_alpha = _requires_alpha(rendered)
         try:
             if output.stat().st_size <= 0:
-                raise OSError("empty output")
+                raise _OutputVerificationError(
+                    "empty output",
+                    "保存後の確認に失敗しました（ファイルが空です）。",
+                )
             with Image.open(output) as checked:
                 checked.verify()
             with Image.open(output) as verified:
                 verified.load()
                 actual_format = (verified.format or "").upper()
                 if actual_format != selected_format:
-                    raise OSError("unexpected output format")
+                    raise _OutputVerificationError(
+                        "unexpected output format",
+                        "保存後の確認に失敗しました（形式が一致しません）。",
+                    )
                 if verified.size != rendered.size:
-                    raise OSError("unexpected output dimensions")
+                    raise _OutputVerificationError(
+                        "unexpected output dimensions",
+                        "保存後の確認に失敗しました（画像サイズが一致しません）。",
+                    )
                 has_alpha = "A" in verified.getbands() or (
                     verified.mode == "P" and "transparency" in verified.info
                 )
-                if selected_format in {"PNG", "WEBP"} and "A" in rendered.getbands() and not has_alpha:
-                    raise OSError("alpha channel was lost")
+                if selected_format in {"PNG", "WEBP"} and rendered_requires_alpha and not has_alpha:
+                    raise _OutputVerificationError(
+                        "alpha channel was lost",
+                        "保存後の確認に失敗しました（透明情報を保持できませんでした）。",
+                    )
                 if selected_format == "JPEG" and has_alpha:
-                    raise OSError("JPEG output unexpectedly has alpha")
+                    raise _OutputVerificationError(
+                        "JPEG output unexpectedly has alpha",
+                        "保存後の確認に失敗しました（JPEGの透明情報が不正です）。",
+                    )
         except (OSError, UnidentifiedImageError) as exc:
+            LOGGER.exception("Quick edit output verification failed: %s", output)
             try:
                 output.unlink(missing_ok=True)
             except OSError:
                 LOGGER.exception("Invalid quick edit output could not be removed: %s", output)
-            raise EditProcessingError("保存した画像を確認できませんでした。") from exc
+            if isinstance(exc, UnidentifiedImageError):
+                message = "保存後の確認に失敗しました（ファイルを開けませんでした）。"
+            elif isinstance(exc, _OutputVerificationError):
+                message = exc.user_message
+            else:
+                message = "保存後の確認に失敗しました。"
+            raise EditProcessingError(message) from exc
 
         LOGGER.info(
             "Quick edit saved: input=%s output=%s size=%sx%s alpha=%s",
