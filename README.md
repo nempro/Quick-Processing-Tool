@@ -13,7 +13,7 @@ AI画像やSNS投稿前の「少しだけ加工したい」を、Windows上で�
 - Previewは最大400%拡大、右ドラッグ / 中ボタンでPan
 - Real-ESRGANによる高画質化と、加工 → 高画質化 → 分割の直通Workflow
 - 複数画像のBatch処理、Queueの個別削除・一覧クリア
-- EXIF / GPS / XMP / PNG textなどをま<img width="884" height="593" alt="スクリーンショット 2026-09-17 134927" src="https://github.com/user-attachments/assets/433395cb-1832-434c-801d-8f0685ba78eb" />めて削除する一括メタ情報削除
+- EXIF / GPS / XMP / PNG textなどをまとめて削除する一括メタ情報削除
 - PNG / JPEG / WebP対応、Alphaをできるだけ維持
 - 保存先表示・保存先を開く・連番保存など、普段使い向けのUX
 - 「Photoshopを開くほどではない」画像処理を1つのアプリで完結
