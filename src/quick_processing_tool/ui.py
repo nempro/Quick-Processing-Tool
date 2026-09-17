@@ -11,6 +11,7 @@ from PIL import Image, UnidentifiedImageError
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QDragEnterEvent, QDropEvent, QGuiApplication, QImage, QKeySequence, QPainter, QPainterPath, QPainterPathStroker, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QButtonGroup,
     QCheckBox,
@@ -61,6 +62,16 @@ from .image_splitting import (
     equal_split_boundaries,
     partition_edges,
     split_boxes,
+)
+from .image_merging import (
+    ImageMergeOptions,
+    MergeAlignment,
+    MergeDirection,
+    MergeSizeMode,
+    build_merge_preview,
+    max_merge_images,
+    merged_dimensions,
+    process_image_merge,
 )
 from .models import ImageInfo, OutputFormat, ProcessingOptions, ResizeMode, Transform
 from .naming import unique_output_path, unique_split_output_paths
@@ -829,6 +840,47 @@ class PreviewCanvas(QGraphicsView):
             self._apply_zoom()
 
 
+class MergeGapSpinBox(QSpinBox):
+    """A direct-entry spin box that only reacts to wheel input while focused."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.lineEdit().setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setKeyboardTracking(True)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        super().mousePressEvent(event)
+        if event.button() is Qt.MouseButton.LeftButton:
+            self.lineEdit().setFocus(Qt.FocusReason.MouseFocusReason)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        if not (self.hasFocus() or self.lineEdit().hasFocus()):
+            event.ignore()
+            return
+        super().wheelEvent(event)
+
+
+class MergeOrderTreeWidget(QTreeWidget):
+    """A merge queue that reports one change after an internal drag completes."""
+
+    order_dropped = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setDragDropOverwriteMode(False)
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        super().dropEvent(event)
+        if event.isAccepted():
+            self.order_dropped.emit()
+
+
 class DropZone(QWidget):
     """Central, always-active image entry point with explicit interaction states."""
 
@@ -1154,6 +1206,61 @@ class ProcessingWorker(QObject):
         self.finished.emit(succeeded, failed)
 
 
+
+class MergeProcessingWorker(QObject):
+    """Write one ordered composition while retaining Quick's output semantics."""
+
+    progress = Signal(int)
+    file_status = Signal(int, str, str)
+    outputs_saved = Signal(int)
+    folder_saved = Signal(object)
+    finished = Signal(int, int)
+
+    def __init__(
+        self,
+        paths: list[Path],
+        processing: ProcessingOptions,
+        merge_options: ImageMergeOptions,
+        destination_mode: str,
+        custom_folder: Path | None,
+        processed_subfolder: bool,
+        row_indices: list[int],
+    ) -> None:
+        super().__init__()
+        self.paths = paths
+        self.processing = processing
+        self.merge_options = merge_options
+        self.destination_mode = destination_mode
+        self.custom_folder = custom_folder
+        self.processed_subfolder = processed_subfolder
+        self.row_indices = row_indices
+
+    @Slot()
+    def run(self) -> None:
+        for row in self.row_indices:
+            self.file_status.emit(row, "Processing", "結合画像を準備しています")
+        try:
+            result = process_image_merge(self.paths, self.processing, self.merge_options)
+            folder = quick_output_folder(
+                self.paths[0], self.destination_mode, self.custom_folder, self.processed_subfolder
+            )
+            destination = unique_output_path(folder, self.paths[0], result.format)
+            write_processed(result, destination, self.processing.preserve_timestamp)
+        except Exception as exc:
+            LOGGER.exception("Image merge failed: %s", self.paths)
+            message = str(exc) if isinstance(exc, ProcessingError) else "画像結合に失敗しました。"
+            for row in self.row_indices:
+                self.file_status.emit(row, "Error", message)
+            self.progress.emit(100)
+            self.outputs_saved.emit(0)
+            self.finished.emit(0, 1)
+            return
+        for row in self.row_indices:
+            self.file_status.emit(row, "Done", str(destination))
+        self.progress.emit(100)
+        self.outputs_saved.emit(1)
+        self.folder_saved.emit(destination.parent)
+        self.finished.emit(1, 0)
 def decode_quick_preview(path: Path) -> tuple[QImage, ImageInfo]:
     """Validate metadata and build the preview with one image-file open."""
     require_source_file(path)
@@ -1205,6 +1312,36 @@ class QuickPreviewWorker(QObject):
             self.finished.emit()
 
 
+
+class MergePreviewWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(object)
+    finished = Signal()
+
+    def __init__(self, request) -> None:
+        super().__init__()
+        self.request = request
+
+    @Slot()
+    def run(self) -> None:
+        generation, request_id, paths, processing, merge_options = self.request
+        try:
+            image = build_merge_preview(paths, processing, merge_options)
+            rgba = image.convert("RGBA")
+            raw = rgba.tobytes("raw", "RGBA")
+            qimage = QImage(
+                raw,
+                rgba.width,
+                rgba.height,
+                rgba.width * 4,
+                QImage.Format.Format_RGBA8888,
+            ).copy()
+            self.succeeded.emit((generation, request_id, qimage))
+        except Exception as exc:
+            LOGGER.exception("Merge preview failed: %s", paths)
+            self.failed.emit((generation, request_id, f"結合プレビューを表示できませんでした: {exc}"))
+        finally:
+            self.finished.emit()
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -1226,6 +1363,7 @@ class MainWindow(QMainWindow):
         self._thread: QThread | None = None
         self._worker: ProcessingWorker | None = None
         self._active_split_options = ImageSplitOptions()
+        self._active_merge = False
         self._split_boundaries: tuple[float, ...] | None = None
         self._split_boundary_direction = SplitDirection.VERTICAL
         self._split_boundary_count = 4
@@ -1243,6 +1381,15 @@ class MainWindow(QMainWindow):
         self._quick_preview_active_result = None
         self._quick_preview_activity_token: int | None = None
         self._last_navigation_index = -1
+        self.merge_paths: list[Path] = []
+        self._merge_preview_thread: QThread | None = None
+        self._merge_preview_worker: MergePreviewWorker | None = None
+        self._merge_preview_request_id = 0
+        self._merge_preview_result = None
+        self._merge_gap_refresh_timer = QTimer(self)
+        self._merge_gap_refresh_timer.setSingleShot(True)
+        self._merge_gap_refresh_timer.setInterval(24)
+        self._merge_gap_refresh_timer.timeout.connect(self._apply_merge_gap_change)
         self._metadata_removal_dialog: MetadataRemovalDialog | None = None
 
         self._build_toolbar()
@@ -1554,6 +1701,116 @@ class MainWindow(QMainWindow):
         transform_content.setObjectName("transform_settings")
         layout.addWidget(transform_section)
 
+        merge_content = QWidget()
+        merge_layout = QVBoxLayout(merge_content)
+        merge_layout.setContentsMargins(0, 2, 0, 0)
+        merge_layout.setSpacing(5)
+        self.merge_enable_check = QCheckBox("画像を結合して保存")
+        self.merge_enable_check.setToolTip("一覧から2〜9枚を選び、1枚の画像に並べます")
+        self.merge_enable_check.toggled.connect(self._merge_settings_changed)
+        merge_layout.addWidget(self.merge_enable_check)
+        merge_layout.addWidget(QLabel("結合する順番（上から順）"))
+        self.merge_list = MergeOrderTreeWidget()
+        self.merge_list.setHeaderHidden(True)
+        self.merge_list.setMaximumHeight(104)
+        self.merge_list.currentItemChanged.connect(self._update_merge_actions)
+        self.merge_list.order_dropped.connect(self._merge_items_reordered)
+        merge_layout.addWidget(self.merge_list)
+        merge_actions = QHBoxLayout()
+        merge_actions.setSpacing(3)
+        self.merge_add_button = QPushButton("選択を追加")
+        self.merge_remove_button = QPushButton("外す")
+        self.merge_up_button = QPushButton("上へ")
+        self.merge_down_button = QPushButton("下へ")
+        self.merge_add_button.clicked.connect(self.add_selected_to_merge)
+        self.merge_remove_button.clicked.connect(self.remove_selected_from_merge)
+        self.merge_up_button.clicked.connect(lambda: self.move_merge_item(-1))
+        self.merge_down_button.clicked.connect(lambda: self.move_merge_item(1))
+        for button in (self.merge_add_button, self.merge_remove_button, self.merge_up_button, self.merge_down_button):
+            button.setMinimumWidth(0)
+            set_operation_role(button, "secondary")
+            merge_actions.addWidget(button, 1)
+        merge_layout.addLayout(merge_actions)
+        self.merge_direction_group = QButtonGroup(self)
+        self.merge_direction_buttons: dict[MergeDirection, QPushButton] = {}
+        direction_row = QHBoxLayout()
+        for direction, label in ((MergeDirection.HORIZONTAL, "横に結合"), (MergeDirection.VERTICAL, "縦に結合"), (MergeDirection.GRID, "グリッド")):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self.merge_direction_group.addButton(button)
+            self.merge_direction_buttons[direction] = button
+            direction_row.addWidget(button, 1)
+        self.merge_direction_buttons[MergeDirection.HORIZONTAL].setChecked(True)
+        self.merge_direction_group.buttonClicked.connect(self._merge_settings_changed)
+        merge_layout.addLayout(direction_row)
+        self.merge_grid_columns_label = QLabel("グリッドの列数")
+        self.merge_grid_columns_widget = QWidget()
+        grid_columns_layout = QHBoxLayout(self.merge_grid_columns_widget)
+        grid_columns_layout.setContentsMargins(0, 0, 0, 0)
+        grid_columns_layout.setSpacing(3)
+        self.merge_grid_columns_group = QButtonGroup(self)
+        self.merge_grid_columns_buttons: dict[int, QPushButton] = {}
+        for columns in (2, 3):
+            button = QPushButton(f"{columns}列")
+            button.setCheckable(True)
+            button.setMinimumWidth(0)
+            self.merge_grid_columns_group.addButton(button)
+            self.merge_grid_columns_buttons[columns] = button
+            grid_columns_layout.addWidget(button, 1)
+        self.merge_grid_columns_buttons[2].setChecked(True)
+        self.merge_grid_columns_group.buttonClicked.connect(self._merge_settings_changed)
+        self.merge_grid_columns_label.hide()
+        self.merge_grid_columns_widget.hide()
+        merge_layout.addWidget(self.merge_grid_columns_label)
+        merge_layout.addWidget(self.merge_grid_columns_widget)
+        self.merge_size_combo = QComboBox()
+        self.merge_size_combo.addItem("原寸", MergeSizeMode.ORIGINAL)
+        self.merge_size_combo.addItem("高さを揃える", MergeSizeMode.MATCH_HEIGHT)
+        self.merge_size_combo.addItem("幅を揃える", MergeSizeMode.MATCH_WIDTH)
+        self.merge_size_combo.addItem("セルに合わせる", MergeSizeMode.CELL_FIT)
+        self.merge_size_combo.currentIndexChanged.connect(self._merge_settings_changed)
+        merge_layout.addWidget(QLabel("サイズ合わせ"))
+        merge_layout.addWidget(self.merge_size_combo)
+        self.merge_alignment_combo = QComboBox()
+        self.merge_alignment_combo.addItem("中央揃え", MergeAlignment.CENTER)
+        self.merge_alignment_combo.addItem("上 / 左揃え", MergeAlignment.START)
+        self.merge_alignment_combo.addItem("下 / 右揃え", MergeAlignment.END)
+        self.merge_alignment_combo.currentIndexChanged.connect(self._merge_settings_changed)
+        merge_layout.addWidget(QLabel("原寸時の揃え方"))
+        merge_layout.addWidget(self.merge_alignment_combo)
+        self.merge_gap_spin = MergeGapSpinBox()
+        self.merge_gap_spin.setRange(-100, 100)
+        self.merge_gap_spin.setValue(0)
+        self.merge_gap_spin.setSuffix(" px")
+        self.merge_gap_spin.setToolTip("マイナス値で画像を重ねます。数値をクリックして直接入力できます。ホイールはfocus時だけ値を変更します")
+        self.merge_gap_spin.valueChanged.connect(self._merge_gap_changed)
+        merge_layout.addWidget(QLabel("画像の間隔"))
+        merge_layout.addWidget(self.merge_gap_spin)
+        self.merge_gap_hint = QLabel("マイナス値で画像を重ねます")
+        self.merge_gap_hint.setStyleSheet("color: #667085; font-size: 11px;")
+        self.merge_gap_hint.setWordWrap(True)
+        merge_layout.addWidget(self.merge_gap_hint)
+        self.merge_background_combo = QComboBox()
+        self.merge_background_combo.addItem("白", (255, 255, 255))
+        self.merge_background_combo.addItem("黒", (0, 0, 0))
+        self.merge_background_combo.addItem("透明", None)
+        self.merge_background_combo.currentIndexChanged.connect(self._merge_settings_changed)
+        merge_layout.addWidget(QLabel("余白の背景"))
+        merge_layout.addWidget(self.merge_background_combo)
+        self.merge_summary = QLabel("2枚以上を追加すると結合できます")
+        self.merge_summary.setWordWrap(True)
+        self.merge_summary.setStyleSheet("color: #667085; padding: 2px;")
+        merge_layout.addWidget(self.merge_summary)
+        self.merge_section = CollapsibleSection(
+            "画像結合",
+            "2〜9枚を横・縦・グリッドへ並べ、1枚の画像として保存します",
+            merge_content,
+        )
+        merge_content.setObjectName("merge_settings")
+        layout.addWidget(self.merge_section)
+
         split_content = QWidget()
         split_layout = QVBoxLayout(split_content)
         split_layout.setContentsMargins(0, 2, 0, 0)
@@ -1726,17 +1983,31 @@ class MainWindow(QMainWindow):
         self.destination_section.description.setObjectName("metadata_privacy_summary")
         destination_content.setObjectName("destination_settings")
         layout.addWidget(self.destination_section)
-        layout.addStretch(1)
 
         self.quick_sections = [
+            self.merge_section,
+            self.split_section,
+            self.crop_section,
+            resize_section,
+            transform_section,
+            format_section,
+            capacity_section,
+            self.destination_section,
+        ]
+        for section in (
             capacity_section,
             resize_section,
             format_section,
             transform_section,
+            self.merge_section,
             self.split_section,
             self.crop_section,
             self.destination_section,
-        ]
+        ):
+            layout.removeWidget(section)
+        for section in self.quick_sections:
+            layout.addWidget(section)
+        layout.addStretch(1)
 
         self.quick_settings_scroll = QScrollArea()
         self.quick_settings_scroll.setObjectName("quick_settings_scroll")
@@ -1987,6 +2258,15 @@ class MainWindow(QMainWindow):
             was_empty = not self.files
             first_new_row = len(self.files)
             self.files.extend(valid)
+            if self._merge_is_enabled():
+                known_merge = {str(path.resolve()).casefold() for path in self.merge_paths}
+                self.merge_paths.extend(
+                    info.path
+                    for info in valid
+                    if str(info.path.resolve()).casefold() not in known_merge and len(self.merge_paths) < self._merge_max_count()
+                )
+                self._sync_merge_paths()
+
             self._update_current_destination_display()
             for info in valid:
                 item = QTreeWidgetItem([info.path.name, human_bytes(info.size_bytes), "待機中"])
@@ -2023,6 +2303,10 @@ class MainWindow(QMainWindow):
 
     def _show_current(self) -> None:
         if not 0 <= self.current_index < len(self.files):
+            return
+        if self._merge_is_enabled():
+            self._schedule_merge_preview()
+            self._update_info()
             return
         info = self.files[self.current_index]
         # Selection owns preview feedback immediately, even if its source
@@ -2167,7 +2451,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "preview"):
             return
         self.preview.set_crop_overlay(
-            self.crop_section.toggle.isChecked(),
+            self.crop_section.toggle.isChecked() and not self._merge_is_enabled(),
             self._crop_rect,
             self._crop_aspect(),
         )
@@ -2265,6 +2549,8 @@ class MainWindow(QMainWindow):
             self._split_boundary_direction = direction
             self._split_boundary_count = count
         options = self.split_options()
+        if options.enabled and self._merge_is_enabled():
+            self.merge_enable_check.setChecked(False)
         for button in self.split_direction_buttons.values():
             button.setEnabled(options.enabled)
         for button in self.split_count_buttons.values():
@@ -2364,9 +2650,299 @@ class MainWindow(QMainWindow):
             self.target_combo.currentData() is not None and output_is_png,
         )
         self._update_info()
+        if self._merge_is_enabled():
+            self._schedule_merge_preview()
         self._update_quick_clear_state()
 
+    def merge_options(self) -> ImageMergeOptions:
+        direction = next(
+            (key for key, button in self.merge_direction_buttons.items() if button.isChecked()),
+            MergeDirection.HORIZONTAL,
+        )
+        columns = next(
+            (key for key, button in self.merge_grid_columns_buttons.items() if button.isChecked()),
+            2,
+        )
+        return ImageMergeOptions(
+            direction=direction,
+            size_mode=MergeSizeMode(self.merge_size_combo.currentData()),
+            alignment=MergeAlignment(self.merge_alignment_combo.currentData()),
+            gap=self.merge_gap_spin.value(),
+            background=self.merge_background_combo.currentData(),
+            columns=columns,
+        )
+
+    def _merge_is_enabled(self) -> bool:
+        return hasattr(self, "merge_enable_check") and self.merge_enable_check.isChecked()
+
+    def _merge_is_ready(self) -> bool:
+        return 2 <= len(self.merge_paths) <= self._merge_max_count()
+
+    def _merge_max_count(self) -> int:
+        return max_merge_images(self.merge_options())
+
+    def _merge_layout_label(self) -> str:
+        options = self.merge_options()
+        if options.direction is MergeDirection.GRID:
+            return f"グリッド {options.columns}列"
+        return "横結合" if options.direction is MergeDirection.HORIZONTAL else "縦結合"
+
+    def _update_merge_layout_controls(self) -> None:
+        grid = self.merge_direction_buttons[MergeDirection.GRID].isChecked()
+        self.merge_grid_columns_label.setVisible(grid)
+        self.merge_grid_columns_widget.setVisible(grid)
+        minimum = 0 if grid else -100
+        if self.merge_gap_spin.minimum() != minimum:
+            self.merge_gap_spin.blockSignals(True)
+            self.merge_gap_spin.setRange(minimum, 100)
+            self.merge_gap_spin.blockSignals(False)
+        self.merge_gap_hint.setText(
+            "グリッドでは0px以上です" if grid else "マイナス値で画像を重ねます"
+        )
+    def _sync_merge_paths(self) -> None:
+        available = {str(info.path.resolve()).casefold(): info.path for info in self.files}
+        self.merge_paths = [
+            available[key]
+            for path in self.merge_paths
+            if (key := str(path.resolve()).casefold()) in available
+        ]
+        self.merge_list.blockSignals(True)
+        selected = self.merge_list.currentIndex().row()
+        self.merge_list.clear()
+        for index, path in enumerate(self.merge_paths, start=1):
+            item = QTreeWidgetItem([f"{index}. {path.name}"])
+            item.setData(0, Qt.ItemDataRole.UserRole, str(path))
+            item.setToolTip(0, str(path))
+            self.merge_list.addTopLevelItem(item)
+        if self.merge_paths:
+            self.merge_list.setCurrentItem(
+                self.merge_list.topLevelItem(min(max(0, selected), len(self.merge_paths) - 1))
+            )
+        self.merge_list.blockSignals(False)
+        self._update_merge_actions()
+
+    @Slot()
+    def _merge_items_reordered(self) -> None:
+        """Commit one completed internal drag to the merge model and preview."""
+        if not self._merge_is_enabled():
+            self._sync_merge_paths()
+            return
+        reordered = [
+            Path(item.data(0, Qt.ItemDataRole.UserRole))
+            for index in range(self.merge_list.topLevelItemCount())
+            if (item := self.merge_list.topLevelItem(index)) is not None
+        ]
+        if reordered == self.merge_paths:
+            self._sync_merge_paths()
+            return
+        self.merge_paths = reordered
+        self._merge_settings_changed()
+
+    def _update_merge_actions(self, *_args) -> None:
+        if not hasattr(self, "merge_list"):
+            return
+        enabled = self._merge_is_enabled() and self._thread is None
+        selected = self.merge_list.indexOfTopLevelItem(self.merge_list.currentItem())
+        can_add = (
+            enabled
+            and 0 <= self.current_index < len(self.files)
+            and self.files[self.current_index].path not in self.merge_paths
+            and len(self.merge_paths) < self._merge_max_count()
+        )
+        self.merge_add_button.setEnabled(can_add)
+        self.merge_remove_button.setEnabled(enabled and selected >= 0)
+        self.merge_up_button.setEnabled(enabled and selected > 0)
+        self.merge_down_button.setEnabled(enabled and 0 <= selected < len(self.merge_paths) - 1)
+
+    @Slot()
+    def add_selected_to_merge(self) -> None:
+        if not self._merge_is_enabled() or not 0 <= self.current_index < len(self.files):
+            return
+        path = self.files[self.current_index].path
+        if path in self.merge_paths or len(self.merge_paths) >= self._merge_max_count():
+            return
+        self.merge_paths.append(path)
+        self._sync_merge_paths()
+        self.merge_list.setCurrentItem(self.merge_list.topLevelItem(len(self.merge_paths) - 1))
+        self._merge_settings_changed()
+
+    @Slot()
+    def remove_selected_from_merge(self) -> None:
+        selected = self.merge_list.indexOfTopLevelItem(self.merge_list.currentItem())
+        if not self._merge_is_enabled() or not 0 <= selected < len(self.merge_paths):
+            return
+        self.merge_paths.pop(selected)
+        self._sync_merge_paths()
+        self._merge_settings_changed()
+
+    def move_merge_item(self, offset: int) -> None:
+        selected = self.merge_list.indexOfTopLevelItem(self.merge_list.currentItem())
+        target = selected + offset
+        if not self._merge_is_enabled() or not 0 <= selected < len(self.merge_paths) or not 0 <= target < len(self.merge_paths):
+            return
+        self.merge_paths[selected], self.merge_paths[target] = self.merge_paths[target], self.merge_paths[selected]
+        self._sync_merge_paths()
+        self.merge_list.setCurrentItem(self.merge_list.topLevelItem(target))
+        self._merge_settings_changed()
+
+    def _merge_source_sizes(self) -> list[tuple[int, int]]:
+        infos = {str(info.path.resolve()).casefold(): info for info in self.files}
+        sizes: list[tuple[int, int]] = []
+        for path in self.merge_paths:
+            info = infos.get(str(path.resolve()).casefold())
+            if info is None:
+                continue
+            left, top, right, bottom = crop_box_for_image((info.width, info.height), self._crop_rect)
+            width, height = right - left, bottom - top
+            for transform in self.transform_queue:
+                if transform in (Transform.ROTATE_LEFT, Transform.ROTATE_RIGHT):
+                    width, height = height, width
+            sizes.append(output_dimensions(width, height, self.options()))
+        options = self.merge_options()
+        if sizes and options.size_mode is MergeSizeMode.MATCH_HEIGHT:
+            target = max(height for _, height in sizes)
+            sizes = [(max(1, round(width * target / height)), target) for width, height in sizes]
+        elif sizes and options.size_mode is MergeSizeMode.MATCH_WIDTH:
+            target = max(width for width, _ in sizes)
+            sizes = [(target, max(1, round(height * target / width))) for width, height in sizes]
+        elif sizes and (
+            options.size_mode is MergeSizeMode.CELL_FIT
+            and options.direction is MergeDirection.GRID
+        ):
+            cell_width = max(width for width, _ in sizes)
+            cell_height = max(height for _, height in sizes)
+            sizes = [
+                (
+                    max(1, round(width * min(cell_width / width, cell_height / height))),
+                    max(1, round(height * min(cell_width / width, cell_height / height))),
+                )
+                for width, height in sizes
+            ]
+        return sizes
+
+    def _update_merge_summary(self) -> None:
+        if not self._merge_is_enabled():
+            self.merge_summary.setText("2〜6枚（グリッドは9枚まで）を選び、結合する順番を調整できます")
+            return
+        count = len(self.merge_paths)
+        if not self._merge_is_ready():
+            self.merge_summary.setText(f"結合する画像: {count}枚（2〜{self._merge_max_count()}枚にしてください）")
+            return
+        width, height = merged_dimensions(self._merge_source_sizes(), self.merge_options())
+        layout = self._merge_layout_label()
+        self.merge_summary.setText(f"出力予定: {width} × {height} px\n{count}枚 / {layout} / Gap {self.merge_gap_spin.value()} px")
+
+    def _schedule_merge_preview(self) -> None:
+        if not self._merge_is_enabled() or not self._merge_is_ready():
+            return
+        self._merge_preview_request_id += 1
+        if self._merge_preview_thread is not None:
+            return
+        request = (
+            self._merge_preview_request_id,
+            list(self.merge_paths),
+            copy.deepcopy(self.options()),
+            self.merge_options(),
+        )
+        thread = QThread(self)
+        worker = MergePreviewWorker((0, *request))
+        self._merge_preview_thread = thread
+        self._merge_preview_worker = worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._merge_preview_succeeded)
+        worker.failed.connect(self._merge_preview_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(self._finalize_merge_preview)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    @Slot(object)
+    def _merge_preview_succeeded(self, payload) -> None:
+        self._merge_preview_result = ("success", payload)
+
+    @Slot(object)
+    def _merge_preview_failed(self, payload) -> None:
+        self._merge_preview_result = ("failed", payload)
+
+    @Slot()
+    def _finalize_merge_preview(self) -> None:
+        result = self._merge_preview_result
+        self._merge_preview_thread = None
+        self._merge_preview_worker = None
+        self._merge_preview_result = None
+        if result is None:
+            return
+        kind, payload = result
+        request_id = payload[1]
+        if request_id != self._merge_preview_request_id:
+            self._schedule_merge_preview()
+            return
+        if kind == "success" and self._merge_is_enabled():
+            self.drop_zone.set_image(payload[2])
+            self._update_crop_preview_overlay()
+        elif kind == "failed":
+            self.statusBar().showMessage(payload[-1])
+
+    @Slot()
+    def _merge_settings_changed(self, *_args) -> None:
+        if not hasattr(self, "merge_list"):
+            return
+        self._update_merge_layout_controls()
+        if self._merge_is_enabled() and self.split_enable_check.isChecked():
+            self.split_enable_check.setChecked(False)
+        if self._merge_is_enabled() and not self.merge_paths:
+            self.merge_paths = [info.path for info in self.files[:self._merge_max_count()]]
+        self._sync_merge_paths()
+        self._update_merge_summary()
+        self._update_crop_preview_overlay()
+        self._schedule_merge_preview()
+        if not self._merge_is_enabled() and 0 <= self.current_index < len(self.files):
+            self._show_current()
+        self._update_info()
+        self._update_current_destination_display()
+        self._update_quick_actions()
+
+    @Slot(int)
+    def _merge_gap_changed(self, _value: int) -> None:
+        """Coalesce valid SpinBox values outside its native input event."""
+        if self._merge_is_enabled():
+            self._merge_gap_refresh_timer.start()
+
+    @Slot()
+    def _apply_merge_gap_change(self) -> None:
+        """Refresh only merge presentation state, preserving the editor focus."""
+        if not self._merge_is_enabled():
+            return
+        self._update_merge_summary()
+        self._schedule_merge_preview()
+        self._update_info()
+
+
     def _update_info(self) -> None:
+        if self._merge_is_enabled():
+            self._update_merge_summary()
+            if not self.merge_paths:
+                self.info_label.setText("<b>画像結合</b><br>一覧から結合する画像を追加してください")
+                self.info_label.show()
+                return
+            selected = OutputFormat(self.format_combo.currentData())
+            first = next((info for info in self.files if info.path == self.merge_paths[0]), None)
+            out_format = first.format if selected is OutputFormat.SAME and first is not None else FORMAT_LABELS[selected]
+            if not self._merge_is_ready():
+                self.info_label.setText(f"<b>画像結合</b><br>結合には2〜{self._merge_max_count()}枚の画像が必要です")
+                self.info_label.show()
+                return
+            width, height = merged_dimensions(self._merge_source_sizes(), self.merge_options())
+            layout = self._merge_layout_label()
+            self.info_label.setText(
+                f"<b>画像結合</b><br>{len(self.merge_paths)}枚 / {layout} / Gap {self.merge_gap_spin.value()} px"
+                f"<br><br><b>保存後（見込み）</b><br>{width} × {height} / {out_format}"
+            )
+            self.info_label.show()
+            return
+
         if not 0 <= self.current_index < len(self.files):
             return
         info = self.files[self.current_index]
@@ -2520,6 +3096,10 @@ class MainWindow(QMainWindow):
         index = self.current_index
         info = self.files.pop(index)
         self._quick_source_origins.pop(str(info.path.resolve()).casefold(), None)
+        self.merge_paths = [path for path in self.merge_paths if path != info.path]
+        self._sync_merge_paths()
+        if self._merge_is_enabled():
+            self._merge_settings_changed()
         self.file_tree.takeTopLevelItem(index)
         if not self.files:
             self._clear_quick_queue_state()
@@ -2543,6 +3123,9 @@ class MainWindow(QMainWindow):
         self._quick_preview_activity_token = None
 
         self.files.clear()
+        self.merge_paths.clear()
+        if hasattr(self, "merge_list"):
+            self._sync_merge_paths()
         self._quick_source_origins.clear()
         self.current_index = -1
         self.file_tree.clear()
@@ -2586,6 +3169,10 @@ class MainWindow(QMainWindow):
         mode = self.destination_combo.currentData()
         if mode == "Custom folder" and self.custom_folder is None:
             return []
+        if self._merge_is_enabled() and self.merge_paths:
+            return [quick_output_folder(
+                self.merge_paths[0], mode, self.custom_folder, self.processed_check.isChecked()
+            )]
         if self.files:
             folders = {
                 quick_output_folder(
@@ -2693,6 +3280,17 @@ class MainWindow(QMainWindow):
                 self, "画像がありません", "先に画像を開くかドロップしてください。"
             )
             return
+        if self._merge_is_enabled():
+            if not self._merge_is_ready():
+                QMessageBox.information(self, "画像結合", f"結合する画像を2〜{self._merge_max_count()}枚追加してください。")
+                return
+            if self.destination_combo.currentData() == "Custom folder" and not self.custom_folder:
+                self.choose_folder()
+                if not self.custom_folder:
+                    return
+            self._start_merge_worker()
+            return
+
         if (
             self.destination_combo.currentData() == "Custom folder"
             and not self.custom_folder
@@ -2719,6 +3317,58 @@ class MainWindow(QMainWindow):
             row_indices=[self.current_index],
         )
 
+    def _start_merge_worker(self) -> None:
+        if self._thread is not None:
+            return
+        path_indices = {
+            str(info.path.resolve()).casefold(): index for index, info in enumerate(self.files)
+        }
+        rows = [path_indices[str(path.resolve()).casefold()] for path in self.merge_paths]
+        self._processing_failures.clear()
+        self.progress.setValue(0)
+        self.open_action.setEnabled(False)
+        self.export_action.setEnabled(False)
+        self.copy_action.setEnabled(False)
+        self.reset_action.setEnabled(False)
+        self.drop_zone.set_drag_active(False)
+        self.drop_zone.setEnabled(False)
+        for tab in (
+            self.thumbnail_tab,
+            self.sound_effect_tab,
+            self.speech_bubble_tab,
+            self.upscale_tab,
+            self.image_edit_tab,
+            self.pixel_tab,
+        ):
+            self.navigation.setTabEnabled(tab, False)
+        self._saved_output_count = 0
+        self._clear_quick_save_result()
+        self._active_split_options = ImageSplitOptions()
+        self._active_merge = True
+        self._thread = QThread(self)
+        self._worker = MergeProcessingWorker(
+            list(self.merge_paths),
+            copy.deepcopy(self.options()),
+            self.merge_options(),
+            self.destination_combo.currentData(),
+            self.custom_folder,
+            self.processed_check.isChecked(),
+            rows,
+        )
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.progress.connect(self.progress.setValue)
+        self._worker.file_status.connect(self._on_file_status)
+        self._worker.outputs_saved.connect(self._set_saved_output_count)
+        self._worker.folder_saved.connect(self._record_saved_output_folder)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.finished.connect(self._thread.quit)
+        self._thread.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.finished.connect(self._clear_worker_refs)
+        self._update_quick_actions()
+        self._thread.start()
+
     def _start_worker(
         self, paths: list[Path], copy_mode: bool, row_indices: list[int]
     ) -> None:
@@ -2728,6 +3378,7 @@ class MainWindow(QMainWindow):
             )
             return
         self._processing_failures.clear()
+        self._active_merge = False
         missing = [path for path in paths if not Path(path).is_file()]
         if len(paths) == 1 and missing:
             row = row_indices[0]
@@ -2783,6 +3434,7 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._thread = None
         self._active_split_options = ImageSplitOptions()
+        self._active_merge = False
         self.drop_zone.setEnabled(True)
         self.navigation.setTabEnabled(self.thumbnail_tab, True)
         self.navigation.setTabEnabled(self.sound_effect_tab, True)
@@ -2815,13 +3467,17 @@ class MainWindow(QMainWindow):
         quick_enabled = self.navigation.currentIndex() == self.quick_tab and self._thread is None
         global_open_enabled = self._source_change_available()
         split_options = self.split_options()
+        merge_active = self._merge_is_enabled()
+        merge_ready = self._merge_is_ready()
         self.open_action.setEnabled(global_open_enabled)
-        self.export_action.setEnabled(quick_enabled and bool(self.files))
+        self.export_action.setEnabled(quick_enabled and bool(self.files) and (not merge_active or merge_ready))
         self.copy_action.setEnabled(
-            quick_enabled and bool(self.files) and not split_options.enabled
+            quick_enabled and bool(self.files) and not split_options.enabled and not merge_active
         )
         self.reset_action.setEnabled(quick_enabled)
-        if split_options.enabled and self.files:
+        if merge_active:
+            self.export_action.setText("結合画像を保存")
+        elif split_options.enabled and self.files:
             output_count = len(self.files) * split_options.count
             self.export_action.setText(f"{output_count}枚に分割して保存")
         elif self.files:
@@ -2843,7 +3499,7 @@ class MainWindow(QMainWindow):
         self.quick_remove_button.setEnabled(quick_enabled and 0 <= self.current_index < len(self.files))
         self.quick_queue_clear_button.setEnabled(quick_enabled and bool(self.files))
         self.quick_reset_button.setEnabled(quick_enabled)
-        save_enabled = quick_enabled and bool(self.files)
+        save_enabled = quick_enabled and bool(self.files) and (not merge_active or merge_ready)
         self.quick_save_button.setEnabled(save_enabled)
         if self._thread is not None:
             save_hint = "保存中です…"
@@ -2851,6 +3507,10 @@ class MainWindow(QMainWindow):
             save_hint = "画像を開くと保存できます"
         elif not quick_enabled:
             save_hint = "かんたん変換タブで保存できます"
+        elif merge_active and not merge_ready:
+            save_hint = f"結合する画像を2〜{self._merge_max_count()}枚追加してください"
+        elif merge_active:
+            save_hint = "表示中の順番で1枚の結合画像として保存します"
         elif split_options.enabled:
             output_count = len(self.files) * split_options.count
             if len(self.files) == 1:
@@ -2865,6 +3525,8 @@ class MainWindow(QMainWindow):
         self.quick_save_hint.setText(save_hint)
         self.quick_save_button.setToolTip(save_hint)
         self.quick_save_button.setAccessibleDescription(save_hint)
+        self.split_enable_check.setEnabled(quick_enabled and not merge_active)
+        self._update_merge_actions()
         self._update_quick_clear_state()
 
     def _update_quick_clear_state(self, *_args) -> None:
@@ -3085,6 +3747,8 @@ class MainWindow(QMainWindow):
                 "一部の処理でエラーが発生しました",
                 "\n".join(detail_lines),
             )
+        elif self._active_merge:
+            self.statusBar().showMessage("完了 · 結合画像を保存しました")
         elif split_active:
             self.statusBar().showMessage(
                 f"完了 · {self._saved_output_count}枚の分割画像を保存しました"
@@ -3096,6 +3760,7 @@ class MainWindow(QMainWindow):
         if (
             self._thread is not None
             or self._quick_preview_thread is not None
+            or self._merge_preview_thread is not None
             or not self.thumbnail_page.can_close()
             or not self.sound_effect_page.can_close()
             or not self.speech_bubble_page.can_close()

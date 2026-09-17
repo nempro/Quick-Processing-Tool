@@ -301,18 +301,15 @@ def test_quick_inputs_define_distinct_interaction_states(
 def test_settings_are_purpose_first_and_tabs_follow_user_workflow(
     window: MainWindow,
 ) -> None:
-    labels = [
-        button.text()
-        for button in window.navigation.widget(0).findChildren(QToolButton)
-        if button.isCheckable() and button.text()
-    ]
+    labels = [section.toggle.text() for section in window.quick_sections]
     assert labels == [
-        "容量を小さくする",
-        "画像サイズを変更する",
-        "画像形式を変える",
-        "回転・反転する",
+        "画像結合",
         "画像分割",
         "画像を切り抜く",
+        "画像サイズを変更する",
+        "回転・反転する",
+        "画像形式を変える",
+        "容量を小さくする",
         "保存先とプライバシー",
     ]
     for object_name in (
@@ -320,6 +317,7 @@ def test_settings_are_purpose_first_and_tabs_follow_user_workflow(
         "resize_settings",
         "format_settings",
         "transform_settings",
+        "merge_settings",
         "crop_settings",
         "destination_settings",
     ):
