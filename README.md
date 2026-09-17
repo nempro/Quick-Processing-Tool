@@ -1,6 +1,37 @@
 # Quick Processing Tool 0.4.1
 
+<img width="884" height="590" alt="スクリーンショット 2026-09-17 133035" src="https://github.com/user-attachments/assets/e172fd56-17d7-41cb-9ccb-7f5a3f5d4495" />
+
+
 AI画像やSNS投稿前の「少しだけ加工したい」を、Windows上で素早く済ませるローカル画像処理アプリです。元画像は上書きせず、PNG / JPEG / WebPを扱います。
+
+## Quick Processing Tool の特徴
+
+- 画像の結合・分割・クロップ・リサイズ・形式変換をまとめて処理
+- 横 / 縦 / Gridで画像を結合。D&Dで並び順変更、Gapや重ね合わせにも対応
+- 手描き修正、スポイト、モザイク、色調補正、左右反転
+- Previewは最大400%拡大、右ドラッグ / 中ボタンでPan
+- Real-ESRGANによる高画質化と、加工 → 高画質化 → 分割の直通Workflow
+- 複数画像のBatch処理、Queueの個別削除・一覧クリア
+- EXIF / GPS / XMP / PNG textなどをまとめて削除する一括メタ情報削除
+- PNG / JPEG / WebP対応、Alphaをできるだけ維持
+- 保存先表示・保存先を開く・連番保存など、普段使い向けのUX
+- 「Photoshopを開くほどではない」画像処理を1つのアプリで完結
+
+- 生成画像の「あとちょっと」をまとめて処理するWindows向け画像ツールです。
+
+- ### Features
+- 
+- Image merge / split / crop / resize / format conversion
+- Horizontal, vertical, and Grid image merging
+- Drag & Drop ordering, Gap adjustment, and image overlap
+- Hand drawing, eyedropper, mosaic, color adjustment, horizontal flip
+- 100% / 200% / 400% preview zoom and pan
+- Real-ESRGAN upscaling
+- Batch processing and queue management
+- Batch metadata removal for EXIF / GPS / XMP / PNG text
+- PNG / JPEG / WebP support
+- Designed for quick image fixes without opening a full image editor
 
 ## v0.4.1の主な更新
 
@@ -15,6 +46,8 @@ AI画像やSNS投稿前の「少しだけ加工したい」を、Windows上で�
 ## v0.4.0で追加された主な機能
 
 ### 画像結合
+<img width="881" height="592" alt="スクリーンショット 2026-09-17 134234" src="https://github.com/user-attachments/assets/c5e1bae2-082e-4a98-aab9-719528c234b8" />
+
 
 - 横・縦・2列／3列のグリッドで画像を1枚に結合
 - ドラッグ＆ドロップ、または上へ／下へで並び順を変更
@@ -22,6 +55,8 @@ AI画像やSNS投稿前の「少しだけ加工したい」を、Windows上で�
 - Gapで間隔を調整。マイナス値では、後ろの画像を前面に重ね合わせ
 
 ### 画像加工
+<img width="887" height="591" alt="スクリーンショット 2026-09-17 135025" src="https://github.com/user-attachments/assets/a9149df7-e917-43b2-8f0f-40bf0efba806" />
+
 
 - 非破壊モザイク、明るさ・コントラスト・彩度・色温度・色かぶり・色相・フェードの色調補正、左右反転を追加
 - Previewは右ドラッグでも移動可能
