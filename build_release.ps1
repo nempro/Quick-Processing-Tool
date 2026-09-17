@@ -3,7 +3,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$version = "0.3.0"
+$version = "0.4.0"
 $pyInstallerVersion = "6.22.2"
 $repoRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $buildRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "build\release"))
