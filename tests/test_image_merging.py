@@ -319,6 +319,14 @@ def test_quick_merge_gap_keyboard_and_rapid_updates_are_safe(tmp_path: Path) -> 
         assert window.merge_gap_spin.value() == 1
         assert "832 × 1665" in window.merge_summary.text()
 
+        for value, expected_height in (("-2", 1662), ("-20", 1644), ("20", 1684)):
+            line_edit.setFocus()
+            line_edit.selectAll()
+            QTest.keyClicks(line_edit, value)
+            QTest.keyClick(line_edit, Qt.Key.Key_Return)
+            settle(window)
+            assert window.merge_gap_spin.value() == int(value)
+            assert f"832 × {expected_height}" in window.merge_summary.text()
         window.merge_direction_buttons[MergeDirection.HORIZONTAL].click()
         window.merge_gap_spin.setValue(2)
         settle(window)
@@ -510,7 +518,7 @@ def test_quick_merge_drop_reorder_updates_grid_preview_and_export(tmp_path: Path
         window.merge_direction_buttons[MergeDirection.GRID].click()
         window.merge_grid_columns_buttons[3].click()
         settle(window)
-        assert window.merge_list.dragDropMode().name == "InternalMove"
+        assert window.merge_list.dragDropMode().name == "NoDragDrop"  # direct mouse-drag implementation
 
         # This is the post-Drop tree state for dragging item 6 to position 2.
         moved = window.merge_list.takeTopLevelItem(5)
@@ -652,9 +660,36 @@ def test_negative_gap_alpha_composites_later_queue_images_on_top() -> None:
     assert green == 0
 
 
-def test_grid_rejects_negative_gap_until_grid_overlap_has_a_defined_contract() -> None:
-    with pytest.raises(ValueError, match="grid merge gap"):
-        ImageMergeOptions(direction=MergeDirection.GRID, gap=-1)
+@pytest.mark.parametrize("gap", [-100, -20, -1, 0, 20, 100])
+def test_grid_gap_keeps_dimensions_and_queue_z_order(gap: int) -> None:
+    images = [solid(color, (40, 40)) for color in ("red", "green", "blue", "yellow")]
+    result = merge_images(images, ImageMergeOptions(direction=MergeDirection.GRID, columns=2, gap=gap))
+    effective_gap = max(gap, 16 - 40) if gap < 0 else gap
+    advance = 40 + effective_gap
+    assert result.size == (80 + effective_gap, 80 + effective_gap)
+    assert result.getpixel((1, 1)) == (255, 0, 0)
+    assert result.getpixel((advance + 1, 1)) == (0, 128, 0)
+    assert result.getpixel((1, advance + 1)) == (0, 0, 255)
+    assert result.getpixel((advance + 1, advance + 1)) == (255, 255, 0)
+
+
+def test_grid_negative_gap_keeps_alpha_and_incomplete_cells() -> None:
+    images = [
+        Image.new("RGBA", (40, 40), (255, 0, 0, 255)),
+        Image.new("RGBA", (40, 40), (0, 255, 0, 160)),
+        Image.new("RGBA", (40, 40), (0, 0, 255, 128)),
+        Image.new("RGBA", (40, 40), (255, 255, 0, 255)),
+        Image.new("RGBA", (40, 40), (255, 0, 255, 255)),
+    ]
+    result = merge_images(
+        images,
+        ImageMergeOptions(direction=MergeDirection.GRID, columns=3, gap=-20, background=None),
+    )
+    assert result.size == (80, 60)
+    assert result.getpixel((1, 1))[3] == 255
+    # Queue order 1 → 2 → 3 → 4 → 5 determines the overlap z-order.
+    assert result.getpixel((1, 21)) == (255, 255, 0, 255)
+    assert result.getpixel((21, 21)) == (255, 0, 255, 255)
 
 
 def test_quick_negative_gap_reorder_preview_and_export_keep_the_same_z_order(tmp_path: Path) -> None:
@@ -715,8 +750,250 @@ def test_quick_negative_gap_reorder_preview_and_export_keep_the_same_z_order(tmp
 
         window.merge_direction_buttons[MergeDirection.GRID].click()
         settle(window)
-        assert window.merge_gap_spin.minimum() == 0
-        assert window.merge_gap_spin.value() == 0
-        assert window.merge_gap_hint.text() == "グリッドでは0px以上です"
+        assert window.merge_gap_spin.minimum() == -100
+        assert window.merge_gap_spin.value() == -20
+        assert window.merge_gap_hint.text() == "マイナス値で画像を重ねます"
     finally:
         window.close()
+
+def test_merge_addition_and_membership_changes_refresh_the_latest_grid_preview(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    import time
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    import quick_processing_tool.ui as ui_module
+    from PySide6.QtWidgets import QApplication
+    from quick_processing_tool.ui import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    paths: list[Path] = []
+    for name, color in (("red", "red"), ("green", "green"), ("blue", "blue"), ("yellow", "yellow")):
+        path = tmp_path / f"{name}.png"
+        solid(color, (10, 10)).save(path)
+        paths.append(path)
+
+    original_preview = ui_module.build_merge_preview
+
+    def delayed_preview(paths, processing, options):
+        if len(paths) == 3:
+            time.sleep(0.05)
+        return original_preview(paths, processing, options)
+
+    monkeypatch.setattr(ui_module, "build_merge_preview", delayed_preview)
+
+    def settle(window: MainWindow) -> None:
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            app.processEvents()
+            if window._merge_preview_thread is None:
+                return
+            time.sleep(0.005)
+        raise AssertionError("merge preview did not settle")
+
+    window = MainWindow()
+    try:
+        window.load_paths(paths[:3])
+        window.merge_enable_check.setChecked(True)
+        window.merge_direction_buttons[MergeDirection.GRID].click()
+        window.merge_grid_columns_buttons[2].click()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and window._merge_preview_thread is None:
+            app.processEvents()
+            time.sleep(0.005)
+        assert window._merge_preview_thread is not None
+
+        window.load_paths([paths[3]])
+        settle(window)
+        assert window.merge_paths == paths
+        assert "4枚 / グリッド 2列" in window.merge_summary.text()
+        preview = window.preview._image_item.pixmap().toImage()
+        assert preview.size().width() == 20
+        assert preview.size().height() == 20
+        assert preview.pixelColor(11, 11).name() == "#ffff00"
+        assert [window.file_tree.topLevelItem(index).text(2) for index in range(4)] == ["結合対象"] * 4
+
+        window.merge_list.setCurrentItem(window.merge_list.topLevelItem(3))
+        window.remove_selected_from_merge()
+        settle(window)
+        assert [window.file_tree.topLevelItem(index).text(2) for index in range(4)] == [
+            "結合対象", "結合対象", "結合対象", "対象外",
+        ]
+        assert "3枚 / グリッド 2列" in window.merge_summary.text()
+
+        window.file_tree.setCurrentItem(window.file_tree.topLevelItem(3))
+        app.processEvents()
+        window.add_selected_to_merge()
+        settle(window)
+        assert [window.file_tree.topLevelItem(index).text(2) for index in range(4)] == ["結合対象"] * 4
+        assert "4枚 / グリッド 2列" in window.merge_summary.text()
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize(
+    ("count", "source", "target", "expected"),
+    [
+        (4, 3, 1, ["1.png", "4.png", "2.png", "3.png"]),
+        (4, 0, 4, ["2.png", "3.png", "4.png", "1.png"]),
+        (6, 2, 2, ["1.png", "2.png", "3.png", "4.png", "5.png", "6.png"]),
+        (9, 8, 0, ["9.png", "1.png", "2.png", "3.png", "4.png", "5.png", "6.png", "7.png", "8.png"]),
+    ],
+)
+def test_merge_order_drop_commit_updates_model_once(
+    tmp_path: Path, count: int, source: int, target: int, expected: list[str]
+) -> None:
+    import os
+    import time
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from quick_processing_tool.ui import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    paths: list[Path] = []
+    for index in range(count):
+        path = tmp_path / f"{index + 1}.png"
+        solid("red", (20, 20)).save(path)
+        paths.append(path)
+    window = MainWindow()
+    try:
+        scheduled: list[bool] = []
+        window._schedule_merge_preview = lambda: scheduled.append(True)
+        window.load_paths(paths, update_workspace=False)
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline and window._quick_preview_thread is not None:
+            app.processEvents()
+            time.sleep(0.005)
+        assert window._quick_preview_thread is None
+        if count == 9:
+            window.merge_direction_buttons[MergeDirection.GRID].click()
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline and window._quick_preview_thread is not None:
+                app.processEvents()
+                time.sleep(0.005)
+            assert window._quick_preview_thread is None
+        window.merge_enable_check.setChecked(True)
+        tree = window.merge_list
+        emitted: list[bool] = []
+        tree.order_dropped.connect(lambda: emitted.append(True))
+        scheduled.clear()
+        tree.setCurrentItem(tree.topLevelItem(source))
+        changed = tree.move_current_item_to_index(target)
+        app.processEvents()
+        assert len(scheduled) == int(source != target)
+        assert changed is (source != target)
+        assert len(emitted) == int(source != target)
+        assert [tree.topLevelItem(index).text(0) for index in range(count)] == [
+            f"{index}. {name}" for index, name in enumerate(expected, start=1)
+        ]
+        assert [path.name for path in window.merge_paths] == expected
+        if count == 4 and source == 3:
+            window.merge_direction_buttons[MergeDirection.GRID].click()
+            window.merge_grid_columns_buttons[2].click()
+            assert "グリッド 2列" in window.merge_summary.text()
+    finally:
+        window.close()
+
+def test_merge_preview_rapid_add_stress_keeps_latest_grid_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise real Qt worker overlap while queue membership changes rapidly."""
+    import os
+    import time
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    import quick_processing_tool.ui as ui_module
+    from PySide6.QtWidgets import QApplication
+    from quick_processing_tool.ui import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    paths: list[Path] = []
+    for index in range(9):
+        path = tmp_path / f"stress-{index}.png"
+        solid(("red", "green", "blue", "yellow", "magenta", "cyan")[index % 6], (16, 16)).save(path)
+        paths.append(path)
+
+    original_preview = ui_module.build_merge_preview
+
+    def delayed_preview(paths, processing, options):
+        time.sleep(0.01)
+        return original_preview(paths, processing, options)
+
+    monkeypatch.setattr(ui_module, "build_merge_preview", delayed_preview)
+
+    def settle(window: MainWindow) -> None:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            app.processEvents()
+            if (
+                window._quick_preview_thread is None
+                and window._merge_preview_thread is None
+                and not window._merge_gap_refresh_timer.isActive()
+            ):
+                return
+            time.sleep(0.003)
+        raise AssertionError("preview workers did not settle")
+
+    for _iteration in range(3):
+        window = MainWindow()
+        try:
+            window.load_paths([paths[0]])
+            settle(window)
+            window.merge_enable_check.setChecked(True)
+            window.merge_direction_buttons[MergeDirection.GRID].click()
+            window.merge_grid_columns_buttons[2].click()
+            for index, path in enumerate(paths[1:], start=2):
+                window.load_paths([path])
+                if index == 4:
+                    window.merge_grid_columns_buttons[3].click()
+                elif index == 6:
+                    window.merge_grid_columns_buttons[2].click()
+                if index in (3, 5, 7):
+                    window.merge_gap_spin.setValue(-20)
+                elif index in (4, 6, 9):
+                    window.merge_gap_spin.setValue(20)
+                app.processEvents()
+
+            window.merge_list.setCurrentItem(window.merge_list.topLevelItem(4))
+            window.remove_selected_from_merge()
+            window.file_tree.setCurrentItem(window.file_tree.topLevelItem(4))
+            window.add_selected_to_merge()
+            window.merge_gap_spin.setValue(-20)
+            window.merge_grid_columns_buttons[2].click()
+            settle(window)
+
+            assert window.merge_paths == [*paths[:4], *paths[5:], paths[4]]
+            assert [window.file_tree.topLevelItem(index).text(2) for index in range(9)] == ["結合対象"] * 9
+            assert "9枚 / グリッド 2列" in window.merge_summary.text()
+            assert not window.preview._image_item.pixmap().isNull()
+        finally:
+            window.close()
+
+def test_merge_order_mouse_drag_reorders_visible_widget() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QTreeWidgetItem
+    from quick_processing_tool.ui import MergeOrderTreeWidget
+
+    app = QApplication.instance() or QApplication([])
+    tree = MergeOrderTreeWidget()
+    tree.resize(260, 160)
+    for index in range(1, 5):
+        tree.addTopLevelItem(QTreeWidgetItem([str(index)]))
+    changes: list[bool] = []
+    tree.order_dropped.connect(lambda: changes.append(True))
+    tree.show()
+    app.processEvents()
+    source = tree.visualItemRect(tree.topLevelItem(3)).center()
+    target_rect = tree.visualItemRect(tree.topLevelItem(2))
+    target = QPoint(target_rect.center().x(), target_rect.top() + 1)
+    QTest.mousePress(tree.viewport(), Qt.MouseButton.LeftButton, pos=source)
+    QTest.mouseMove(tree.viewport(), target)
+    QTest.mouseRelease(tree.viewport(), Qt.MouseButton.LeftButton, pos=target)
+    app.processEvents()
+    assert [tree.topLevelItem(index).text(0) for index in range(4)] == ["1", "2", "4", "3"]
+    assert changes == [True]
+    tree.close()

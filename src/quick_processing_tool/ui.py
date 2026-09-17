@@ -419,7 +419,7 @@ class PreviewCanvas(QGraphicsView):
         self._pan_button: Qt.MouseButton | None = None
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setBackgroundBrush(QColor("#202124"))
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
@@ -772,7 +772,14 @@ class PreviewCanvas(QGraphicsView):
         self._refresh_split_guide_interaction()
 
     def _begin_pan(self, event) -> bool:
-        if self._zoom_factor is None or self._image_item.pixmap().isNull():
+        if (
+            self._zoom_factor is None
+            or self._image_item.pixmap().isNull()
+            or (
+                self.horizontalScrollBar().maximum() == self.horizontalScrollBar().minimum()
+                and self.verticalScrollBar().maximum() == self.verticalScrollBar().minimum()
+            )
+        ):
             return False
         self._pan_start = event.position().toPoint()
         self._pan_scroll_values = (
@@ -862,24 +869,95 @@ class MergeGapSpinBox(QSpinBox):
 
 
 class MergeOrderTreeWidget(QTreeWidget):
-    """A merge queue that reports one change after an internal drag completes."""
+    """A direct-manipulation merge queue with a visible insertion marker."""
 
     order_dropped = Signal()
 
     def __init__(self) -> None:
         super().__init__()
-        self.setDragEnabled(True)
-        self.setAcceptDrops(True)
-        self.setDropIndicatorShown(True)
-        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.setDragDropOverwriteMode(False)
+        # Native InternalMove is not delivered consistently by the Windows viewport here.
+        self.setDragEnabled(False)
+        self.setAcceptDrops(False)
+        self.setDropIndicatorShown(False)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._drag_source_index: int | None = None
+        self._drag_active = False
+        self._drag_start = QPoint()
+        self._drop_marker = QFrame(self.viewport())
+        self._drop_marker.setStyleSheet("background: #2563eb;")
+        self._drop_marker.setFixedHeight(2)
+        self._drop_marker.hide()
 
-    def dropEvent(self, event) -> None:  # noqa: N802
-        super().dropEvent(event)
-        if event.isAccepted():
-            self.order_dropped.emit()
+    def _drop_target_index(self, position: QPoint) -> int:
+        item = self.itemAt(position)
+        if item is None:
+            return self.topLevelItemCount()
+        index = self.indexOfTopLevelItem(item)
+        return index + int(position.y() > self.visualItemRect(item).center().y())
 
+    def _show_drop_marker(self, position: QPoint) -> None:
+        item = self.itemAt(position)
+        if item is None:
+            y = max(0, self.viewport().height() - 2)
+        else:
+            rect = self.visualItemRect(item)
+            y = rect.bottom() if position.y() > rect.center().y() else rect.top()
+        self._drop_marker.setGeometry(0, y, self.viewport().width(), 2)
+        self._drop_marker.show()
+        self._drop_marker.raise_()
+
+    def _finish_drag(self) -> None:
+        self._drag_source_index = None
+        self._drag_active = False
+        self._drop_marker.hide()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() is Qt.MouseButton.LeftButton:
+            item = self.itemAt(event.position().toPoint())
+            self._drag_source_index = self.indexOfTopLevelItem(item)
+            self._drag_start = event.position().toPoint()
+            self._drag_active = False
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if (
+            self._drag_source_index is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+            and (event.position().toPoint() - self._drag_start).manhattanLength()
+            >= QApplication.startDragDistance()
+        ):
+            self._drag_active = True
+            self._show_drop_marker(event.position().toPoint())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() is Qt.MouseButton.LeftButton and self._drag_active:
+            target = self._drop_target_index(event.position().toPoint())
+            self._finish_drag()
+            self.move_current_item_to_index(target)
+            event.accept()
+            return
+        self._finish_drag()
+        super().mouseReleaseEvent(event)
+
+    def move_current_item_to_index(self, target_index: int) -> bool:
+        """Commit one completed direct move and notify the merge model once."""
+        source_index = self.indexOfTopLevelItem(self.currentItem())
+        if source_index < 0:
+            return False
+        item = self.takeTopLevelItem(source_index)
+        if target_index > source_index:
+            target_index -= 1
+        target_index = min(max(0, target_index), self.topLevelItemCount())
+        self.insertTopLevelItem(target_index, item)
+        self.setCurrentItem(item)
+        if target_index == source_index:
+            return False
+        self.order_dropped.emit()
+        return True
 
 class DropZone(QWidget):
     """Central, always-active image entry point with explicit interaction states."""
@@ -1518,21 +1596,32 @@ class MainWindow(QMainWindow):
         files_help.setWordWrap(True)
         files_help.setStyleSheet("color: #667085;")
         batch_layout.addWidget(files_help)
-        batch_actions = QHBoxLayout()
+        batch_actions = QVBoxLayout()
         batch_actions.setContentsMargins(0, 0, 0, 0)
         batch_actions.setSpacing(4)
         self.quick_add_button = QPushButton("画像を追加")
         self.quick_add_button.clicked.connect(self.open_files)
+        self.quick_merge_add_button = QPushButton("結合に追加")
+        self.quick_merge_add_button.setToolTip("読み込み済みの対象外画像を、結合する順番の末尾へ追加します")
+        self.quick_merge_add_button.clicked.connect(self.add_selected_to_merge)
         self.quick_remove_button = QPushButton("選択を削除")
         self.quick_remove_button.clicked.connect(self.remove_selected_quick_file)
         self.quick_queue_clear_button = QPushButton("一覧をクリア")
         self.quick_queue_clear_button.clicked.connect(self.clear_quick_queue)
         set_operation_role(self.quick_add_button, "secondary")
+        set_operation_role(self.quick_merge_add_button, "secondary")
         set_operation_role(self.quick_remove_button, "secondary")
         set_operation_role(self.quick_queue_clear_button, "secondary")
-        batch_actions.addWidget(self.quick_add_button, 1)
-        batch_actions.addWidget(self.quick_remove_button, 1)
-        batch_actions.addWidget(self.quick_queue_clear_button, 1)
+        batch_actions_top = QHBoxLayout()
+        batch_actions_top.setSpacing(4)
+        batch_actions_top.addWidget(self.quick_add_button, 1)
+        batch_actions_top.addWidget(self.quick_queue_clear_button, 1)
+        batch_actions_bottom = QHBoxLayout()
+        batch_actions_bottom.setSpacing(4)
+        batch_actions_bottom.addWidget(self.quick_merge_add_button, 1)
+        batch_actions_bottom.addWidget(self.quick_remove_button, 1)
+        batch_actions.addLayout(batch_actions_top)
+        batch_actions.addLayout(batch_actions_bottom)
         batch_layout.addLayout(batch_actions)
         self.file_tree = QTreeWidget()
         self.file_tree.setHeaderLabels(["ファイル名", "容量", "状態"])
@@ -1548,6 +1637,7 @@ class MainWindow(QMainWindow):
         self.file_tree.setColumnWidth(1, 58)
         self.file_tree.setColumnWidth(2, 68)
         self.file_tree.currentItemChanged.connect(self._tree_selection_changed)
+        self.file_tree.currentItemChanged.connect(self._update_merge_actions)
         self.quick_remove_shortcut = QShortcut(QKeySequence("Delete"), self.file_tree)
         self.quick_remove_shortcut.activated.connect(self.remove_selected_quick_file)
         batch_layout.addWidget(self.file_tree, 1)
@@ -1716,20 +1806,29 @@ class MainWindow(QMainWindow):
         self.merge_list.currentItemChanged.connect(self._update_merge_actions)
         self.merge_list.order_dropped.connect(self._merge_items_reordered)
         merge_layout.addWidget(self.merge_list)
-        merge_actions = QHBoxLayout()
+        merge_actions = QVBoxLayout()
         merge_actions.setSpacing(3)
-        self.merge_add_button = QPushButton("選択を追加")
-        self.merge_remove_button = QPushButton("外す")
+
+        self.merge_remove_button = QPushButton("結合から外す")
         self.merge_up_button = QPushButton("上へ")
         self.merge_down_button = QPushButton("下へ")
-        self.merge_add_button.clicked.connect(self.add_selected_to_merge)
+
         self.merge_remove_button.clicked.connect(self.remove_selected_from_merge)
         self.merge_up_button.clicked.connect(lambda: self.move_merge_item(-1))
         self.merge_down_button.clicked.connect(lambda: self.move_merge_item(1))
-        for button in (self.merge_add_button, self.merge_remove_button, self.merge_up_button, self.merge_down_button):
+        for button in (self.merge_remove_button, self.merge_up_button, self.merge_down_button):
             button.setMinimumWidth(0)
             set_operation_role(button, "secondary")
-            merge_actions.addWidget(button, 1)
+        merge_actions_top = QHBoxLayout()
+        merge_actions_top.setSpacing(3)
+
+        merge_actions_top.addWidget(self.merge_remove_button, 1)
+        merge_actions_bottom = QHBoxLayout()
+        merge_actions_bottom.setSpacing(3)
+        merge_actions_bottom.addWidget(self.merge_up_button, 1)
+        merge_actions_bottom.addWidget(self.merge_down_button, 1)
+        merge_actions.addLayout(merge_actions_top)
+        merge_actions.addLayout(merge_actions_bottom)
         merge_layout.addLayout(merge_actions)
         self.merge_direction_group = QButtonGroup(self)
         self.merge_direction_buttons: dict[MergeDirection, QPushButton] = {}
@@ -2284,7 +2383,10 @@ class MainWindow(QMainWindow):
             self.export_action.setText(
                 "画像を保存" if count == 1 else f"{count}枚をまとめて保存"
             )
-            self._update_quick_actions()
+            if self._merge_is_enabled():
+                self._merge_settings_changed()
+            else:
+                self._update_quick_actions()
             if update_workspace:
                 self.set_current_source(valid[0].path)
         elif duplicate_count:
@@ -2691,14 +2793,29 @@ class MainWindow(QMainWindow):
         grid = self.merge_direction_buttons[MergeDirection.GRID].isChecked()
         self.merge_grid_columns_label.setVisible(grid)
         self.merge_grid_columns_widget.setVisible(grid)
-        minimum = 0 if grid else -100
-        if self.merge_gap_spin.minimum() != minimum:
-            self.merge_gap_spin.blockSignals(True)
-            self.merge_gap_spin.setRange(minimum, 100)
-            self.merge_gap_spin.blockSignals(False)
-        self.merge_gap_hint.setText(
-            "グリッドでは0px以上です" if grid else "マイナス値で画像を重ねます"
-        )
+        self.merge_gap_hint.setText("マイナス値で画像を重ねます")
+
+    def _update_merge_membership_presentation(self) -> None:
+        """Show merge membership without mutating the underlying queue state."""
+        if not hasattr(self, "file_tree"):
+            return
+        if not self._merge_is_enabled():
+            for index in range(self.file_tree.topLevelItemCount()):
+                item = self.file_tree.topLevelItem(index)
+                if item is not None and item.text(2) in {"結合対象", "対象外"}:
+                    item.setText(2, "待機中")
+                    item.setToolTip(2, "")
+            return
+        if self._thread is not None:
+            return
+        members = {str(path.resolve()).casefold() for path in self.merge_paths}
+        for index, info in enumerate(self.files):
+            item = self.file_tree.topLevelItem(index)
+            if item is None:
+                continue
+            included = str(info.path.resolve()).casefold() in members
+            item.setText(2, "結合対象" if included else "対象外")
+            item.setToolTip(2, "今回の結合に使用します" if included else "読み込まれていますが、今回の結合には使用しません")
     def _sync_merge_paths(self) -> None:
         available = {str(info.path.resolve()).casefold(): info.path for info in self.files}
         self.merge_paths = [
@@ -2711,6 +2828,12 @@ class MainWindow(QMainWindow):
         self.merge_list.clear()
         for index, path in enumerate(self.merge_paths, start=1):
             item = QTreeWidgetItem([f"{index}. {path.name}"])
+            item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+                | Qt.ItemFlag.ItemIsDragEnabled
+                | Qt.ItemFlag.ItemIsDropEnabled
+            )
             item.setData(0, Qt.ItemDataRole.UserRole, str(path))
             item.setToolTip(0, str(path))
             self.merge_list.addTopLevelItem(item)
@@ -2720,6 +2843,7 @@ class MainWindow(QMainWindow):
             )
         self.merge_list.blockSignals(False)
         self._update_merge_actions()
+        self._update_merge_membership_presentation()
 
     @Slot()
     def _merge_items_reordered(self) -> None:
@@ -2749,7 +2873,8 @@ class MainWindow(QMainWindow):
             and self.files[self.current_index].path not in self.merge_paths
             and len(self.merge_paths) < self._merge_max_count()
         )
-        self.merge_add_button.setEnabled(can_add)
+        self.quick_merge_add_button.setVisible(self._merge_is_enabled())
+        self.quick_merge_add_button.setEnabled(can_add)
         self.merge_remove_button.setEnabled(enabled and selected >= 0)
         self.merge_up_button.setEnabled(enabled and selected > 0)
         self.merge_down_button.setEnabled(enabled and 0 <= selected < len(self.merge_paths) - 1)
@@ -2833,9 +2958,12 @@ class MainWindow(QMainWindow):
         self.merge_summary.setText(f"出力予定: {width} × {height} px\n{count}枚 / {layout} / Gap {self.merge_gap_spin.value()} px")
 
     def _schedule_merge_preview(self) -> None:
-        if not self._merge_is_enabled() or not self._merge_is_ready():
-            return
+        """Invalidate older previews and retain at most one worker at a time."""
         self._merge_preview_request_id += 1
+        if not self._merge_is_enabled() or not self._merge_is_ready():
+            if self._merge_is_enabled():
+                self.drop_zone.clear_image()
+            return
         if self._merge_preview_thread is not None:
             return
         request = (
@@ -2844,30 +2972,49 @@ class MainWindow(QMainWindow):
             copy.deepcopy(self.options()),
             self.merge_options(),
         )
+        self._start_merge_preview_request(request)
+
+    def _start_merge_preview_request(self, request) -> None:
+        """Start a snapshot worker whose callbacks are bound to this exact QThread."""
         thread = QThread(self)
         worker = MergePreviewWorker((0, *request))
         self._merge_preview_thread = thread
         self._merge_preview_worker = worker
+        self._merge_preview_result = None
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.succeeded.connect(self._merge_preview_succeeded)
-        worker.failed.connect(self._merge_preview_failed)
-        worker.finished.connect(worker.deleteLater)
+        worker.succeeded.connect(
+            lambda payload, active_thread=thread: self._merge_preview_succeeded(active_thread, payload)
+        )
+        worker.failed.connect(
+            lambda payload, active_thread=thread: self._merge_preview_failed(active_thread, payload)
+        )
         worker.finished.connect(thread.quit)
-        thread.finished.connect(self._finalize_merge_preview)
+        # QThread processes deferred deletions after it has stopped.  Binding the
+        # callback to this concrete thread prevents an old completion from
+        # clearing a newer worker reference during rapid queue changes.
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(
+            lambda active_thread=thread, active_worker=worker: self._finalize_merge_preview(
+                active_thread, active_worker
+            )
+        )
         thread.finished.connect(thread.deleteLater)
         thread.start()
 
-    @Slot(object)
-    def _merge_preview_succeeded(self, payload) -> None:
-        self._merge_preview_result = ("success", payload)
+    def _merge_preview_succeeded(self, thread: QThread, payload) -> None:
+        if thread is self._merge_preview_thread:
+            self._merge_preview_result = ("success", payload)
 
-    @Slot(object)
-    def _merge_preview_failed(self, payload) -> None:
-        self._merge_preview_result = ("failed", payload)
+    def _merge_preview_failed(self, thread: QThread, payload) -> None:
+        if thread is self._merge_preview_thread:
+            self._merge_preview_result = ("failed", payload)
 
-    @Slot()
-    def _finalize_merge_preview(self) -> None:
+    def _finalize_merge_preview(self, thread: QThread, worker: MergePreviewWorker) -> None:
+        """Release only the worker that owns this finish event."""
+        del worker  # Keep a strong reference in the signal closure until completion.
+        if thread is not self._merge_preview_thread:
+            return
         result = self._merge_preview_result
         self._merge_preview_thread = None
         self._merge_preview_worker = None
@@ -3435,6 +3582,7 @@ class MainWindow(QMainWindow):
         self._thread = None
         self._active_split_options = ImageSplitOptions()
         self._active_merge = False
+        self._update_merge_membership_presentation()
         self.drop_zone.setEnabled(True)
         self.navigation.setTabEnabled(self.thumbnail_tab, True)
         self.navigation.setTabEnabled(self.sound_effect_tab, True)

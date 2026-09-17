@@ -52,8 +52,7 @@ class ImageMergeOptions:
     def __post_init__(self) -> None:
         if not -100 <= self.gap <= 100:
             raise ValueError("merge gap must be between -100 and 100")
-        if self.direction is MergeDirection.GRID and self.gap < 0:
-            raise ValueError("grid merge gap must not be negative")
+
         if self.columns not in (2, 3):
             raise ValueError("grid columns must be 2 or 3")
         if self.background is not None and (
@@ -127,6 +126,23 @@ def _resolved_linear_gap(sizes: list[tuple[int, int]], options: ImageMergeOption
     return max(options.gap, minimum_visible - minimum_primary)
 
 
+def _resolved_grid_gap(sizes: list[tuple[int, int]], options: ImageMergeOptions) -> int:
+    """Keep each occupied grid cell visibly represented after overlap."""
+    if options.gap >= 0:
+        return options.gap
+    cell_width = max(width for width, _ in sizes)
+    cell_height = max(height for _, height in sizes)
+    rows = (len(sizes) + options.columns - 1) // options.columns
+    minimum_gap = options.gap
+    if len(sizes) > 1:
+        visible_width = min(MIN_VISIBLE_OVERLAP_PIXELS, cell_width)
+        minimum_gap = max(minimum_gap, visible_width - cell_width)
+    if rows > 1:
+        visible_height = min(MIN_VISIBLE_OVERLAP_PIXELS, cell_height)
+        minimum_gap = max(minimum_gap, visible_height - cell_height)
+    return minimum_gap
+
+
 def merged_dimensions(sizes: list[tuple[int, int]], options: ImageMergeOptions) -> tuple[int, int]:
     """Return the exact canvas size for already-resolved input sizes."""
     _validate_count(len(sizes), options)
@@ -134,9 +150,10 @@ def merged_dimensions(sizes: list[tuple[int, int]], options: ImageMergeOptions) 
         rows = (len(sizes) + options.columns - 1) // options.columns
         cell_width = max(width for width, _ in sizes)
         cell_height = max(height for _, height in sizes)
+        gap = _resolved_grid_gap(sizes, options)
         return (
-            options.columns * cell_width + options.gap * (options.columns - 1),
-            rows * cell_height + options.gap * (rows - 1),
+            options.columns * cell_width + gap * (options.columns - 1),
+            rows * cell_height + gap * (rows - 1),
         )
     gap = _resolved_linear_gap(sizes, options)
     if options.direction is MergeDirection.HORIZONTAL:
@@ -158,10 +175,11 @@ def merge_images(images: list[Image.Image], options: ImageMergeOptions) -> Image
     if options.direction is MergeDirection.GRID:
         cell_width = max(image.width for image in prepared)
         cell_height = max(image.height for image in prepared)
+        gap = _resolved_grid_gap([image.size for image in prepared], options)
         for index, image in enumerate(prepared):
             row, column = divmod(index, options.columns)
-            left = column * (cell_width + options.gap)
-            top = row * (cell_height + options.gap)
+            left = column * (cell_width + gap)
+            top = row * (cell_height + gap)
             positions.append((
                 left + _aligned_offset(cell_width - image.width, options.alignment),
                 top + _aligned_offset(cell_height - image.height, options.alignment),

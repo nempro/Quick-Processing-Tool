@@ -76,9 +76,9 @@ QPushButton[operationRole="secondary"]:hover {
     border-color: #66788c;
 }
 QPushButton[operationRole="secondary"]:disabled {
-    background-color: #f3f4f6;
-    color: #9aa1aa;
-    border-color: #d4d8de;
+    background-color: #e4e7eb;
+    color: #475467;
+    border-color: #98a2b3;
 }
 QWidget[operationRole="saveResult"] {
     background-color: #edf7ed;
